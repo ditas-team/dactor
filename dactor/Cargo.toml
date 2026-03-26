@@ -1,0 +1,19 @@
+[package]
+name = "dactor"
+version = "0.1.0"
+edition = "2021"
+description = "An abstract framework for distributed actors in Rust"
+license = "MIT"
+repository = "https://github.com/Yaming-Hub/dactor"
+homepage = "https://github.com/Yaming-Hub/dactor"
+readme = "../README.md"
+keywords = ["actor", "distributed", "framework", "async", "runtime"]
+categories = ["concurrency", "network-programming"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["time", "sync", "rt", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }

@@ -1,0 +1,3 @@
+[workspace]
+members = ["dactor", "dactor-ractor", "dactor-kameo"]
+resolver = "2"
