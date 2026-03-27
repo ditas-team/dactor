@@ -103,31 +103,32 @@ pub enum RuntimeError {
 
 For each feature and each adapter, there are exactly three possibilities:
 
-- ✅ **Library Native** — the underlying actor library (ractor / kameo) directly supports this feature; the adapter maps to the library's API
+- ✅ **Library Native** — the underlying actor library (ractor / kameo / coerce) directly supports this feature; the adapter maps to the library's API
 - ⚙️ **Adapter Implemented** — the library does *not* support this feature, but the adapter crate implements it with custom logic
 - ❌ **Not Supported** — the feature cannot be provided; returns `RuntimeError::NotSupported` at runtime
 
-| Capability | dactor-ractor | dactor-kameo | Notes |
-|---|:---:|:---:|---|
-| `tell()` | ✅ Library | ✅ Library | ractor `cast()` / kameo `tell().try_send()` |
-| `tell_envelope()` | ⚙️ Adapter | ⚙️ Adapter | Neither library has envelopes; adapter unwraps, runs interceptors, forwards body |
-| `ask()` | ✅ Library | ✅ Library | ractor `call()` / kameo `ask()` |
-| `stream()` | ⚙️ Adapter | ⚙️ Adapter | Neither library has streaming; adapter creates `mpsc` channel, passes `StreamSender` to actor |
-| `ActorRef::id()` | ✅ Library | ✅ Library | ractor `get_id()` / kameo `id()` |
-| `ActorRef::is_alive()` | ✅ Library | ✅ Library | Check actor cell / ref validity |
-| Lifecycle hooks | ✅ Library | ✅ Library | ractor `pre_start`/`post_stop` / kameo `on_start`/`on_stop` |
-| Supervision | ✅ Library | ✅ Library | ractor parent-child / kameo `on_link_died` |
-| `watch()` / `unwatch()` | ✅ Library | ✅ Library | ractor supervisor notifications / kameo actor linking |
-| `MailboxConfig::Unbounded` | ✅ Library | ✅ Library | Default for both |
-| `MailboxConfig::Bounded` | ⚙️ Adapter | ✅ Library | ractor: adapter wraps with bounded `tokio::sync::mpsc`; kameo: `spawn_bounded()` |
-| `OverflowStrategy::Block` | ⚙️ Adapter | ✅ Library | ractor: bounded channel blocks; kameo: native bounded behavior |
-| `OverflowStrategy::RejectWithError` | ⚙️ Adapter | ✅ Library | ractor: `try_send()` on adapter channel; kameo: `try_send()` native |
-| `OverflowStrategy::DropNewest` | ⚙️ Adapter | ⚙️ Adapter | Both: `try_send()`, silently discard on full |
-| `OverflowStrategy::DropOldest` | ❌ Not Supported | ❌ Not Supported | Neither library exposes queue eviction |
-| Interceptors (global) | ⚙️ Adapter | ⚙️ Adapter | Neither library has interceptors; adapter runs chain before dispatch |
-| Interceptors (per-actor) | ⚙️ Adapter | ⚙️ Adapter | Stored in actor wrapper by adapter, run per message |
-| Processing groups | ✅ Library | ⚙️ Adapter | ractor: native `pg` module with join/leave/broadcast; kameo: adapter maintains type-erased registry |
-| Cluster events | ⚙️ Adapter | ⚙️ Adapter | Neither library has unified cluster events; adapter provides callback system |
+| Capability | dactor-ractor | dactor-kameo | dactor-coerce | Notes |
+|---|:---:|:---:|:---:|---|
+| `tell()` | ✅ Library | ✅ Library | ✅ Library | ractor `cast()` / kameo `tell().try_send()` / coerce `notify()` |
+| `tell_envelope()` | ⚙️ Adapter | ⚙️ Adapter | ⚙️ Adapter | No library has envelopes; adapter unwraps, runs interceptors, forwards body |
+| `ask()` | ✅ Library | ✅ Library | ✅ Library | ractor `call()` / kameo `ask()` / coerce `send()` |
+| `stream()` | ⚙️ Adapter | ⚙️ Adapter | ⚙️ Adapter | No library has streaming; adapter creates `mpsc` channel shim |
+| `ActorRef::id()` | ✅ Library | ✅ Library | ✅ Library | Each library provides actor identity |
+| `ActorRef::is_alive()` | ✅ Library | ✅ Library | ✅ Library | Check actor cell / ref validity |
+| Lifecycle hooks | ✅ Library | ✅ Library | ✅ Library | ractor `pre_start`/`post_stop` / kameo `on_start`/`on_stop` / coerce lifecycle events |
+| Supervision | ✅ Library | ✅ Library | ✅ Library | ractor parent-child / kameo `on_link_died` / coerce child restart |
+| `watch()` / `unwatch()` | ✅ Library | ✅ Library | ✅ Library | ractor supervisor notifications / kameo linking / coerce supervision |
+| `MailboxConfig::Unbounded` | ✅ Library | ✅ Library | ✅ Library | Default for all three |
+| `MailboxConfig::Bounded` | ⚙️ Adapter | ✅ Library | ❌ Not Supported | ractor: adapter wraps with bounded channel; kameo: `spawn_bounded()`; coerce: unbounded only |
+| `OverflowStrategy::Block` | ⚙️ Adapter | ✅ Library | ❌ Not Supported | coerce: no bounded mailbox |
+| `OverflowStrategy::RejectWithError` | ⚙️ Adapter | ✅ Library | ❌ Not Supported | coerce: no bounded mailbox |
+| `OverflowStrategy::DropNewest` | ⚙️ Adapter | ⚙️ Adapter | ❌ Not Supported | coerce: no bounded mailbox |
+| `OverflowStrategy::DropOldest` | ❌ Not Supported | ❌ Not Supported | ❌ Not Supported | No library exposes queue eviction |
+| Priority mailbox | ⚙️ Adapter | ✅ Library | ❌ Not Supported | ractor: BinaryHeap wrapper; kameo: custom mailbox; coerce: no priority support |
+| Interceptors (global) | ⚙️ Adapter | ⚙️ Adapter | ⚙️ Adapter | No library has generic interceptors; adapter runs chain before dispatch |
+| Interceptors (per-actor) | ⚙️ Adapter | ⚙️ Adapter | ⚙️ Adapter | Stored in actor wrapper by adapter, run per message |
+| Processing groups | ✅ Library | ⚙️ Adapter | ✅ Library | ractor: native `pg` module; kameo: adapter registry; coerce: sharding/pub-sub |
+| Cluster events | ⚙️ Adapter | ⚙️ Adapter | ✅ Library | ractor/kameo: adapter callback system; coerce: native cluster membership |
 
 ---
 
@@ -1253,7 +1254,7 @@ and `dactor-kameo`, listed in the workspace `Cargo.toml`:
 
 ```toml
 [workspace]
-members = ["dactor", "dactor-ractor", "dactor-kameo", "dactor-mock"]
+members = ["dactor", "dactor-ractor", "dactor-kameo", "dactor-coerce", "dactor-mock"]
 ```
 
 **Dependencies:**
@@ -1406,6 +1407,28 @@ For each feature and each adapter, there are exactly three possibilities:
 | Interceptors (per-actor) | ⚙️ Adapter | kameo has no interceptors; adapter stores in actor wrapper, runs per message |
 | Processing groups | ⚙️ Adapter | kameo has no processing groups; adapter maintains type-erased registry (implemented in v0.1) |
 | Cluster events | ⚙️ Adapter | kameo has no unified cluster events; adapter provides `KameoClusterEvents` callback system (implemented in v0.1) |
+
+### dactor-coerce
+
+| Feature | Strategy | Implementation Detail |
+|---------|:---:|---|
+| `tell()` | ✅ Library | `coerce::ActorRef::notify()` |
+| `tell_envelope()` | ⚙️ Adapter | coerce has no envelope concept; adapter runs interceptor chain on headers, forwards `body` to `notify()` |
+| `ask()` | ✅ Library | `coerce::ActorRef::send()` — returns `Result` with reply |
+| `stream()` | ⚙️ Adapter | coerce has no streaming; adapter creates `mpsc` channel, passes `StreamSender` to actor, returns `ReceiverStream` |
+| `ActorRef::id()` | ✅ Library | coerce actors have identity via `ActorId` |
+| `ActorRef::is_alive()` | ✅ Library | coerce `ActorRef` tracks actor liveness (local and remote) |
+| Lifecycle hooks | ✅ Library | coerce `Actor` trait has lifecycle events |
+| Supervision | ✅ Library | coerce supports child actor spawning and restart on failure |
+| `watch()` / `unwatch()` | ✅ Library | coerce supervision model monitors child actors |
+| `MailboxConfig::Unbounded` | ✅ Library | Default and only mailbox type in coerce |
+| `MailboxConfig::Bounded` | ❌ Not Supported | coerce only supports unbounded mailboxes |
+| `OverflowStrategy::*` | ❌ Not Supported | coerce has no bounded mailbox, no overflow control |
+| Priority mailbox | ❌ Not Supported | coerce has no priority mailbox or custom mailbox API |
+| Interceptors (global) | ⚙️ Adapter | coerce has metrics/tracing but no generic interceptor API; adapter implements chain |
+| Interceptors (per-actor) | ⚙️ Adapter | coerce has no per-actor interceptors; adapter stores in actor wrapper |
+| Processing groups | ✅ Library | coerce has distributed pub/sub and sharding for actor groups |
+| Cluster events | ✅ Library | coerce has built-in cluster membership and node discovery |
 
 ---
 
