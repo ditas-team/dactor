@@ -347,17 +347,81 @@ pub enum SendMode {
 /// Interceptors form an ordered pipeline. Each interceptor sees the
 /// envelope headers and message context before the actor's handler,
 /// and can modify headers, log, record metrics, or reject the message.
+///
+/// ## Lifecycle per send mode
+///
+/// ### `Tell` (fire-and-forget)
+/// ```text
+/// on_receive → handler executes → on_complete(outcome=Success)
+///                                  on_complete(outcome=HandlerError) if handler fails
+/// ```
+///
+/// ### `Ask` (request-reply)
+/// ```text
+/// on_receive → handler executes → on_complete(outcome=Reply)
+///                                  on_complete(outcome=HandlerError) if handler fails
+/// ```
+/// The interceptor can observe (but not modify) the reply or error.
+/// This enables metrics (latency, error rates) and tracing (span
+/// completion) without coupling to the reply type.
+///
+/// ### `Stream` (request-stream)
+/// ```text
+/// on_receive → handler starts → on_stream_item per item
+///                              → on_complete(outcome=StreamCompleted)   if stream ends normally
+///                              → on_complete(outcome=StreamCancelled)   if consumer drops stream
+///                              → on_complete(outcome=HandlerError)      if handler fails
+/// ```
+/// `on_complete` is called exactly **once** at the end of the stream,
+/// not per item. For per-item observation, use `on_stream_item`.
 pub trait Interceptor: Send + Sync + 'static {
-    /// Called before the message is delivered to the actor.
+    /// Called before the message is delivered to the actor's handler.
     fn on_receive(&self, ctx: &InterceptContext<'_>, headers: &mut Headers) -> Disposition {
         let _ = ctx;
         Disposition::Continue
     }
 
-    /// Called after the actor's handler returns (for post-processing).
-    fn on_complete(&self, ctx: &InterceptContext<'_>, headers: &Headers) {
-        let _ = ctx;
+    /// Called after the actor's handler finishes (for Tell/Ask) or
+    /// after the stream ends (for Stream). Called exactly once per
+    /// message, regardless of send mode.
+    fn on_complete(&self, ctx: &InterceptContext<'_>, headers: &Headers, outcome: &Outcome) {
+        let _ = (ctx, outcome);
     }
+
+    /// Called for each item emitted by a streaming handler.
+    /// Only invoked when `send_mode == Stream`. Default is a no-op.
+    fn on_stream_item(&self, ctx: &InterceptContext<'_>, headers: &Headers, seq: u64) {
+        let _ = (ctx, seq);
+    }
+}
+
+/// The outcome of a handler invocation, passed to `on_complete`.
+pub enum Outcome {
+    /// Tell: handler returned successfully.
+    /// Ask: handler returned a reply (type-erased; interceptors
+    ///   observe the event but cannot inspect the reply value).
+    Success,
+
+    /// The handler panicked or returned an error.
+    HandlerError {
+        /// Human-readable error description.
+        error: String,
+    },
+
+    /// Stream completed normally — the actor dropped the `StreamSender`
+    /// after sending all items.
+    StreamCompleted {
+        /// Total number of items emitted.
+        items_emitted: u64,
+    },
+
+    /// Stream was cancelled — the consumer dropped the `BoxStream`
+    /// before the actor finished sending. The actor's next
+    /// `StreamSender::send()` returned `ConsumerDropped`.
+    StreamCancelled {
+        /// Number of items successfully emitted before cancellation.
+        items_emitted: u64,
+    },
 }
 ```
 
