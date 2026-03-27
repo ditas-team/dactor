@@ -125,7 +125,7 @@ For each feature and each adapter, there are exactly three possibilities:
 | `OverflowStrategy::DropOldest` | ❌ Not Supported | ❌ Not Supported | Neither library exposes queue eviction |
 | Interceptors (global) | ⚙️ Adapter | ⚙️ Adapter | Neither library has interceptors; adapter runs chain before dispatch |
 | Interceptors (per-actor) | ⚙️ Adapter | ⚙️ Adapter | Stored in actor wrapper by adapter, run per message |
-| Processing groups | ⚙️ Adapter | ⚙️ Adapter | Neither library has groups; adapter maintains type-erased registry |
+| Processing groups | ✅ Library | ⚙️ Adapter | ractor: native `pg` module with join/leave/broadcast; kameo: adapter maintains type-erased registry |
 | Cluster events | ⚙️ Adapter | ⚙️ Adapter | Neither library has unified cluster events; adapter provides callback system |
 
 ---
@@ -1294,7 +1294,7 @@ For each feature and each adapter, there are exactly three possibilities:
 | `OverflowStrategy::DropOldest` | ❌ Not Supported | ractor has no queue eviction; no efficient way to implement in adapter |
 | Interceptors (global) | ⚙️ Adapter | ractor has no interceptors; adapter stores in `Arc<Mutex<Vec>>`, runs chain before `cast()` |
 | Interceptors (per-actor) | ⚙️ Adapter | ractor has no interceptors; adapter stores in actor wrapper, runs per message |
-| Processing groups | ⚙️ Adapter | ractor has no processing groups; adapter maintains type-erased registry (implemented in v0.1) |
+| Processing groups | ✅ Library | ractor has native `pg` module — maps `join_group` / `leave_group` / `broadcast_group` to `ractor::pg` API |
 | Cluster events | ⚙️ Adapter | ractor has no unified cluster events; adapter provides `RactorClusterEvents` callback system (implemented in v0.1) |
 
 ### dactor-kameo
