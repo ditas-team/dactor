@@ -257,25 +257,39 @@ impl<M> From<M> for Envelope<M> {
 }
 ```
 
-**Built-in header types** (provided by dactor, opt-in):
+**dactor does NOT define concrete header types** like `TraceContext` or
+`CorrelationId`. The `Headers` container is a generic typed map — any type
+implementing `HeaderValue` can be inserted. Concrete context types (trace
+context, correlation IDs, auth tokens, deadlines) are provided by external
+crates such as [`dcontext`](https://github.com/Yaming-Hub/dcontext) and
+consumed by interceptors for context propagation. This keeps dactor free of
+opinionated context structures.
+
+The only built-in header type is `Priority` (used by priority mailboxes):
 
 ```rust
-/// W3C-compatible trace context for distributed tracing.
-pub struct TraceContext {
-    pub trace_id: String,
-    pub span_id: String,
-    pub trace_flags: u8,
-}
-
-/// Correlation ID for request tracking across actors.
-pub struct CorrelationId(pub String);
-
-/// Deadline after which the message should be discarded.
-pub struct Deadline(pub std::time::Instant);
-
 /// Message priority level for priority mailboxes.
 /// See §3.8 for details and usage.
 pub use crate::mailbox::Priority;
+```
+
+**Example: external crate provides context, interceptor propagates it:**
+
+```rust
+// In dcontext crate (external):
+pub struct TraceContext { pub trace_id: String, pub span_id: String }
+impl dactor::HeaderValue for TraceContext { ... }
+
+// In user code — interceptor consumes the header:
+struct TracingInterceptor;
+impl Interceptor for TracingInterceptor {
+    fn on_receive(&self, headers: &mut Headers) -> Disposition {
+        if let Some(ctx) = headers.get::<dcontext::TraceContext>() {
+            tracing::info!(trace_id = %ctx.trace_id, "message received");
+        }
+        Disposition::Continue
+    }
+}
 ```
 
 ### 3.2 Interceptor Pipeline
@@ -309,9 +323,11 @@ pub trait Interceptor: Send + Sync + 'static {
 }
 ```
 
-**Example: Logging interceptor**
+**Example: Logging interceptor (using external context crate)**
 
 ```rust
+use dcontext::CorrelationId;  // from external crate
+
 struct LoggingInterceptor;
 
 impl Interceptor for LoggingInterceptor {
