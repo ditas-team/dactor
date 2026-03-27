@@ -859,6 +859,345 @@ fn watch<M: Send + 'static>(
 }
 ```
 
+### 3.13 Mock Cluster Crate (`dactor-mock`)
+
+**Rationale:** The existing `test_support` module in the `dactor` core crate
+provides `TestRuntime` — a single-node, in-memory mock useful for unit-testing
+individual actors. However, testing **cluster behavior** (node join/leave,
+cross-node messaging, state replication, partition tolerance) requires
+simulating multiple nodes within a single process.
+
+Erlang/OTP achieves this with `slave` / `peer` nodes in tests. Akka has
+`TestKit` with multi-actor-system setups. No Rust actor framework currently
+provides a dedicated multi-node testing crate — this is a differentiating
+feature for dactor.
+
+`dactor-mock` is a **standalone workspace crate** (not hidden behind a feature
+flag) that provides a fully-functional `ActorRuntime` implementation simulating
+a multi-node cluster in a single process. It is the **fourth adapter** in the
+workspace, purpose-built for testing.
+
+**Design goals:**
+
+1. **Multi-node in one process** — create N simulated nodes, each with its own
+   `ActorRuntime`, connected via in-process channels
+2. **Forced serialization** — all cross-node messages are serialized and
+   deserialized (using `bincode`, `serde_json`, or a pluggable codec), catching
+   serialization bugs that in-memory mocks would miss
+3. **Simulated cluster events** — programmatically trigger `NodeJoined` /
+   `NodeLeft` events on any node
+4. **Network fault injection** — simulate partitions, message drops, latency,
+   and reordering between any pair of nodes
+5. **Deterministic control** — integrate with `TestClock` for time-controlled
+   testing; no real timers unless opted in
+
+**Core types:**
+
+```rust
+/// A simulated cluster of N nodes running in the same process.
+pub struct MockCluster {
+    nodes: Vec<MockNode>,
+    network: MockNetwork,
+}
+
+/// A single simulated node in the cluster.
+/// Implements `dactor::ActorRuntime` so it can be used anywhere
+/// a real runtime is expected.
+pub struct MockNode {
+    node_id: NodeId,
+    runtime: MockRuntime,     // ActorRuntime implementation
+    cluster_events: MockClusterEvents,
+    clock: TestClock,
+}
+
+/// The simulated network connecting nodes.
+/// Cross-node messages pass through this, which enforces serialization
+/// and can inject faults.
+pub struct MockNetwork {
+    links: HashMap<(NodeId, NodeId), LinkConfig>,
+}
+
+/// Configuration for a network link between two nodes.
+pub struct LinkConfig {
+    /// Whether the link is active (false = simulated partition).
+    pub connected: bool,
+    /// Simulated one-way latency.
+    pub latency: Duration,
+    /// Random jitter added to latency (uniform ±jitter).
+    pub jitter: Duration,
+    /// Probability of dropping a message silently (0.0 = reliable, 1.0 = black hole).
+    pub drop_rate: f64,
+    /// Probability of duplicating a message (0.0 = no dupes, 1.0 = every msg sent twice).
+    pub duplicate_rate: f64,
+    /// Probability of corrupting message bytes before decode (0.0 = clean).
+    pub corrupt_rate: f64,
+    /// Whether to deliver messages out of order (reordering).
+    pub reorder: bool,
+    /// If set, the link returns an error to the sender instead of silently dropping.
+    /// Simulates connection-refused / timeout errors visible to the caller.
+    pub error_mode: Option<LinkError>,
+    /// The codec used for serialization/deserialization.
+    pub codec: Box<dyn MessageCodec>,
+}
+
+/// Pre-built link configurations for common test scenarios.
+impl LinkConfig {
+    /// Perfectly reliable link — no faults, no latency.
+    pub fn reliable() -> Self;
+    /// Unreliable link with the given drop rate.
+    pub fn lossy(drop_rate: f64) -> Self;
+    /// Link that simulates a network partition (connected = false).
+    pub fn partitioned() -> Self;
+    /// Link with simulated WAN-like latency and jitter.
+    pub fn slow(latency: Duration, jitter: Duration) -> Self;
+}
+
+/// Error mode for a link — what the sender sees when the link is faulty.
+#[derive(Debug, Clone)]
+pub enum LinkError {
+    /// The send returns `Err(ActorSendError)` as if the remote actor is unreachable.
+    ConnectionRefused,
+    /// The send hangs until a timeout, then returns an error.
+    Timeout(Duration),
+    /// The send succeeds from the sender's perspective, but the message is silently lost.
+    SilentDrop,
+}
+
+/// Pluggable serialization for cross-node messages.
+pub trait MessageCodec: Send + Sync + 'static {
+    fn encode(&self, msg: &[u8]) -> Result<Vec<u8>, CodecError>;
+    fn decode(&self, bytes: &[u8]) -> Result<Vec<u8>, CodecError>;
+}
+```
+
+**How cross-node messaging works:**
+
+```
+Node A (sender)                  MockNetwork                   Node B (receiver)
+  │                                 │                              │
+  │  actor_on_b.tell(msg)           │                              │
+  │────────────────────────────────►│                              │
+  │                                 │  1. codec.encode(msg)        │
+  │                                 │  2. check link config:       │
+  │                                 │     - connected?             │
+  │                                 │     - error_mode?            │
+  │                                 │     - drop_rate roll?        │
+  │                                 │     - corrupt_rate roll?     │
+  │                                 │     - duplicate_rate roll?   │
+  │                                 │  3. if corrupt: flip bits    │
+  │                                 │  4. sleep(latency ± jitter)  │
+  │                                 │  5. if reorder: enqueue      │
+  │                                 │  6. codec.decode(bytes)      │
+  │                                 │     → may fail if corrupted  │
+  │                                 │  7. deliver to Node B        │
+  │                                 │─────────────────────────────►│
+  │                                 │                              │  handler(msg)
+  │                                 │  8. if duplicate: re-deliver │
+  │                                 │─────────────────────────────►│
+  │                                 │                              │  handler(msg) again
+```
+
+**Key point: forced serialization.** Even though sender and receiver are in the
+same process, the message is serialized to bytes and deserialized back. This
+catches bugs that only appear over the wire:
+- Non-serializable fields (e.g., `Arc`, function pointers)
+- Version mismatches in serialization formats
+- Incorrect `Serialize` / `Deserialize` implementations
+
+**Intra-node messaging** (actor-to-actor on the same node) uses direct
+channel passing (no serialization), matching the behavior of a real runtime.
+
+**Example usage:**
+
+```rust
+use dactor_mock::{MockCluster, LinkConfig};
+use dactor::{ActorRuntime, ActorRef, ClusterEvents, ClusterEvent, NodeId};
+
+#[tokio::test]
+async fn test_cluster_state_sync() {
+    // Create a 3-node cluster with reliable links
+    let cluster = MockCluster::builder()
+        .add_node(NodeId(1))
+        .add_node(NodeId(2))
+        .add_node(NodeId(3))
+        .default_link(LinkConfig::reliable())
+        .build();
+
+    let node1 = cluster.node(NodeId(1));
+    let node2 = cluster.node(NodeId(2));
+
+    // Spawn actors on different nodes
+    let actor_a = node1.runtime().spawn("a", |msg: MyMessage| { /* ... */ });
+    let actor_b = node2.runtime().spawn("b", |msg: MyMessage| { /* ... */ });
+
+    // Cross-node send — goes through serialization
+    actor_b.tell(MyMessage { data: 42 }).unwrap();
+
+    // Simulate a network partition
+    cluster.partition(NodeId(1), NodeId(2));
+    // actor_b.tell(...) would now fail or be dropped
+
+    // Heal the partition
+    cluster.heal(NodeId(1), NodeId(2));
+
+    // Simulate node failure
+    cluster.emit_event(NodeId(2), ClusterEvent::NodeLeft(NodeId(1)));
+}
+
+#[tokio::test]
+async fn test_serialization_roundtrip() {
+    let cluster = MockCluster::builder()
+        .add_node(NodeId(1))
+        .add_node(NodeId(2))
+        .default_link(LinkConfig::reliable())
+        .build();
+
+    // This would panic at runtime if MyMessage doesn't correctly
+    // implement Serialize/Deserialize — catching it in unit tests
+    // rather than in production.
+    let actor = cluster.node(NodeId(2)).runtime().spawn("echo", |msg: MyMessage| {
+        assert_eq!(msg.data, 42); // deserialized correctly?
+    });
+
+    actor.tell(MyMessage { data: 42 }).unwrap();
+}
+```
+
+**Fault injection API:**
+
+```rust
+impl MockCluster {
+    // ── Network-level faults ────────────────────────────
+
+    /// Simulate a network partition between two nodes (bidirectional).
+    /// Messages in both directions are dropped; senders see `LinkError`
+    /// if `error_mode` is set, otherwise silent drop.
+    pub fn partition(&self, a: NodeId, b: NodeId);
+
+    /// Heal a partition between two nodes (bidirectional).
+    pub fn heal(&self, a: NodeId, b: NodeId);
+
+    /// Set latency on a directional link.
+    pub fn set_latency(&self, from: NodeId, to: NodeId, latency: Duration);
+
+    /// Set latency jitter on a directional link.
+    pub fn set_jitter(&self, from: NodeId, to: NodeId, jitter: Duration);
+
+    /// Set message drop rate on a directional link (0.0–1.0).
+    pub fn set_drop_rate(&self, from: NodeId, to: NodeId, rate: f64);
+
+    /// Set message duplication rate on a directional link (0.0–1.0).
+    pub fn set_duplicate_rate(&self, from: NodeId, to: NodeId, rate: f64);
+
+    /// Set message corruption rate on a directional link (0.0–1.0).
+    /// Corrupted messages cause deserialization failures on the receiver.
+    pub fn set_corrupt_rate(&self, from: NodeId, to: NodeId, rate: f64);
+
+    /// Enable/disable message reordering on a directional link.
+    pub fn set_reorder(&self, from: NodeId, to: NodeId, enabled: bool);
+
+    /// Set the error mode on a directional link — controls what the
+    /// sender sees when a message can't be delivered.
+    pub fn set_error_mode(&self, from: NodeId, to: NodeId, mode: Option<LinkError>);
+
+    /// Replace the entire link config for a directional link.
+    pub fn set_link_config(&self, from: NodeId, to: NodeId, config: LinkConfig);
+
+    // ── Node-level faults ───────────────────────────────
+
+    /// Simulate a node crash. All actors on the node are stopped, all
+    /// pending messages are lost, and `NodeLeft` is emitted to all
+    /// other nodes. The node cannot receive or send messages until
+    /// restarted.
+    pub fn crash_node(&self, node: NodeId);
+
+    /// Restart a previously crashed node. A fresh `MockRuntime` is
+    /// created (all actor state is lost — simulating a cold restart).
+    /// `NodeJoined` is emitted to all other nodes.
+    pub fn restart_node(&self, node: NodeId);
+
+    /// Gracefully shut down a node. Actors receive `on_stop` lifecycle
+    /// hook before termination. `NodeLeft` is emitted to peers.
+    pub fn shutdown_node(&self, node: NodeId);
+
+    /// Freeze a node — it stops processing messages but doesn't crash.
+    /// Simulates a GC pause, CPU starvation, or deadlock. Messages
+    /// queue up but are not delivered until `unfreeze_node()`.
+    pub fn freeze_node(&self, node: NodeId);
+
+    /// Resume a frozen node. Queued messages are delivered.
+    pub fn unfreeze_node(&self, node: NodeId);
+
+    // ── Cluster event simulation ────────────────────────
+
+    /// Emit a cluster event on a specific node (manual control).
+    pub fn emit_event(&self, on_node: NodeId, event: ClusterEvent);
+
+    /// Emit a cluster event on all nodes simultaneously.
+    pub fn emit_event_all(&self, event: ClusterEvent);
+
+    // ── Time control ────────────────────────────────────
+
+    /// Advance all node clocks by the given duration (deterministic).
+    pub fn advance_time(&self, duration: Duration);
+
+    /// Advance a single node's clock (simulate clock skew).
+    pub fn advance_node_time(&self, node: NodeId, duration: Duration);
+
+    // ── Inspection / assertions ─────────────────────────
+
+    /// Get the number of messages in flight (sent but not yet delivered)
+    /// across the entire cluster.
+    pub fn in_flight_count(&self) -> usize;
+
+    /// Get the number of messages dropped since the cluster was created.
+    pub fn dropped_count(&self) -> usize;
+
+    /// Get the number of messages corrupted (deserialization failures).
+    pub fn corrupted_count(&self) -> usize;
+
+    /// Drain all in-flight messages (deliver everything immediately,
+    /// ignoring latency). Useful for deterministic test assertions.
+    pub fn flush(&self);
+}
+```
+
+**Workspace placement:** `dactor-mock` is a peer crate alongside `dactor-ractor`
+and `dactor-kameo`, listed in the workspace `Cargo.toml`:
+
+```toml
+[workspace]
+members = ["dactor", "dactor-ractor", "dactor-kameo", "dactor-mock"]
+```
+
+**Dependencies:**
+
+```toml
+[package]
+name = "dactor-mock"
+
+[dependencies]
+dactor = { path = "../dactor", features = ["test-support"] }
+tokio = { version = "1", features = ["sync", "rt", "time"] }
+serde = { version = "1", features = ["derive"] }
+bincode = "1"          # default codec
+```
+
+**Relationship to `test_support`:**
+
+| | `dactor::test_support` | `dactor-mock` |
+|---|---|---|
+| **Scope** | Single node | Multi-node cluster |
+| **Location** | Feature-gated module in core crate | Standalone workspace crate |
+| **Serialization** | No (in-memory channels) | Yes (forced encode/decode on cross-node) |
+| **Cluster events** | Manual `emit()` on one runtime | Coordinated across N nodes; auto-emitted on crash/restart |
+| **Network faults** | N/A | Partition, latency, jitter, drop, corruption, duplication, reordering |
+| **Node faults** | N/A | Crash, restart (cold), graceful shutdown, freeze/unfreeze |
+| **Error visibility** | N/A | Configurable: silent drop, connection refused, timeout |
+| **Clock** | `TestClock` per runtime | `TestClock` per node + coordinated `advance_time()` + clock skew |
+| **Inspection** | N/A | In-flight count, dropped count, corrupted count, `flush()` |
+| **Use case** | Unit testing single actors | Integration testing cluster behavior, chaos testing |
+
 ---
 
 ## 4. Module Reorganization
@@ -1046,6 +1385,18 @@ test-support = ["tokio/test-util"]
 3. Implement for adapters (channel-based shim)
 4. Add timeout support for ask
 5. Add `futures-core` and `tokio-stream` dependencies
+
+### Phase 5 — Mock Cluster Crate (v0.4.0)
+1. Create `dactor-mock` workspace crate
+2. `MockCluster` builder with multi-node setup
+3. `MockRuntime` implementing `ActorRuntime` per node
+4. `MockNetwork` with forced serialization on cross-node messages
+5. `LinkConfig` with latency, jitter, drop, corruption, duplication, reordering
+6. Network fault injection: `partition()`, `heal()`, `set_drop_rate()`, etc.
+7. Node fault injection: `crash_node()`, `restart_node()`, `shutdown_node()`, `freeze_node()`
+8. `LinkError` modes: `ConnectionRefused`, `Timeout`, `SilentDrop`
+9. Inspection API: `in_flight_count()`, `dropped_count()`, `flush()`
+10. `MessageCodec` trait with default `bincode` codec
 
 ---
 
