@@ -319,19 +319,45 @@ pub enum Disposition {
     Reject(String),
 }
 
+/// Metadata about the message and its target, provided to interceptors
+/// alongside the mutable headers. All fields are read-only.
+pub struct InterceptContext<'a> {
+    /// The unique ID of the target actor.
+    pub actor_id: ActorId,
+    /// The name the actor was spawned with.
+    pub actor_name: &'a str,
+    /// The Rust type name of the message (e.g., `"my_crate::Increment"`).
+    /// Obtained via `std::any::type_name::<M>()` at dispatch time.
+    pub message_type: &'static str,
+    /// Whether this is a `tell` (fire-and-forget) or `ask` (request-reply).
+    pub send_mode: SendMode,
+}
+
+/// How the message was sent — lets interceptors vary behavior
+/// (e.g., `Reject` is only meaningful for `Ask`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendMode {
+    Tell,
+    Ask,
+    Stream,
+}
+
 /// An interceptor that can observe or modify messages in transit.
 ///
 /// Interceptors form an ordered pipeline. Each interceptor sees the
-/// envelope before the actor's handler and can modify headers, log,
-/// record metrics, or drop the message entirely.
+/// envelope headers and message context before the actor's handler,
+/// and can modify headers, log, record metrics, or reject the message.
 pub trait Interceptor: Send + Sync + 'static {
     /// Called before the message is delivered to the actor.
-    fn on_receive(&self, headers: &mut Headers) -> Disposition {
+    fn on_receive(&self, ctx: &InterceptContext<'_>, headers: &mut Headers) -> Disposition {
+        let _ = ctx;
         Disposition::Continue
     }
 
     /// Called after the actor's handler returns (for post-processing).
-    fn on_complete(&self, headers: &Headers) {}
+    fn on_complete(&self, ctx: &InterceptContext<'_>, headers: &Headers) {
+        let _ = ctx;
+    }
 }
 ```
 
@@ -343,10 +369,16 @@ use dcontext::CorrelationId;  // from external crate
 struct LoggingInterceptor;
 
 impl Interceptor for LoggingInterceptor {
-    fn on_receive(&self, headers: &mut Headers) -> Disposition {
-        if let Some(cid) = headers.get::<CorrelationId>() {
-            tracing::info!(correlation_id = %cid.0, "message received");
-        }
+    fn on_receive(&self, ctx: &InterceptContext<'_>, headers: &mut Headers) -> Disposition {
+        let cid = headers.get::<CorrelationId>().map(|c| c.0.as_str()).unwrap_or("-");
+        tracing::info!(
+            actor = ctx.actor_name,
+            actor_id = %ctx.actor_id,
+            message = ctx.message_type,
+            mode = ?ctx.send_mode,
+            correlation_id = cid,
+            "message received"
+        );
         Disposition::Continue
     }
 }
