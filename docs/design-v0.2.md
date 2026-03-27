@@ -49,6 +49,7 @@ capability. **≥ 2** means it qualifies for inclusion in dactor.
 | Distribution (remote actors) | ✓ | ✓ | ✓ | ✓ | — | ✓ | **5** | ✅ (future) |
 | Clock abstraction | ✓ | ✓ | — | — | — | — | **2** | ✅ |
 | Streaming responses | ✓ | ✓ | — | — | — | — | **2** | ✅ |
+| Priority mailbox | ~ | ✓ | — | ✓ | — | — | **2+** | ✅ |
 | Hot code upgrade | ✓ | — | — | — | — | — | **1** | ❌ |
 
 ### `NotSupported` Error
@@ -148,6 +149,7 @@ For each feature and each adapter, there are exactly three possibilities:
 | **Distribution** | Native (Erlang nodes) | Akka Cluster/Remoting | `ractor_cluster` | libp2p / Kademlia | — | Cluster, remote actors |
 | **Clock/time** | `erlang:monotonic_time` | Scheduler | — | — | — | — |
 | **Streaming responses** | Multi-part `gen_server` reply | Akka Streams `Source` | — | — | — | — |
+| **Priority mailbox** | Selective receive (mimic) | `PriorityMailbox` (native) | — | Custom mailbox pluggable | — | — |
 
 ### Key Takeaways
 
@@ -269,6 +271,10 @@ pub struct CorrelationId(pub String);
 
 /// Deadline after which the message should be discarded.
 pub struct Deadline(pub std::time::Instant);
+
+/// Message priority level for priority mailboxes.
+/// See §3.8 for details and usage.
+pub use crate::mailbox::Priority;
 ```
 
 ### 3.2 Interceptor Pipeline
@@ -661,20 +667,33 @@ pub trait ActorRuntime: Send + Sync + 'static {
 
 ### 3.8 Mailbox Configuration
 
-**Rationale:** kameo defaults to bounded, ractor to unbounded. The abstraction
-should let users choose.
+**Rationale:** kameo defaults to bounded, ractor to unbounded. Akka supports
+priority mailboxes natively, kameo supports custom mailboxes. The abstraction
+should let users choose FIFO or priority ordering.
 
 ```rust
 /// Mailbox sizing strategy for an actor.
 #[derive(Debug, Clone)]
 pub enum MailboxConfig {
-    /// Unbounded mailbox — never blocks senders. Risk of memory exhaustion.
+    /// Unbounded FIFO mailbox — never blocks senders. Risk of memory exhaustion.
     Unbounded,
-    /// Bounded mailbox with backpressure.
+    /// Bounded FIFO mailbox with backpressure.
     Bounded {
         capacity: usize,
         /// What to do when the mailbox is full.
         overflow: OverflowStrategy,
+    },
+    /// Priority mailbox — messages are delivered in priority order rather
+    /// than FIFO. Priority is determined by the `Priority` header in the
+    /// message envelope, or by a user-supplied `PriorityFunction`.
+    ///
+    /// Supported natively by: Akka (`PriorityMailbox`), Kameo (custom mailbox).
+    /// Adapter-implemented for: ractor (priority queue wrapper).
+    Priority {
+        /// Optional capacity limit. `None` = unbounded priority queue.
+        capacity: Option<usize>,
+        /// How to determine message priority.
+        ordering: PriorityOrdering,
     },
 }
 
@@ -689,12 +708,79 @@ pub enum OverflowStrategy {
     RejectWithError,
 }
 
+/// How messages are prioritized in a priority mailbox.
+#[derive(Debug, Clone)]
+pub enum PriorityOrdering {
+    /// Use the `Priority` header from the message envelope.
+    /// Messages without a `Priority` header get `Priority::Normal` (default).
+    ByHeader,
+    // Future: custom priority functions could be added here.
+}
+
 impl Default for MailboxConfig {
     fn default() -> Self {
         MailboxConfig::Unbounded
     }
 }
 ```
+
+**Priority header** (defined in §3.1, listed here for reference):
+
+```rust
+/// Priority level for a message. Used by priority mailboxes to determine
+/// delivery order. Lower numeric value = higher priority.
+///
+/// Standard levels follow syslog-style conventions:
+/// Critical(0) > High(1) > Normal(2) > Low(3) > Background(4)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Priority {
+    /// System-critical messages (e.g., shutdown commands, health checks).
+    /// Always processed first.
+    Critical = 0,
+    /// High-priority business messages.
+    High = 1,
+    /// Default priority for normal messages.
+    Normal = 2,
+    /// Low-priority messages (e.g., telemetry, background sync).
+    Low = 3,
+    /// Background tasks that should only run when the mailbox is otherwise idle.
+    Background = 4,
+    /// Custom numeric priority (lower = higher priority).
+    Custom(u32) = 5,
+}
+
+impl Default for Priority {
+    fn default() -> Self {
+        Priority::Normal
+    }
+}
+```
+
+**How it works:**
+
+1. Sender sets priority via envelope headers:
+   ```rust
+   let mut envelope = Envelope::from(MyMessage { data: 42 });
+   envelope.headers.insert(Priority::High);
+   actor.tell_envelope(envelope)?;
+   ```
+   Or using a convenience method:
+   ```rust
+   actor.tell_with_priority(MyMessage { data: 42 }, Priority::High)?;
+   ```
+
+2. The priority mailbox dequeues messages in priority order (lowest numeric
+   value first). Within the same priority level, messages are FIFO.
+
+3. Messages sent via `tell()` (no envelope) get `Priority::Normal` by default.
+
+**Adapter support:**
+
+| Adapter | Strategy | Implementation |
+|---|:---:|---|
+| dactor-ractor | ⚙️ Adapter | ractor has no priority mailbox; adapter wraps with `BinaryHeap`-based priority channel |
+| dactor-kameo | ✅ Library | kameo supports custom mailbox implementations; adapter plugs in priority queue mailbox |
+| dactor-mock | ⚙️ Adapter | mock runtime implements priority queue directly |
 
 ### 3.9 Spawn Configuration
 
@@ -1417,3 +1503,462 @@ test-support = ["tokio/test-util"]
 7. **What's the threshold for adapter-level shims vs NotSupported?** → **Effort and correctness.** If the adapter can implement the feature correctly with reasonable overhead (e.g., bounded channel wrapper for ractor), use a shim. If the emulation would be incorrect, surprising, or prohibitively expensive (e.g., DropOldest requires draining a queue), return `NotSupported`.
 
 8. **Should `stream()` support bidirectional streaming?** → **Deferred.** Start with request-stream (one request, many responses). Bidirectional streaming (many-to-many) can be added later as a separate `BidiStreamRef` trait if there is demand. The channel-based approach naturally extends to this.
+
+---
+
+## 10. Consumer API Pattern Analysis
+
+The three Rust actor frameworks dactor abstracts over use fundamentally
+different consumer-facing API patterns. This section analyzes them and
+evaluates options for dactor's primary interface.
+
+### 10.1 Pattern A: Ractor Style — `ActorRef<MessageEnum>`
+
+```rust
+// Single enum for ALL messages an actor handles
+enum CounterMsg {
+    Inc(u64),
+    Dec(u64),
+    Get(RpcReplyPort<u64>),  // reply channel embedded in variant
+}
+
+struct Counter;
+
+impl Actor for Counter {
+    type Msg = CounterMsg;
+    type State = u64;           // state is SEPARATE from actor struct
+    type Arguments = ();
+
+    async fn pre_start(&self, _me: ActorRef<Self::Msg>, _: ()) -> Result<u64, _> {
+        Ok(0)
+    }
+
+    async fn handle(&self, _me: ActorRef<Self::Msg>, msg: Self::Msg, state: &mut u64) {
+        match msg {
+            CounterMsg::Inc(n) => *state += n,
+            CounterMsg::Dec(n) => *state -= n,
+            CounterMsg::Get(reply) => { let _ = reply.send(*state); }
+        }
+    }
+}
+
+// Usage:
+let (actor_ref, _) = Actor::spawn(Some("counter"), Counter, ()).await?;
+actor_ref.send_message(CounterMsg::Inc(5))?;                    // tell
+let count = call_t!(actor_ref, CounterMsg::Get, 10)?;           // ask
+```
+
+**Key traits:**
+- `ActorRef<M>` is typed to the **message enum**, not the actor
+- One `handle()` method with pattern matching on all variants
+- Reply channels are embedded in message enum (`RpcReplyPort<T>`)
+- State lives in `type State`, not in the actor struct
+
+### 10.2 Pattern B: Kameo Style — `ActorRef<ActorType>`, `impl Message<M>`
+
+```rust
+#[derive(Actor)]
+struct Counter { count: u64 }     // state IS the actor struct
+
+// Messages are separate structs
+struct Inc(u64);
+struct Get;
+
+// One impl block PER message type
+impl Message<Inc> for Counter {
+    type Reply = ();
+
+    async fn handle(&mut self, msg: Inc, _ctx: &mut Context<Self, Self::Reply>) {
+        self.count += msg.0;
+    }
+}
+
+impl Message<Get> for Counter {
+    type Reply = u64;             // reply type defined PER message
+
+    async fn handle(&mut self, _msg: Get, _ctx: &mut Context<Self, Self::Reply>) -> u64 {
+        self.count
+    }
+}
+
+// Usage:
+let actor_ref: ActorRef<Counter> = Counter::spawn(Counter { count: 0 });
+actor_ref.tell(Inc(5)).try_send()?;                             // tell
+let count: u64 = actor_ref.ask(Get).await?;                     // ask (type-safe!)
+```
+
+**Key traits:**
+- `ActorRef<A>` is typed to the **actor struct**, not the message
+- One `impl Message<M>` block per message type
+- `type Reply` is defined per message → `ask()` returns the correct type at compile time
+- State is `&mut self`
+
+### 10.3 Pattern C: Coerce Style — `ActorRef<ActorType>`, `Handler<M>` + `Message`
+
+```rust
+struct Counter { count: u64 }
+impl Actor for Counter {}
+
+// Messages define their OWN result type
+struct Inc(u64);
+impl Message for Inc { type Result = (); }
+
+struct Get;
+impl Message for Get { type Result = u64; }
+
+// Handler is a SEPARATE trait from Message
+#[async_trait]
+impl Handler<Inc> for Counter {
+    async fn handle(&mut self, msg: Inc, _ctx: &mut ActorContext) {
+        self.count += msg.0;
+    }
+}
+
+#[async_trait]
+impl Handler<Get> for Counter {
+    async fn handle(&mut self, _msg: Get, _ctx: &mut ActorContext) -> u64 {
+        self.count
+    }
+}
+
+// Usage:
+let actor: ActorRef<Counter> = Counter { count: 0 }
+    .into_actor(Some("counter"), &system).await?;
+actor.notify(Inc(5));                                           // tell
+let count: u64 = actor.send(Get).await?;                        // ask (type-safe!)
+```
+
+**Key traits:**
+- `ActorRef<A>` typed to actor (like kameo)
+- Reply type lives on the **message** (`impl Message for Inc { type Result = () }`)
+- **Separate `Handler<M>` trait** from `Message` — decouples message definition from handling
+- State is `&mut self`
+
+### 10.4 Comparison Matrix
+
+| Aspect | Ractor (A) | Kameo (B) | Coerce (C) |
+|---|---|---|---|
+| `ActorRef` typed to | Message enum | Actor struct | Actor struct |
+| Messages | Single enum | Separate structs | Separate structs |
+| Reply type lives on | Message variant (`RpcReplyPort<T>`) | `impl Message<M>` block | `impl Message for M` |
+| State | Separate `type State` | `&mut self` | `&mut self` |
+| Multi-message | Pattern match one `handle()` | Multiple `impl Message<M>` | Multiple `impl Handler<M>` |
+| Compile-time reply safety | ❌ (runtime via port) | ✅ | ✅ |
+| Message reusable across actors | ❌ (enum per actor) | ❌ (impl on actor) | ✅ (Message + Handler separate) |
+| Boilerplate | Low (one enum) | Medium | High (two traits) |
+| Dynamic dispatch | Easy (any `ActorRef<Msg>`) | Harder (need actor type) | Harder (need actor type) |
+
+### 10.5 Can dactor Support Multiple Patterns?
+
+**Not via cargo features on the same core traits** — the patterns differ at
+the type level (`ActorRef<M>` vs `ActorRef<A>`). However, a **layered
+architecture** can support all patterns:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Layer 2: Actor Definition Patterns (optional, additive)     │
+│  ┌────────────────┐  ┌─────────────────┐  ┌──────────────┐  │
+│  │  Closure-based │  │  Trait-based     │  │  Enum-based  │  │
+│  │  (current v0.1)│  │  (kameo/coerce)  │  │  (ractor)    │  │
+│  │  simplest      │  │  type-safe reply │  │  one handle  │  │
+│  └───────┬────────┘  └────────┬────────┘  └──────┬───────┘  │
+│          │     compiles down to via macro/trait   │          │
+├──────────┴────────────────────┴──────────────────┴──────────┤
+│  Layer 1: Core Runtime Traits (always present)               │
+│  ActorRuntime, ActorRef<M>, tell(), ask(), Envelope,         │
+│  Interceptor, ClusterEvents, TimerHandle, ...                │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Layer 1 (core):** `ActorRef<M>` stays message-typed. This is what adapter
+crates implement. It is simple, does not leak actor types into the reference,
+and works for both tell and ask.
+
+**Layer 2 (sugar):** Optional actor definition helpers that compile down to
+Layer 1. These can be provided as:
+
+1. **Proc-macro crate** (`dactor-macros`) that generates the boilerplate:
+   ```rust
+   #[dactor::actor]
+   struct Counter { count: u64 }
+
+   #[dactor::handler]
+   impl Counter {
+       async fn handle_inc(&mut self, msg: Inc) { self.count += msg.0; }
+       async fn handle_get(&self, _msg: Get) -> u64 { self.count }
+   }
+   ```
+
+2. **Trait-based pattern** in the core crate (no macro needed):
+   ```rust
+   // User implements Actor + Handler<M> traits
+   // A blanket impl or adapter bridges to ActorRef<M>
+   ```
+
+3. **Closure-based** (already in v0.1, remains the simplest path):
+   ```rust
+   let actor = runtime.spawn("counter", |msg: CounterMsg| { ... });
+   ```
+
+**Feature flags would control which Layer 2 patterns are available:**
+```toml
+[features]
+default = []
+macros = ["dactor-macros"]      # proc-macro based actor definitions
+trait-actor = []                 # Handler<M> trait-based definitions
+```
+
+### 10.6 Decision: Kameo/Coerce Style (Actor-Typed Refs)
+
+**Decision:** dactor adopts the **Kameo/Coerce pattern** as its primary
+consumer interface.
+
+**Rationale:**
+- **2 of 3** backend libraries (kameo + coerce) already use this pattern,
+  making adapter implementation natural
+- **Compile-time reply safety** — each message type has its own `Reply` type,
+  so `ask()` returns the correct type without runtime downcasting
+- **State as `&mut self`** — Rust-idiomatic, no separate `type State`
+- **Multiple message types** — each gets its own `impl Handler<M>`, cleaner
+  than a monolithic enum with pattern matching
+- **Message reuse** — a single message struct can be handled by multiple
+  actors (unlike ractor's per-actor enum)
+
+**Concrete design:**
+
+```rust
+// ─── Core trait: Actor ──────────────────────────────────────
+
+/// Marker trait for an actor. State lives in the implementing struct.
+/// Lifecycle hooks have default no-op implementations.
+pub trait Actor: Send + 'static {
+    /// Called after the actor is spawned, before processing messages.
+    fn on_start(&mut self) {}
+
+    /// Called when the actor is stopping.
+    fn on_stop(&mut self) {}
+
+    /// Called when a handler panics or returns an error.
+    fn on_error(&mut self, _error: Box<dyn std::error::Error + Send>) -> ErrorAction {
+        ErrorAction::Stop
+    }
+}
+
+// ─── Core trait: Message ────────────────────────────────────
+
+/// Defines a message type and its reply. Implemented on the MESSAGE,
+/// not on the actor. This decouples message definition from handling
+/// (Coerce style) and allows the same message to be handled by
+/// different actors.
+pub trait Message: Send + 'static {
+    /// The reply type for this message. Use `()` for fire-and-forget.
+    type Reply: Send + 'static;
+}
+
+// ─── Core trait: Handler ────────────────────────────────────
+
+/// Implemented by an actor for each message type it can handle.
+/// One impl per (Actor, Message) pair.
+#[async_trait::async_trait]
+pub trait Handler<M: Message>: Actor {
+    /// Handle the message and return a reply.
+    async fn handle(&mut self, msg: M, ctx: &mut ActorContext) -> M::Reply;
+}
+
+// ─── ActorRef ───────────────────────────────────────────────
+
+/// A reference to a running actor of type `A`.
+///
+/// `ActorRef<A>` is typed to the ACTOR, not the message. You can send
+/// any message type `M` for which `A: Handler<M>`.
+pub struct ActorRef<A: Actor> { /* internal handle */ }
+
+impl<A: Actor> ActorRef<A> {
+    /// The actor's unique identity.
+    pub fn id(&self) -> ActorId { ... }
+
+    /// Fire-and-forget: deliver a message.
+    /// Requires `A: Handler<M>`.
+    pub fn tell<M>(&self, msg: M) -> Result<(), ActorSendError>
+    where
+        A: Handler<M>,
+        M: Message<Reply = ()>,  // tell only for fire-and-forget
+    { ... }
+
+    /// Request-reply: send a message and await the reply.
+    /// The return type is determined by `M::Reply` at compile time.
+    pub async fn ask<M>(&self, msg: M) -> Result<M::Reply, RuntimeError>
+    where
+        A: Handler<M>,
+        M: Message,
+    { ... }
+
+    /// Fire-and-forget with an envelope (headers + body).
+    pub fn tell_envelope<M>(&self, envelope: Envelope<M>) -> Result<(), RuntimeError>
+    where
+        A: Handler<M>,
+        M: Message<Reply = ()>,
+    { ... }
+
+    /// Fire-and-forget with priority.
+    pub fn tell_with_priority<M>(&self, msg: M, priority: Priority) -> Result<(), RuntimeError>
+    where
+        A: Handler<M>,
+        M: Message<Reply = ()>,
+    { ... }
+
+    /// Check if the actor is still alive.
+    pub fn is_alive(&self) -> Result<bool, NotSupportedError> { ... }
+}
+
+impl<A: Actor> Clone for ActorRef<A> { ... }
+impl<A: Actor> Send for ActorRef<A> {}
+impl<A: Actor> Sync for ActorRef<A> {}
+
+// ─── ActorContext ───────────────────────────────────────────
+
+/// Context passed to handlers, providing access to the runtime,
+/// the actor's own ref, and message headers.
+pub struct ActorContext {
+    /// The headers from the incoming message envelope.
+    pub headers: Headers,
+    // ... access to runtime, self-ref, etc.
+}
+
+// ─── ActorRuntime (revised) ─────────────────────────────────
+
+pub trait ActorRuntime: Send + Sync + 'static {
+    type Events: ClusterEvents;
+    type Timer: TimerHandle;
+
+    /// Spawn an actor with default configuration.
+    fn spawn<A: Actor>(&self, name: &str, actor: A) -> ActorRef<A>;
+
+    /// Spawn with per-actor configuration (mailbox, interceptors).
+    fn spawn_with_config<A: Actor>(
+        &self, name: &str, actor: A, config: SpawnConfig,
+    ) -> Result<ActorRef<A>, RuntimeError>;
+
+    /// Schedule a recurring message.
+    fn send_interval<A, M>(
+        &self, target: &ActorRef<A>, interval: Duration, msg: M,
+    ) -> Self::Timer
+    where A: Handler<M>, M: Message<Reply = ()> + Clone;
+
+    /// Schedule a one-shot message.
+    fn send_after<A, M>(
+        &self, target: &ActorRef<A>, delay: Duration, msg: M,
+    ) -> Self::Timer
+    where A: Handler<M>, M: Message<Reply = ()>;
+
+    // ... groups, cluster events, watch, interceptors (same as before) ...
+}
+```
+
+**Complete consumer example:**
+
+```rust
+use dactor::prelude::*;
+
+// ── Define the actor ────────────────────────────────────────
+
+struct Counter {
+    count: u64,
+}
+
+impl Actor for Counter {
+    fn on_start(&mut self) {
+        println!("Counter started at {}", self.count);
+    }
+}
+
+// ── Define messages ─────────────────────────────────────────
+
+struct Increment(u64);
+impl Message for Increment { type Reply = (); }
+
+struct GetCount;
+impl Message for GetCount { type Reply = u64; }
+
+struct Reset;
+impl Message for Reset { type Reply = u64; }  // returns old count
+
+// ── Implement handlers ─────────────────────────────────────
+
+#[async_trait]
+impl Handler<Increment> for Counter {
+    async fn handle(&mut self, msg: Increment, _ctx: &mut ActorContext) {
+        self.count += msg.0;
+    }
+}
+
+#[async_trait]
+impl Handler<GetCount> for Counter {
+    async fn handle(&mut self, _msg: GetCount, _ctx: &mut ActorContext) -> u64 {
+        self.count
+    }
+}
+
+#[async_trait]
+impl Handler<Reset> for Counter {
+    async fn handle(&mut self, _msg: Reset, _ctx: &mut ActorContext) -> u64 {
+        let old = self.count;
+        self.count = 0;
+        old
+    }
+}
+
+// ── Usage ───────────────────────────────────────────────────
+
+#[tokio::main]
+async fn main() {
+    let runtime = dactor_ractor::RactorRuntime::new();
+    let counter: ActorRef<Counter> = runtime.spawn("counter", Counter { count: 0 });
+
+    counter.tell(Increment(5)).unwrap();          // fire-and-forget
+    counter.tell(Increment(3)).unwrap();
+
+    let count = counter.ask(GetCount).await.unwrap();  // returns u64 (compile-time!)
+    assert_eq!(count, 8);
+
+    let old = counter.ask(Reset).await.unwrap();       // returns u64
+    assert_eq!(old, 8);
+}
+```
+
+**Impact on adapters:**
+
+| Adapter | Mapping |
+|---|---|
+| dactor-ractor | Wrap ractor's `Actor` trait. The adapter generates a ractor actor that dispatches incoming messages (a type-erased enum internally) to the appropriate `Handler<M>` impl. |
+| dactor-kameo | Nearly 1:1 mapping — kameo already uses `ActorRef<A>` and `impl Message<M> for A`. The adapter maps `dactor::Handler<M>` → `kameo::message::Message<M>`. |
+| dactor-mock | Straightforward — mock runtime stores actor state and dispatches via `Handler<M>` trait objects. |
+
+**Backward compatibility with closures:**
+
+Simple closure-based actors (v0.1 style) remain available via a built-in
+`ClosureActor<M>` wrapper:
+
+```rust
+/// Built-in actor that wraps a closure for simple use cases.
+/// Equivalent to v0.1's `runtime.spawn("name", |msg| { ... })`.
+pub struct ClosureActor<M: Send + 'static> {
+    handler: Box<dyn FnMut(M) + Send>,
+}
+
+impl<M: Send + 'static> Actor for ClosureActor<M> {}
+
+impl<M: Send + 'static> Message for M where M: Send + 'static {
+    type Reply = ();
+}
+
+impl<M: Send + 'static> Handler<M> for ClosureActor<M> {
+    async fn handle(&mut self, msg: M, _ctx: &mut ActorContext) {
+        (self.handler)(msg);
+    }
+}
+
+// Convenience method on ActorRuntime:
+fn spawn_fn<M, H>(&self, name: &str, handler: H) -> ActorRef<ClosureActor<M>>
+where M: Send + 'static, H: FnMut(M) + Send + 'static;
+```
