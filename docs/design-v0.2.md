@@ -472,9 +472,15 @@ All three backend libraries guarantee this:
 
 | Library | Mechanism | Guarantee |
 |---|---|---|
+| **Erlang/OTP** | Each process has its own mailbox; the BEAM scheduler runs one reduction at a time per process | ✅ Sequential per process |
+| **Akka** | Actor mailbox delivers one message at a time; dispatcher ensures single-threaded execution | ✅ Sequential per actor |
 | **ractor** | Actor runs as a single tokio task; mailbox delivers one message at a time to `handle()` | ✅ Sequential per actor |
 | **kameo** | Actor runs as a single tokio task; bounded/unbounded mailbox serializes delivery | ✅ Sequential per actor |
+| **Actix** | Actor runs on an Arbiter (single-threaded event loop); messages processed one at a time. `SyncArbiter` runs N worker *instances* for parallelism, but each instance is still sequential | ✅ Sequential per actor instance |
 | **coerce** | Actor runs as a single tokio task; message queue serializes delivery | ✅ Sequential per actor |
+
+This is a **universal guarantee across all 6 surveyed frameworks** — it is the
+fundamental invariant of the actor model.
 
 **What this means for users:**
 
@@ -671,6 +677,9 @@ Collect all per-actor settings into a config struct:
 pub struct SpawnConfig {
     pub mailbox: MailboxConfig,
     pub interceptors: Vec<Box<dyn Interceptor>>,
+    /// Target node for the actor. `None` = spawn locally (default).
+    /// `Some(node_id)` = spawn on the specified remote node.
+    pub target_node: Option<NodeId>,
 }
 
 impl Default for SpawnConfig {
@@ -1972,7 +1981,115 @@ approaches (all compatible with serde):
 | Protobuf / flatbuffers | Use a schema-evolution-native format via custom `MessageCodec` | Complex evolution |
 | Envelope version header | Add a `SchemaVersion(u32)` header; handler checks before processing | Explicit versioning |
 
-### 10.2 Remote Actor Call Example
+### 10.2 Remote Actor Spawning
+
+All three backend libraries (ractor, kameo, coerce) support spawning actors
+on remote nodes. dactor exposes this via `SpawnConfig::target_node`.
+
+**Local spawn** (default):
+
+```rust
+// Spawns on the current node
+let actor = runtime.spawn("counter", Counter { count: 0 });
+```
+
+**Remote spawn** (on a specific node):
+
+```rust
+// Spawns on node 3
+let config = SpawnConfig {
+    target_node: Some(NodeId(3)),
+    ..Default::default()
+};
+let actor = runtime.spawn_with_config("counter", Counter { count: 0 }, config)?;
+// actor is an ActorRef<Counter> — location-transparent
+// tell/ask work identically, adapter handles network transport
+```
+
+**From within an actor** (spawn child on remote node):
+
+```rust
+#[async_trait]
+impl Handler<ScaleOut> for Coordinator {
+    async fn handle(&mut self, msg: ScaleOut, ctx: &mut ActorContext) {
+        // Spawn a worker on each available node
+        for node_id in &msg.target_nodes {
+            let config = SpawnConfig {
+                target_node: Some(*node_id),
+                ..Default::default()
+            };
+            let worker = ctx.spawn_with_config(
+                &format!("worker-{}", node_id.0),
+                Worker { task: msg.task.clone() },
+                config,
+            )?;
+            self.workers.push(worker);
+        }
+    }
+}
+```
+
+**How it works under the hood:**
+
+```mermaid
+sequenceDiagram
+    participant C as Caller (Node 1)
+    participant R as Runtime (Node 1)
+    participant N as Network
+    participant R2 as Runtime (Node 3)
+    participant A as Actor (Node 3)
+
+    C->>R: spawn_with_config("counter", actor, {target_node: 3})
+    R->>N: serialize actor state + SpawnConfig
+    N->>R2: deliver spawn request
+    R2->>A: create actor, run on_start()
+    R2->>N: return ActorId (node=3, local=42)
+    N->>R: return remote ActorRef
+    R-->>C: ActorRef<Counter> (points to Node 3)
+    Note over C: All tell/ask calls are now remote
+```
+
+**Requirements for remote spawn:**
+
+- The **actor struct** must implement `Serialize + Deserialize` so its
+  initial state can be transferred to the remote node
+- All **message types** the actor handles must also implement
+  `RemoteMessage` (i.e., `Serialize + Deserialize`)
+- The remote node must have the **same actor type** compiled in (same
+  Rust type, compatible binary)
+
+**Actor trait bound for remote-spawnable actors:**
+
+```rust
+/// Marker for actors that can be spawned on remote nodes.
+/// Requires the actor state to be serializable.
+pub trait RemoteActor: Actor + Serialize + DeserializeOwned {}
+
+impl<A> RemoteActor for A
+where
+    A: Actor + Serialize + DeserializeOwned,
+{}
+```
+
+**Adapter support:**
+
+| Adapter | Strategy | Detail |
+|---|:---:|---|
+| dactor-ractor | ✅ Library | `ractor_cluster` supports remote actor spawning |
+| dactor-kameo | ✅ Library | kameo supports distributed actors via libp2p |
+| dactor-coerce | ✅ Library | coerce supports remote actors with sharding and K8s discovery |
+| dactor-mock | ⚙️ Adapter | MockCluster spawns on simulated nodes in-process |
+
+**What if the target node is unavailable?**
+
+| Scenario | Behavior |
+|---|---|
+| Target node is down | `spawn_with_config()` returns `Err(RuntimeError::Send(...))` |
+| Target node doesn't exist | `spawn_with_config()` returns `Err(RuntimeError::Actor(ActorError { code: ActorNotFound }))` |
+| Network partition | `spawn_with_config()` blocks until timeout, then returns `Err` |
+| Actor type not registered on remote | Remote node returns error; caller gets `Err(RuntimeError::Actor(ActorError { code: Unimplemented }))` |
+
+### 10.3 Remote Actor Call Example
 
 **Remote actor call example:**
 
