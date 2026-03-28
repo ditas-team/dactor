@@ -461,6 +461,42 @@ pub trait Handler<M: Message>: Actor {
 }
 ```
 
+**Sequential execution guarantee (`&mut self`):**
+
+The handler takes `&mut self` — exclusive mutable access to the actor's
+state. This is not a Rust convention choice; it reflects the **fundamental
+actor model invariant**: an actor processes exactly one message at a time.
+No two handlers ever run concurrently on the same actor instance.
+
+All three backend libraries guarantee this:
+
+| Library | Mechanism | Guarantee |
+|---|---|---|
+| **ractor** | Actor runs as a single tokio task; mailbox delivers one message at a time to `handle()` | ✅ Sequential per actor |
+| **kameo** | Actor runs as a single tokio task; bounded/unbounded mailbox serializes delivery | ✅ Sequential per actor |
+| **coerce** | Actor runs as a single tokio task; message queue serializes delivery | ✅ Sequential per actor |
+
+**What this means for users:**
+
+- **No locks needed** inside handler code — `&mut self` is exclusive
+- **No `Arc<Mutex<_>>`** for actor state — the framework guarantees no races
+- **Async handlers** may `.await` internally (e.g., database queries), and
+  the actor will not process the next message until the current handler returns
+- **Cross-actor concurrency** is achieved by having many actors, each
+  processing their own messages independently
+
+```rust
+// SAFE: no locking needed — only one handler runs at a time
+#[async_trait]
+impl Handler<Deposit> for BankAccount {
+    async fn handle(&mut self, msg: Deposit, _ctx: &mut ActorContext) {
+        self.balance += msg.amount;  // no Mutex, no race
+        self.transaction_log.push(format!("+{}", msg.amount));
+        self.save_to_db().await;     // while awaiting, no other handler runs
+    }
+}
+```
+
 ### 4.4 ActorRef & ActorId
 
 **Rationale:** Every framework gives actors identity. Without an ID, you can't
