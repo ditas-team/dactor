@@ -2543,51 +2543,71 @@ impl Default for MailboxConfig {
 
 ```rust
 /// Priority level for a message. Used by priority mailboxes to determine
-/// delivery order. Lower numeric value = higher priority.
+/// delivery order. Implemented as a numeric value — lower = higher priority.
 ///
-/// Standard levels follow syslog-style conventions:
-/// Critical(0) > High(1) > Normal(2) > Low(3) > Background(4)
+/// Standard levels: Critical(0) > High(64) > Normal(128) > Low(192) > Background(255)
+/// Gaps between levels allow inserting custom priorities at any position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Priority {
+pub struct Priority(pub u8);
+
+impl Priority {
     /// System-critical messages (e.g., shutdown commands, health checks).
-    /// Always processed first.
-    Critical = 0,
+    pub const CRITICAL: Priority = Priority(0);
     /// High-priority business messages.
-    High = 1,
+    pub const HIGH: Priority = Priority(64);
     /// Default priority for normal messages.
-    Normal = 2,
+    pub const NORMAL: Priority = Priority(128);
     /// Low-priority messages (e.g., telemetry, background sync).
-    Low = 3,
-    /// Background tasks that should only run when the mailbox is otherwise idle.
-    Background = 4,
-    /// Custom numeric priority (lower = higher priority).
-    Custom(u32) = 5,
+    pub const LOW: Priority = Priority(192);
+    /// Background tasks — only run when the mailbox is otherwise idle.
+    pub const BACKGROUND: Priority = Priority(255);
 }
 
 impl Default for Priority {
     fn default() -> Self {
-        Priority::Normal
+        Priority::NORMAL
     }
 }
 ```
 
+Custom priorities slot into the gaps — no separate variant needed:
+
+```rust
+// Between HIGH and NORMAL:
+let urgent_but_not_critical = Priority(96);
+
+// Between NORMAL and LOW:
+let slightly_below_normal = Priority(160);
+
+// Higher than CRITICAL (if ever needed):
+// Not possible — 0 is the highest. By design.
+```
+```
+
 **How it works:**
 
-1. Sender sets priority via envelope headers:
+1. Priority is set via an outbound interceptor (see §5.3) that inspects the
+   message type and assigns the appropriate priority header:
    ```rust
-   let mut envelope = Envelope::from(MyMessage { data: 42 });
-   envelope.headers.insert(Priority::High);
-   actor.tell_envelope(envelope)?;
-   ```
-   Or using a convenience method:
-   ```rust
-   actor.tell_with_priority(MyMessage { data: 42 }, Priority::High)?;
+   struct PriorityPolicy;
+   impl OutboundInterceptor for PriorityPolicy {
+       fn name(&self) -> &'static str { "priority-policy" }
+       fn on_send(&self, ctx: &OutboundContext<'_>, headers: &mut Headers, msg: &dyn Any) -> Disposition {
+           if msg.downcast_ref::<ShutdownCommand>().is_some() {
+               headers.insert(Priority::CRITICAL);
+           } else if msg.downcast_ref::<HealthCheck>().is_some() {
+               headers.insert(Priority::HIGH);
+           }
+           // Messages without explicit priority get Priority::NORMAL (default)
+           Disposition::Continue
+       }
+   }
    ```
 
 2. The priority mailbox dequeues messages in priority order (lowest numeric
    value first). Within the same priority level, messages are FIFO.
 
-3. Messages sent via `tell()` (no envelope) get `Priority::Normal` by default.
+3. Messages without a `Priority` header get `Priority::NORMAL` (128) by default.
 
 **Adapter support:**
 
@@ -3690,7 +3710,9 @@ and returns `ActorNotFound`. If the remote **node** doesn't exist (wrong
 | Remote node down | `Err(Send)` | `Err(Send)` after timeout | Yes |
 | Remote actor stopped | `Err(Send)` | `Err(Actor { ActorNotFound })` | Yes (on remote) |
 
-### 10.6 Cluster Discovery
+---
+
+## 11. Cluster Management
 
 **Problem:** In production deployments (Kubernetes, VMSS, cloud auto-scaling),
 nodes come and go dynamically. The actor framework needs to know when nodes
@@ -3803,7 +3825,7 @@ sequenceDiagram
     Note over A: actors handle node departure
 ```
 
-### 10.7 Node Health Monitoring
+### 11.2 Node Health Monitoring
 
 **Problem:** Once nodes are discovered, the cluster needs to detect when a
 node becomes unhealthy (network partition, process crash, resource exhaustion)
@@ -3890,9 +3912,9 @@ runtime.set_health_config(HealthConfig {
 
 ---
 
-## 11. Observability
+## 12. Observability
 
-### 11.1 Overview
+### 12.1 Overview
 
 **Problem:** In production, operators need visibility into actor system health:
 which actors are busiest, which fail most, what message sizes look like, how
@@ -3905,7 +3927,7 @@ pipeline** (§3.2). Because interceptors see every message with full context
 also provides a built-in `MetricsInterceptor` and a `RuntimeMetrics` query
 API for common operational needs.
 
-#### 11.2 Built-in `MetricsInterceptor`
+#### 12.2 Built-in `MetricsInterceptor`
 
 A ready-to-use interceptor that tracks per-actor and per-message-type
 statistics. Users register it once; it collects everything automatically.
@@ -3941,7 +3963,7 @@ impl InboundInterceptor for MetricsInterceptor {
 }
 ```
 
-#### 11.3 `MetricsStore` Query API
+#### 12.3 `MetricsStore` Query API
 
 ```rust
 /// Queryable metrics collected by `MetricsInterceptor`.
@@ -4013,7 +4035,7 @@ pub struct MessageTypeMetrics {
 }
 ```
 
-#### 11.4 Custom Interceptor Examples
+#### 12.4 Custom Interceptor Examples
 
 The built-in `MetricsInterceptor` covers common needs. For specialized
 observability, users write custom interceptors:
@@ -4173,7 +4195,7 @@ impl InboundInterceptor for OtelInterceptor {
 }
 ```
 
-#### 11.5 Registering Multiple Interceptors
+#### 12.5 Registering Multiple Interceptors
 
 Interceptors are composable. A typical production setup:
 
@@ -4196,9 +4218,9 @@ Interceptors execute in registration order. The pipeline is:
 
 ---
 
-## 12. Testing
+## 13. Testing
 
-### 12.1 Feature-Gated Test Support
+### 13.1 Feature-Gated Test Support
 
 **Rationale:** `TestClock`, `TestRuntime`, `TestClusterEvents` are test
 utilities. They should not be compiled into production binaries.
@@ -4223,7 +4245,7 @@ Downstream crates use:
 dactor = { version = "0.2", features = ["test-support"] }
 ```
 
-### 12.2 Mock Cluster Crate (`dactor-mock`)
+### 13.2 Mock Cluster Crate (`dactor-mock`)
 
 **Rationale:** The existing `test_support` module in the `dactor` core crate
 provides `TestRuntime` — a single-node, in-memory mock useful for unit-testing
@@ -4562,7 +4584,7 @@ bincode = "1"          # default codec
 | **Inspection** | N/A | In-flight count, dropped count, corrupted count, `flush()` |
 | **Use case** | Unit testing single actors | Integration testing cluster behavior, chaos testing |
 
-### 12.3 Adapter Conformance Test Suite
+### 13.3 Adapter Conformance Test Suite
 
 **Problem:** With multiple traits and capabilities, adapters risk subtle
 incompleteness — an adapter might forget to run interceptors on stream
@@ -4622,9 +4644,9 @@ library's errors to dactor's `ErrorCode`:
 
 ---
 
-## 13. Developer Experience
+## 14. Developer Experience
 
-### 13.1 Proc-Macro for Reduced Boilerplate (`dactor-macros`)
+### 14.1 Proc-Macro for Reduced Boilerplate (`dactor-macros`)
 
 The trait-based API (§10.6) is explicit and type-safe but requires repetitive
 boilerplate — each message needs a struct, a `Message` impl, and a `Handler`
@@ -4811,7 +4833,7 @@ members = ["dactor", "dactor-macros", "dactor-ractor", "dactor-kameo", "dactor-c
 | `pub async fn bar(&mut self, x: u64)` | `struct Bar { x: u64 }` + `impl Message` + `impl Handler<Bar>` |
 | `pub async fn baz(&self) -> String` | `struct Baz;` + `impl Message { type Reply = String }` + `impl Handler<Baz>` |
 
-### 13.2 Closure-based Actors (Backward Compatibility)
+### 14.2 Closure-based Actors (Backward Compatibility)
 
 **Backward compatibility with closures:**
 
@@ -4842,7 +4864,7 @@ fn spawn_fn<M, H>(&self, name: &str, handler: H) -> ActorRef<ClosureActor<M>>
 where M: Send + 'static, H: FnMut(M) + Send + 'static;
 ```
 
-### 13.3 Proc-Macro Error Handling
+### 14.3 Proc-Macro Error Handling
 
 The `dactor-macros` proc-macro crate must emit clear, actionable compile
 errors for patterns it cannot support. This section documents the expected
@@ -4867,9 +4889,9 @@ error messages.
 
 ---
 
-## 14. Adapter Support
+## 15. Adapter Support
 
-### 14.1 Capability Summary Matrix
+### 15.1 Capability Summary Matrix
 
 For each feature and each adapter, there are exactly three possibilities:
 
@@ -4900,7 +4922,7 @@ For each feature and each adapter, there are exactly three possibilities:
 | Cluster events | ⚙️ Adapter | ⚙️ Adapter | ✅ Library | ractor/kameo: adapter callback system; coerce: native cluster membership |
 
 
-### 14.2 Strategy Key
+### 15.2 Strategy Key
 
 For each feature and each adapter, there are exactly three possibilities:
 
@@ -4908,7 +4930,7 @@ For each feature and each adapter, there are exactly three possibilities:
 - ⚙️ **Adapter Implemented** — the library does *not* support this; the adapter crate implements it with custom logic
 - ❌ **Not Supported** — returns `RuntimeError::NotSupported` at runtime
 
-### 14.3 dactor-ractor
+### 15.3 dactor-ractor
 
 | Feature | Strategy | Implementation Detail |
 |---------|:---:|---|
@@ -4931,7 +4953,7 @@ For each feature and each adapter, there are exactly three possibilities:
 | Processing groups | ✅ Library | ractor has native `pg` module — maps `join_group` / `leave_group` / `broadcast_group` to `ractor::pg` API |
 | Cluster events | ⚙️ Adapter | ractor has no unified cluster events; adapter provides `RactorClusterEvents` callback system (implemented in v0.1) |
 
-### 14.4 dactor-kameo
+### 15.4 dactor-kameo
 
 | Feature | Strategy | Implementation Detail |
 |---------|:---:|---|
@@ -4954,7 +4976,7 @@ For each feature and each adapter, there are exactly three possibilities:
 | Processing groups | ⚙️ Adapter | kameo has no processing groups; adapter maintains type-erased registry (implemented in v0.1) |
 | Cluster events | ⚙️ Adapter | kameo has no unified cluster events; adapter provides `KameoClusterEvents` callback system (implemented in v0.1) |
 
-### 14.5 dactor-coerce
+### 15.5 dactor-coerce
 
 | Feature | Strategy | Implementation Detail |
 |---------|:---:|---|
@@ -4979,9 +5001,9 @@ For each feature and each adapter, there are exactly three possibilities:
 
 ---
 
-## 15. Implementation Roadmap
+## 16. Implementation Roadmap
 
-### 15.1 Phase 1 — Foundation (v0.2.0)
+### 16.1 Phase 1 — Foundation (v0.2.0)
 1. Module reorganization (flat structure, one concept per file)
 2. Feature-gate `test_support` behind `test-support`
 3. Move `TestClock` out of `traits/clock.rs`
@@ -4991,28 +5013,28 @@ For each feature and each adapter, there are exactly three possibilities:
 7. Add `Interceptor` trait and pipeline
 8. Clean up `serde` dependency (make optional)
 
-### 15.2 Phase 2 — Lifecycle & Config (v0.2.1)
+### 16.2 Phase 2 — Lifecycle & Config (v0.2.1)
 1. Lifecycle hooks on `Actor` trait (`on_start`, `on_stop`, `on_error`)
 2. Add `MailboxConfig` and `OverflowStrategy`
 3. Add `SpawnConfig` for per-actor configuration
 4. Add `spawn_with_config()` to `ActorRuntime`
 5. Update adapter crates
 
-### 15.3 Phase 3 — Supervision (v0.3.0)
+### 16.3 Phase 3 — Supervision (v0.3.0)
 1. Add `SupervisionStrategy` trait
 2. Add `ChildTerminated` event
 3. Add `watch()` / `unwatch()` to `ActorRuntime`
 4. Built-in strategies: `OneForOne`, `OneForAll`, `RestForOne`
 5. Add `ErrorAction::Escalate` flow
 
-### 15.4 Phase 4 — Ask Pattern & Streaming (v0.3.1)
+### 16.4 Phase 4 — Ask Pattern & Streaming (v0.3.1)
 1. Add `AskRef<M, R>` trait
 2. Add `StreamRef<M, R>` trait, `StreamSender<R>`, `BoxStream<R>`
 3. Implement for adapters (channel-based shim)
 4. Add timeout support for ask
 5. Add `futures-core` and `tokio-stream` dependencies
 
-### 15.5 Phase 5 — Mock Cluster Crate (v0.4.0)
+### 16.5 Phase 5 — Mock Cluster Crate (v0.4.0)
 1. Create `dactor-mock` workspace crate
 2. `MockCluster` builder with multi-node setup
 3. `MockRuntime` implementing `ActorRuntime` per node
@@ -5026,7 +5048,7 @@ For each feature and each adapter, there are exactly three possibilities:
 
 ---
 
-### 15.6 Dependency Cleanup
+### 16.6 Dependency Cleanup
 
 #### v0.1 dactor/Cargo.toml deps:
 ```toml
@@ -5056,7 +5078,7 @@ test-support = ["tokio/test-util"]
 
 ---
 
-### 15.7 Breaking Changes & Migration
+### 16.7 Breaking Changes & Migration
 
 | v0.1 | v0.2 | Migration |
 |------|------|-----------|
@@ -5077,9 +5099,9 @@ test-support = ["tokio/test-util"]
 
 ---
 
-## 16. Module Layout
+## 17. Module Layout
 
-### 16.1 Before (v0.1)
+### 17.1 Before (v0.1)
 
 ```
 dactor/src/
@@ -5097,7 +5119,7 @@ dactor/src/
     └── test_clock.rs
 ```
 
-### 16.2 After (v0.2)
+### 17.2 After (v0.2)
 
 ```
 dactor/src/
@@ -5127,7 +5149,7 @@ dactor/src/
 
 ---
 
-## 17. Open Questions
+## 18. Open Questions
 
 1. **Should `Envelope<M>` be the only way to send messages?** → **Resolved: No.** `tell(msg)` is the only send method. Outbound interceptors handle header injection automatically. `Envelope<M>` remains as an internal transport type between interceptors and the runtime — not exposed to callers.
 
