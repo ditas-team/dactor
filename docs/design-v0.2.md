@@ -1594,33 +1594,104 @@ sequenceDiagram
     end
 ```
 
-### 6.1 Ask Pattern (Request-Reply)
+### 6.1 Tell (Fire-and-Forget)
+
+The most fundamental communication pattern in the actor model. The sender
+delivers a message and does not wait for a reply. All 6 surveyed frameworks
+support this as the primary operation.
+
+```rust
+impl<A: Actor> ActorRef<A> {
+    /// Fire-and-forget: deliver a message to the actor's mailbox.
+    /// Only available for messages with `Reply = ()`.
+    pub fn tell<M>(&self, msg: M) -> Result<(), ActorSendError>
+    where
+        A: Handler<M>,
+        M: Message<Reply = ()>;
+
+    /// Fire-and-forget with an envelope (headers + body).
+    pub fn tell_envelope<M>(&self, envelope: Envelope<M>) -> Result<(), RuntimeError>
+    where
+        A: Handler<M>,
+        M: Message<Reply = ()>;
+
+    /// Fire-and-forget with priority.
+    pub fn tell_with_priority<M>(
+        &self, msg: M, priority: Priority,
+    ) -> Result<(), RuntimeError>
+    where
+        A: Handler<M>,
+        M: Message<Reply = ()>;
+}
+```
+
+**Key properties:**
+
+- Returns immediately — does not wait for the handler to execute
+- Returns `Ok(())` on successful mailbox delivery, `Err` if the actor is stopped
+- No reply channel — the sender has no way to know if the handler succeeded
+- If an interceptor returns `Reject`, it behaves the same as `Drop` (no error
+  path for fire-and-forget — the rejection goes to the dead letter handler)
+
+**Example:**
+
+```rust
+struct LogEvent { level: String, message: String }
+impl Message for LogEvent { type Reply = (); }
+
+// Fire-and-forget — caller doesn't wait
+logger.tell(LogEvent {
+    level: "INFO".into(),
+    message: "user logged in".into(),
+}).unwrap();
+
+// With priority:
+logger.tell_with_priority(
+    LogEvent { level: "ERROR".into(), message: "disk full".into() },
+    Priority::Critical,
+).unwrap();
+```
+
+### 6.2 Ask (Request-Reply)
 
 **Rationale:** ractor, kameo, Akka, and Actix all support ask. Not having it
 forces users to implement reply channels manually.
 
-The ask pattern is modeled as a **separate trait** so adapters that don't
-support it can omit the implementation:
+Ask is a method directly on `ActorRef<A>` (not a separate trait). The reply
+type is determined at compile time by `M::Reply`:
 
 ```rust
-/// Extension trait for request-reply messaging.
-///
-/// Adapters that support ask natively (ractor `call`, kameo `ask`)
-/// implement this trait. Adapters that don't support it should provide
-/// a blanket implementation returning `NotSupported`.
-pub trait AskRef<M, R>: ActorRef<M>
-where
-    M: Send + 'static,
-    R: Send + 'static,
-{
-    /// Send a message and await a reply.
-    /// Returns `Err(RuntimeError::NotSupported)` if the adapter doesn't
-    /// support request-reply messaging.
-    fn ask(&self, msg: M) -> Result<tokio::sync::oneshot::Receiver<R>, RuntimeError>;
+impl<A: Actor> ActorRef<A> {
+    /// Request-reply: send a message and await the reply.
+    pub async fn ask<M>(&self, msg: M) -> Result<M::Reply, RuntimeError>
+    where
+        A: Handler<M>,
+        M: Message;
+
+    /// Request-reply with explicit timeout.
+    pub async fn ask_timeout<M>(
+        &self, msg: M, timeout: Duration,
+    ) -> Result<M::Reply, RuntimeError>
+    where
+        A: Handler<M>,
+        M: Message;
 }
 ```
 
-### 6.2 Streaming (Request-Stream)
+**Example:**
+
+```rust
+struct GetBalance;
+impl Message for GetBalance { type Reply = u64; }
+
+// Compile-time type-safe: ask() returns u64
+let balance: u64 = account.ask(GetBalance).await?;
+
+// With timeout:
+let balance = account.ask_timeout(GetBalance, Duration::from_secs(5)).await?;
+```
+
+### 6.3 Streaming (Request-Stream)
 
 **Rationale:** Erlang supports multi-part `gen_server` replies where a server
 sends chunked results back to the caller over time. Akka has first-class
@@ -1697,22 +1768,11 @@ pub enum StreamSendError {
 
 **Extension trait on `ActorRef`:**
 
+Streaming is a method on `ActorRef<A>`. The actor's handler receives a
+`StreamSender<R>` to push items into:
+
 ```rust
-/// Extension trait for request-stream messaging.
-///
-/// The caller sends a request message and receives a stream of response
-/// items. The actor's handler receives the message together with a
-/// `StreamSender<R>` and pushes items into it.
-///
-/// Adapters implement this using a bounded `mpsc` channel: the adapter
-/// creates the channel, wraps the `Receiver` into a `BoxStream`, and
-/// passes the `Sender` (as `StreamSender<R>`) to the actor alongside
-/// the request message.
-pub trait StreamRef<M, R>: ActorRef<M>
-where
-    M: Send + 'static,
-    R: Send + 'static,
-{
+impl<A: Actor> ActorRef<A> {
     /// Send a request and receive a stream of responses.
     ///
     /// `buffer` controls the channel capacity (backpressure). A typical
@@ -1720,11 +1780,14 @@ where
     ///
     /// Returns `Err(RuntimeError::NotSupported)` if the adapter doesn't
     /// support streaming.
-    fn stream(
+    pub fn stream<M>(
         &self,
         msg: M,
         buffer: usize,
-    ) -> Result<BoxStream<R>, RuntimeError>;
+    ) -> Result<BoxStream<M::Reply>, RuntimeError>
+    where
+        A: Handler<M>,
+        M: Message;
 }
 ```
 
@@ -1760,11 +1823,10 @@ dropped, closing the channel. The actor's next `tx.send()` returns
 **Example usage (caller side):**
 
 ```rust
-use dactor::{ActorRuntime, StreamRef};
 use tokio_stream::StreamExt;
 
-async fn get_logs(runtime: &impl ActorRuntime, actor: &impl StreamRef<GetLogs, LogEntry>) {
-    let mut stream = actor.stream(GetLogs { since: yesterday() }, 32).unwrap();
+async fn get_logs(log_actor: &ActorRef<LogServer>) {
+    let mut stream = log_actor.stream(GetLogs { since: yesterday() }, 32).unwrap();
 
     while let Some(entry) = stream.next().await {
         println!("{}: {}", entry.timestamp, entry.message);
@@ -1787,10 +1849,12 @@ async fn handle_get_logs(request: GetLogs, tx: StreamSender<LogEntry>) {
 }
 ```
 
-**Relationship to Ask:** `ask()` is request → single reply. `stream()` is
-request → multiple replies. Both are modeled as separate extension traits
-(`AskRef` and `StreamRef`) so that adapters can implement either, both, or
-neither independently.
+**Relationship to Tell and Ask:** The three patterns form a spectrum:
+- `tell()` — request → no reply (fire-and-forget)
+- `ask()` — request → single reply
+- `stream()` — request → multiple replies
+
+All three are methods on `ActorRef<A>`, providing a unified API.
 
 **Dependencies:** The core crate adds `futures-core` (for the `Stream` trait)
 and `tokio-stream` (for `ReceiverStream`) as dependencies, both lightweight
