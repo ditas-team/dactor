@@ -2515,7 +2515,112 @@ where
 | Network partition | `spawn_with_config()` blocks until timeout, then returns `Err` |
 | Actor type not registered on remote | Remote node returns error; caller gets `Err(RuntimeError::Actor(ActorError { code: Unimplemented }))` |
 
-### 10.3 Remote Actor Call Example
+### 10.3 Serializable Actor References
+
+**Question:** Can I send an `ActorRef` to another machine and use it to call
+the actor from there?
+
+**Answer: Yes.** `ActorRef` is **location-transparent and serializable**. This
+is a fundamental property of distributed actor systems — Erlang PIDs and Akka
+ActorRefs both work this way.
+
+| Framework | Reference type | Serializable? | Location transparent? |
+|---|---|:---:|:---:|
+| **Erlang** | PID | ✅ Built-in | ✅ Send to any node |
+| **Akka** | ActorRef | ✅ Via actor path | ✅ Remoting handles routing |
+| **dactor** | `ActorRef<A>` | ✅ Via `ActorId` | ✅ Adapter handles routing |
+
+**How it works:**
+
+An `ActorRef<A>` is essentially a wrapper around an `ActorId` (which contains
+`NodeId` + local sequence number) plus routing metadata. When serialized, only
+the `ActorId` is sent — the receiving node reconstructs a remote `ActorRef`
+that routes messages back to the original actor over the network.
+
+```mermaid
+sequenceDiagram
+    participant A as Actor A (Node 1)
+    participant B as Actor B (Node 2)
+    participant C as Actor C (Node 3)
+
+    Note over A: A has ActorRef<C> (points to Node 3)
+    A->>B: tell(WorkRequest { reply_to: ActorRef<A>, target: ActorRef<C> })
+    Note over B: B receives serialized ActorRefs
+    Note over B: B can now talk directly to A and C
+
+    B->>C: target.ask(DoWork { ... })
+    C-->>B: reply
+
+    B->>A: reply_to.tell(WorkDone { ... })
+    Note over A: A receives result from B
+```
+
+**Serialization of `ActorRef`:**
+
+```rust
+/// ActorRef serializes to just its ActorId — the minimum data needed
+/// to route messages to the actor from any node.
+impl<A: Actor> Serialize for ActorRef<A> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.id().serialize(serializer)
+    }
+}
+
+/// Deserialization reconstructs a remote ActorRef from the ActorId.
+/// The local runtime wraps it with network routing logic.
+impl<A: Actor> Deserialize for ActorRef<A> {
+    fn deserialize<D: Deserializer>(deserializer: D) -> Result<Self, D::Error> {
+        let actor_id = ActorId::deserialize(deserializer)?;
+        // The adapter creates a remote ActorRef that routes via network
+        Ok(ActorRef::remote(actor_id))
+    }
+}
+```
+
+**Use cases for passing ActorRefs in messages:**
+
+1. **Reply-to pattern** — sender includes its own ref so the receiver can
+   reply directly, without the sender polling:
+   ```rust
+   struct ProcessOrder {
+       order: Order,
+       reply_to: ActorRef<OrderCoordinator>,  // "send result here"
+   }
+   ```
+
+2. **Delegation** — an actor forwards work to another actor along with a
+   reference to a third actor that should receive the result:
+   ```rust
+   struct Delegate {
+       task: Task,
+       result_collector: ActorRef<Collector>,  // "send output here"
+   }
+   ```
+
+3. **Service discovery** — an actor advertises itself by sending its ref to
+   a registry or other actors:
+   ```rust
+   registry.tell(Register {
+       service_name: "payment",
+       actor: self_ref.clone(),  // "I am the payment service"
+   });
+   ```
+
+4. **Actor migration** — move work from one node to another by sending
+   actor refs that point to services on the new node.
+
+**Constraints:**
+
+- The receiving node must be able to reach the target node's network
+  (they must be in the same cluster or have network connectivity).
+- If the target actor has stopped by the time the remote call arrives,
+  the caller gets `Err(ActorNotFound)` (see §10.4).
+- `ActorRef` deserialization requires a runtime context — it cannot happen
+  in pure `serde` without access to the adapter's routing layer. In
+  practice, the adapter provides a custom deserializer or the ref is
+  reconstructed post-deserialization.
+
+### 10.4 Remote Actor Call Example
 
 **Remote actor call example:**
 
@@ -2651,7 +2756,7 @@ Caller Node                                              Remote Node
 | **Runtime error** | `RuntimeError::Actor(ActorError)` | Handler panicked, unhandled exception | Handler panics — adapter captures and wraps as `ActorError` |
 | **Infrastructure error** | `RuntimeError::Send` / `NotSupported` | Network timeout, node down, serialization failure | Message never reached the actor or reply was lost |
 
-### 10.3 Sending to Unavailable Actors
+### 10.5 Sending to Unavailable Actors
 
 When sending a message (local or remote) to an actor that is not available,
 the behavior depends on the send mode and the reason for unavailability.
