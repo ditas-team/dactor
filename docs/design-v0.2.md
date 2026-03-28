@@ -2582,7 +2582,6 @@ let slightly_below_normal = Priority(160);
 // Higher than CRITICAL (if ever needed):
 // Not possible — 0 is the highest. By design.
 ```
-```
 
 **How it works:**
 
@@ -2620,16 +2619,82 @@ let slightly_below_normal = Priority(160);
 **Fairness and starvation:**
 
 Priority mailboxes risk starving low-priority messages when high-priority
-messages arrive continuously. dactor does **not** enforce a fairness policy
-at the framework level — this is deliberately left to the application because
-the right policy varies by use case. However, recommended patterns include:
+messages arrive continuously. dactor provides a **pluggable `FairnessPolicy`
+trait** — the application implements it to control the trade-off. If no
+policy is provided, the default is strict priority ordering (no fairness
+guarantee).
 
-- **Weighted fair queuing:** process N high-priority messages then 1 low-priority
-- **Aging:** promote messages that have waited longer than a threshold
-- **Rate limiting:** cap high-priority throughput to guarantee low-priority progress
+```rust
+/// Policy that controls how the priority mailbox balances between
+/// priority levels. Invoked by the runtime each time it picks the
+/// next message to deliver.
+///
+/// If not set (default), the mailbox uses strict priority ordering —
+/// the lowest Priority(u8) value is always dequeued first, which can
+/// starve lower-priority messages under sustained high-priority load.
+pub trait FairnessPolicy: Send + Sync + 'static {
+    /// Given the current mailbox state, decide which priority level
+    /// to dequeue from next.
+    ///
+    /// The runtime calls this before each message delivery. The policy
+    /// can inspect queue depths per priority level and decide which
+    /// level to serve.
+    fn select_next(&self, state: &MailboxState) -> Priority;
+}
 
-These can be implemented as interceptors or within the actor's handler logic.
-Future versions may offer built-in fairness strategies as opt-in policies.
+/// Snapshot of the mailbox's current queue depths, provided to
+/// the FairnessPolicy for decision-making.
+pub struct MailboxState {
+    /// Number of pending messages at each priority level.
+    /// Sorted by priority (index 0 = highest priority present).
+    pub levels: Vec<PriorityLevel>,
+    /// Total number of messages across all levels.
+    pub total_pending: usize,
+}
+
+pub struct PriorityLevel {
+    pub priority: Priority,
+    pub pending: usize,
+    /// How long the oldest message at this level has been waiting.
+    pub oldest_wait: Duration,
+}
+```
+
+**Built-in policies:**
+
+```rust
+/// Strict priority — always dequeue the highest priority first.
+/// This is the default when no FairnessPolicy is set.
+pub struct StrictPriority;
+
+/// Weighted fair queuing — serve `weight` messages from higher
+/// priority before serving 1 from the next level.
+pub struct WeightedFairQueuing {
+    /// How many high-priority messages to serve before one low-priority.
+    pub weight: usize,
+}
+
+/// Aging — promote messages that have waited longer than `max_wait`.
+/// If any level has a message older than `max_wait`, it is served next
+/// regardless of its priority.
+pub struct AgingPolicy {
+    pub max_wait: Duration,
+}
+```
+
+**Registration (per-actor via SpawnConfig):**
+
+```rust
+let config = SpawnConfig {
+    mailbox: MailboxConfig::Priority {
+        capacity: Some(1000),
+        ordering: PriorityOrdering::ByHeader,
+    },
+    fairness: Some(Box::new(WeightedFairQueuing { weight: 10 })),
+    ..Default::default()
+};
+runtime.spawn_with_config("worker", args, deps, config)?;
+```
 
 ### 8.2 Message Ordering Guarantees
 
