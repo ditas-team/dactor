@@ -234,7 +234,9 @@ classDiagram
         +id() ActorId
         +tell(M)
         +ask(M) M::Reply
-        +ask_timeout(M, Duration) M::Reply
+        +ask_with(M, CancellationToken) M::Reply
+        +stream(M, buffer) BoxStream
+        +stream_with(M, buffer, CancellationToken) BoxStream
         +is_alive() bool
     }
     class ActorRuntime {
@@ -1803,9 +1805,13 @@ logger.tell_with_priority(
 forces users to implement reply channels manually.
 
 Ask is a method directly on `ActorRef<A>` (not a separate trait). The reply
-type is determined at compile time by `M::Reply`:
+type is determined at compile time by `M::Reply`. Cancellation uses
+`tokio_util::sync::CancellationToken` — the standard Rust async cancellation
+primitive — instead of dedicated `_timeout` methods.
 
 ```rust
+use tokio_util::sync::CancellationToken;
+
 impl<A: Actor> ActorRef<A> {
     /// Request-reply: send a message and await the reply.
     pub async fn ask<M>(&self, msg: M) -> Result<M::Reply, RuntimeError>
@@ -1813,9 +1819,11 @@ impl<A: Actor> ActorRef<A> {
         A: Handler<M>,
         M: Message;
 
-    /// Request-reply with explicit timeout.
-    pub async fn ask_timeout<M>(
-        &self, msg: M, timeout: Duration,
+    /// Request-reply with a cancellation token.
+    /// The token can represent a timeout, an explicit cancel signal,
+    /// or a parent scope's cancellation — all with the same API.
+    pub async fn ask_with<M>(
+        &self, msg: M, cancel: CancellationToken,
     ) -> Result<M::Reply, RuntimeError>
     where
         A: Handler<M>,
@@ -1823,18 +1831,76 @@ impl<A: Actor> ActorRef<A> {
 }
 ```
 
-**Example:**
+**Why `CancellationToken` instead of `_timeout` methods:**
+
+| Approach | Pros | Cons |
+|---|---|---|
+| `ask_timeout(msg, Duration)` | Simple for timeout-only cases | Only supports time-based cancellation |
+| `ask_with(msg, CancellationToken)` | Supports timeout, explicit cancel, hierarchical cancel, scope-based cancel — all with one API | Slightly more verbose for simple timeout |
+
+A `CancellationToken` subsumes timeout — you can create one from a duration:
 
 ```rust
-struct GetBalance;
-impl Message for GetBalance { type Reply = u64; }
+use tokio_util::sync::CancellationToken;
 
-// Compile-time type-safe: ask() returns u64
-let balance: u64 = account.ask(GetBalance).await?;
+// ── Simple ask (no cancellation) ────────────────────────────
+let balance = account.ask(GetBalance).await?;
 
-// With timeout:
-let balance = account.ask_timeout(GetBalance, Duration::from_secs(5)).await?;
+// ── Ask with timeout ────────────────────────────────────────
+let token = CancellationToken::new();
+let token_clone = token.clone();
+tokio::spawn(async move {
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    token_clone.cancel();
+});
+let balance = account.ask_with(GetBalance, token).await?;
+
+// ── Convenience: timeout helper ─────────────────────────────
+// dactor provides a helper to create a token that auto-cancels after a duration:
+let balance = account.ask_with(GetBalance, cancel_after(Duration::from_secs(5))).await?;
+
+// ── Explicit cancellation (e.g., user pressed "Cancel") ─────
+let token = CancellationToken::new();
+let token_for_ui = token.clone();
+// UI thread: token_for_ui.cancel() when user clicks Cancel
+let balance = account.ask_with(GetBalance, token).await?;
+
+// ── Hierarchical: cancel all child operations ───────────────
+let parent_token = CancellationToken::new();
+let child1 = parent_token.child_token();
+let child2 = parent_token.child_token();
+// ask two actors with independent child tokens
+let (r1, r2) = tokio::join!(
+    actor1.ask_with(Query1, child1),
+    actor2.ask_with(Query2, child2),
+);
+// Cancel everything if the parent scope ends:
+parent_token.cancel();  // both child tokens are also cancelled
 ```
+
+**Helper:**
+
+```rust
+/// Create a CancellationToken that auto-cancels after the given duration.
+pub fn cancel_after(duration: Duration) -> CancellationToken {
+    let token = CancellationToken::new();
+    let t = token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(duration).await;
+        t.cancel();
+    });
+    token
+}
+```
+
+**What happens on cancellation:**
+
+| Scenario | Result |
+|---|---|
+| Token cancelled before handler starts | `Err(RuntimeError::Actor(ActorError { code: Timeout }))` — message may still be delivered to handler (fire-and-forget after cancel) |
+| Token cancelled during handler execution | `Err(RuntimeError::Actor(ActorError { code: Timeout }))` — handler continues to completion but reply is discarded |
+| Token never cancelled, handler succeeds | `Ok(reply)` |
+| Token never cancelled, handler fails | `Err(RuntimeError::Actor(error))` |
 
 ### 6.3 Streaming (Request-Stream)
 
@@ -1929,6 +1995,19 @@ impl<A: Actor> ActorRef<A> {
         &self,
         msg: M,
         buffer: usize,
+    ) -> Result<BoxStream<M::Reply>, RuntimeError>
+    where
+        A: Handler<M>,
+        M: Message;
+
+    /// Stream with a cancellation token.
+    /// When the token is cancelled, the stream closes and the actor's
+    /// `StreamSender::send()` returns `ConsumerDropped`.
+    pub fn stream_with<M>(
+        &self,
+        msg: M,
+        buffer: usize,
+        cancel: CancellationToken,
     ) -> Result<BoxStream<M::Reply>, RuntimeError>
     where
         A: Handler<M>,
@@ -3297,7 +3376,7 @@ The actor has been spawned but `on_start()` has not completed.
 | Send mode | Behavior |
 |---|---|
 | `tell()` | Message is **queued** in the mailbox. Delivered after `on_start()` completes. Returns `Ok(())` — the caller is unaware of the delay. |
-| `ask()` | The future **blocks** until `on_start()` completes and the handler processes the message. If using `ask_timeout()`, the timeout includes the `on_start()` wait time. |
+| `ask()` | The future **blocks** until `on_start()` completes and the handler processes the message. If using `ask_with(cancel)`, the cancellation token's deadline includes the `on_start()` wait time. |
 | `stream()` | Same as `ask()` — the stream setup is queued until `on_start()` completes. |
 
 This is by design — `spawn()` returns an `ActorRef` immediately, and
@@ -4053,7 +4132,7 @@ run against its `ActorRuntime` implementation.
 pub async fn run_all<R: ActorRuntime>(runtime: &R) {
     test_tell_roundtrip(runtime).await;
     test_ask_roundtrip(runtime).await;
-    test_ask_timeout(runtime).await;
+    test_ask_cancellation(runtime).await;
     test_lifecycle_hooks(runtime).await;
     test_interceptor_pipeline(runtime).await;
     test_interceptor_reject_ask(runtime).await;
