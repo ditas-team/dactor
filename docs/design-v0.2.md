@@ -949,17 +949,48 @@ async fn main() {
 IDs, correlation IDs, deadlines, security context. Baking this into the
 framework from day one avoids a breaking change later.
 
+**Design challenge:** Headers must be type-safe locally (no string lookups,
+no downcasting) but also serializable for remote calls. `TypeId`-keyed storage
+with `dyn Any` solves the local case but cannot cross the wire — `TypeId` is
+process-local and `dyn Any` has no serialization. The solution is a **dual-layer
+design**: typed access locally, string-keyed bytes on the wire.
+
 ```rust
-/// Type-erased header value. Adapters can store trace context,
-/// correlation IDs, deadlines, auth tokens, etc.
+/// A header value that can be stored in the Headers map.
+///
+/// Locally: stored by `TypeId` for type-safe access (no string lookups).
+/// Remotely: serialized to bytes via `to_bytes()` with a string key from
+/// `header_name()` for wire transport.
+///
+/// Headers that are local-only (e.g., `HandlerStartTime(Instant)`) can
+/// return `None` from `to_bytes()` — they will be stripped during remote
+/// serialization and not sent over the wire.
 pub trait HeaderValue: Send + Sync + 'static {
+    /// Stable, unique name for this header type (e.g., "dcontext.TraceContext").
+    /// Used as the key when serializing headers for remote transport.
+    fn header_name(&self) -> &'static str;
+
+    /// Serialize this header to bytes for remote transport.
+    /// Returns `None` if this header is local-only and should not cross the wire.
+    fn to_bytes(&self) -> Option<Vec<u8>>;
+
+    /// Reconstruct a header from bytes received from a remote node.
+    /// This is a static method — called via the HeaderRegistry to deserialize.
+    fn from_bytes(bytes: &[u8]) -> Result<Self, ActorError> where Self: Sized;
+
+    /// Downcast support for local typed access.
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// A collection of typed headers attached to a message.
 ///
-/// Headers use `TypeId`-keyed storage so that each header type can be
-/// inserted and retrieved without string lookups or downcasting guesswork.
+/// **Local access:** Type-safe via `TypeId` — `insert::<H>()` / `get::<H>()`
+/// work without string lookups or downcasting guesswork.
+///
+/// **Remote serialization:** When headers need to cross the wire, the runtime
+/// calls `to_wire()` which converts all serializable headers to a
+/// `WireHeaders` map (string key → bytes). Non-serializable (local-only)
+/// headers are silently dropped.
 #[derive(Default)]
 pub struct Headers { /* TypeMap internally */ }
 
@@ -968,6 +999,29 @@ impl Headers {
     pub fn get<H: HeaderValue>(&self) -> Option<&H>;
     pub fn remove<H: HeaderValue>(&mut self) -> Option<H>;
     pub fn is_empty(&self) -> bool;
+
+    /// Convert all serializable headers to wire format.
+    /// Local-only headers (where `to_bytes()` returns `None`) are skipped.
+    pub fn to_wire(&self) -> WireHeaders;
+
+    /// Reconstruct typed headers from wire format.
+    /// Uses the `HeaderRegistry` to look up deserializers by header name.
+    pub fn from_wire(wire: WireHeaders, registry: &HeaderRegistry) -> Self;
+}
+
+/// Wire-format headers — a simple string-keyed byte map that can be
+/// serialized with any codec (bincode, JSON, protobuf, etc.).
+#[derive(Serialize, Deserialize, Default)]
+pub struct WireHeaders {
+    pub entries: Vec<WireHeader>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct WireHeader {
+    /// The header name (from `HeaderValue::header_name()`).
+    pub name: String,
+    /// Serialized header value bytes (from `HeaderValue::to_bytes()`).
+    pub value: Vec<u8>,
 }
 
 /// An envelope wrapping a message body with typed headers.
@@ -983,6 +1037,72 @@ impl<M> From<M> for Envelope<M> {
 }
 ```
 
+**How remote header transport works:**
+
+```mermaid
+sequenceDiagram
+    participant S as Sender (Node 1)
+    participant R as Runtime
+    participant N as Network
+    participant R2 as Runtime (Node 2)
+    participant A as Actor (Node 2)
+
+    S->>R: tell_envelope(Envelope { headers, body })
+    Note over R: headers contains:<br/>TraceContext (serializable)<br/>Priority (serializable)<br/>HandlerStartTime (local-only)
+
+    R->>R: headers.to_wire()
+    Note over R: WireHeaders:<br/>  "dcontext.TraceContext" → [bytes]<br/>  "dactor.Priority" → [bytes]<br/>  HandlerStartTime skipped (to_bytes()=None)
+
+    R->>N: send { wire_headers, body_bytes }
+    N->>R2: receive
+
+    R2->>R2: Headers::from_wire(wire, registry)
+    Note over R2: Looks up "dcontext.TraceContext" → TraceContext::from_bytes()<br/>Looks up "dactor.Priority" → Priority::from_bytes()<br/>Unknown headers preserved as raw bytes
+
+    R2->>A: deliver Envelope { headers, body }
+    Note over A: headers.get::<TraceContext>() works ✓
+```
+
+**Header Registry:**
+
+Each node maintains a registry of known header types so it can deserialize
+incoming wire headers back into typed values:
+
+```rust
+/// Registry of header deserializers, populated at startup.
+pub struct HeaderRegistry {
+    deserializers: HashMap<String, Box<dyn Fn(&[u8]) -> Result<Box<dyn HeaderValue>, ActorError>>>,
+}
+
+impl HeaderRegistry {
+    /// Register a header type so it can be deserialized from wire format.
+    pub fn register<H: HeaderValue>(&mut self) {
+        self.deserializers.insert(
+            H::header_name_static(),
+            Box::new(|bytes| Ok(Box::new(H::from_bytes(bytes)?))),
+        );
+    }
+}
+
+// At startup:
+registry.register::<dcontext::TraceContext>();
+registry.register::<dcontext::CorrelationId>();
+registry.register::<dactor::Priority>();
+```
+
+**Three categories of headers:**
+
+| Category | `to_bytes()` | Crosses wire? | Example |
+|---|:---:|:---:|---|
+| **Serializable** | `Some(bytes)` | ✅ | `TraceContext`, `CorrelationId`, `Priority` |
+| **Local-only** | `None` | ❌ Stripped | `HandlerStartTime(Instant)`, `SpanContext(tracing::Span)` |
+| **Unknown remote** | — | ✅ Preserved as raw bytes | Headers from a newer version of a peer service |
+
+Unknown headers (names not in the local `HeaderRegistry`) are preserved as
+raw `WireHeader` entries in the `Headers` map. They can be forwarded to the
+next hop without deserialization — enabling forward compatibility when
+different nodes run different versions.
+
 **dactor does NOT define concrete header types** like `TraceContext` or
 `CorrelationId`. The `Headers` container is a generic typed map — any type
 implementing `HeaderValue` can be inserted. Concrete context types (trace
@@ -995,8 +1115,19 @@ The only built-in header type is `Priority` (used by priority mailboxes):
 
 ```rust
 /// Message priority level for priority mailboxes.
-/// See §3.8 for details and usage.
+/// See §8.1 for details and usage.
 pub use crate::mailbox::Priority;
+
+impl HeaderValue for Priority {
+    fn header_name(&self) -> &'static str { "dactor.Priority" }
+    fn to_bytes(&self) -> Option<Vec<u8>> {
+        Some(bincode::serialize(self).unwrap())
+    }
+    fn from_bytes(bytes: &[u8]) -> Result<Self, ActorError> {
+        bincode::deserialize(bytes).map_err(|e| ActorError::new(ErrorCode::Internal, e.to_string()))
+    }
+    fn as_any(&self) -> &dyn std::any::Any { self }
+}
 ```
 
 **Example: external crate provides context, interceptor propagates it:**
@@ -1004,17 +1135,31 @@ pub use crate::mailbox::Priority;
 ```rust
 // In dcontext crate (external):
 pub struct TraceContext { pub trace_id: String, pub span_id: String }
-impl dactor::HeaderValue for TraceContext { ... }
 
-// In user code — interceptor consumes the header:
-struct TracingInterceptor;
-impl Interceptor for TracingInterceptor {
-    fn on_receive(&self, headers: &mut Headers) -> Disposition {
-        if let Some(ctx) = headers.get::<dcontext::TraceContext>() {
-            tracing::info!(trace_id = %ctx.trace_id, "message received");
-        }
-        Disposition::Continue
+impl dactor::HeaderValue for TraceContext {
+    fn header_name(&self) -> &'static str { "dcontext.TraceContext" }
+
+    fn to_bytes(&self) -> Option<Vec<u8>> {
+        // Serializable — crosses the wire
+        Some(serde_json::to_vec(self).unwrap())
     }
+
+    fn from_bytes(bytes: &[u8]) -> Result<Self, ActorError> {
+        serde_json::from_slice(bytes)
+            .map_err(|e| ActorError::new(ErrorCode::Internal, e.to_string()))
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any { self }
+}
+
+// Local-only header — never crosses the wire:
+struct HandlerStartTime(Instant);
+
+impl dactor::HeaderValue for HandlerStartTime {
+    fn header_name(&self) -> &'static str { "internal.HandlerStartTime" }
+    fn to_bytes(&self) -> Option<Vec<u8>> { None }  // ← local-only
+    fn from_bytes(_: &[u8]) -> Result<Self, ActorError> { unreachable!() }
+    fn as_any(&self) -> &dyn std::any::Any { self }
 }
 ```
 
