@@ -18,7 +18,7 @@ graph TB
     subgraph "dactor (core crate)"
         Actor[Actor / Message / Handler traits]
         Envelope[Envelope & Headers]
-        Interceptor[Interceptor Pipeline]
+        Interceptor[Inbound & Outbound Interceptors]
         Supervision[Supervision & Watch]
         Stream[Streaming & Ask]
         Metrics[Observability]
@@ -778,7 +778,7 @@ pub trait ActorRuntime: Send + Sync + 'static {
     // ── Global Interceptors ─────────────────────────────
     /// Register a global interceptor applied to all actors.
     /// Returns `Err(NotSupported)` if the adapter doesn't support interceptors.
-    fn add_interceptor(&self, interceptor: Box<dyn Interceptor>) -> Result<(), RuntimeError>;
+    fn add_inbound_interceptor(&self, interceptor: Box<dyn InboundInterceptor>) -> Result<(), RuntimeError>;
 
     // ── Capability Introspection ────────────────────────
     /// Query which capabilities this runtime supports.
@@ -837,7 +837,7 @@ Collect all per-actor settings into a config struct:
 ```rust
 pub struct SpawnConfig {
     pub mailbox: MailboxConfig,
-    pub interceptors: Vec<Box<dyn Interceptor>>,
+    pub inbound_interceptors: Vec<Box<dyn InboundInterceptor>>,
     /// Target node for the actor. `None` = spawn locally (default).
     /// `Some(node_id)` = spawn on the specified remote node.
     pub target_node: Option<NodeId>,
@@ -1170,8 +1170,8 @@ impl dactor::HeaderValue for HandlerStartTime {
 ```mermaid
 sequenceDiagram
     participant S as Sender
-    participant I1 as Interceptor 1
-    participant I2 as Interceptor 2
+    participant I1 as Inbound Interceptor 1
+    participant I2 as Inbound Interceptor 2
     participant A as Actor Handler
     
     S->>I1: on_receive(ctx, headers)
@@ -1181,10 +1181,10 @@ sequenceDiagram
     A->>I2: on_complete(ctx, outcome)
     I2->>I1: on_complete(ctx, outcome)
     
-    Note over S,A: If any interceptor returns Drop/Reject,<br/>the message never reaches the handler.
+    Note over S,A: If any inbound interceptor returns Drop/Reject,<br/>the message never reaches the handler.
 ```
 
-### 5.2 Interceptor Pipeline
+### 5.2 Inbound Interceptor Pipeline
 
 **Rationale:** Akka has `Behaviors.intercept`, HTTP frameworks have middleware.
 An interceptor pipeline lets users add cross-cutting concerns (logging,
@@ -1301,7 +1301,7 @@ pub enum SendMode {
 /// ```
 /// `on_complete` is called exactly **once** at the end of the stream,
 /// not per item. For per-item observation, use `on_stream_item`.
-pub trait Interceptor: Send + Sync + 'static {
+pub trait InboundInterceptor: Send + Sync + 'static {
     /// Human-readable name for this interceptor (e.g., "auth-check",
     /// "rate-limiter", "circuit-breaker"). Included in `Rejected` errors
     /// and dead letter events so operators know which interceptor
@@ -1389,7 +1389,7 @@ use dcontext::CorrelationId;  // from external crate
 
 struct LoggingInterceptor;
 
-impl Interceptor for LoggingInterceptor {
+impl InboundInterceptor for LoggingInterceptor {
     fn name(&self) -> &'static str { "logging" }
     fn on_receive(&self, ctx: &InterceptContext<'_>, headers: &mut Headers) -> Disposition {
         let cid = headers.get::<CorrelationId>().map(|c| c.0.as_str()).unwrap_or("-");
@@ -1418,7 +1418,7 @@ use std::any::Any;
 /// An interceptor that validates transfer amounts and audits results.
 struct TransferAuditInterceptor;
 
-impl Interceptor for TransferAuditInterceptor {
+impl InboundInterceptor for TransferAuditInterceptor {
     fn name(&self) -> &'static str { "transfer-audit" }
 
     fn on_receive(
@@ -1483,7 +1483,7 @@ unrecognized types.
 
 ```rust
 // Global — applies to all actors:
-runtime.add_interceptor(Box::new(TransferAuditInterceptor));
+runtime.add_inbound_interceptor(Box::new(TransferAuditInterceptor));
 
 // Or per-actor at spawn time via SpawnConfig:
 let config = SpawnConfig {
@@ -3453,7 +3453,7 @@ statistics. Users register it once; it collects everything automatically.
 
 ```rust
 /// Built-in interceptor that collects runtime-level metrics.
-/// Register via `runtime.add_interceptor(Box::new(MetricsInterceptor::new()))`.
+/// Register via `runtime.add_inbound_interceptor(Box::new(MetricsInterceptor::new()))`.
 pub struct MetricsInterceptor {
     inner: Arc<MetricsStore>,
 }
@@ -3465,7 +3465,7 @@ impl MetricsInterceptor {
     pub fn metrics(&self) -> &MetricsStore { ... }
 }
 
-impl Interceptor for MetricsInterceptor {
+impl InboundInterceptor for MetricsInterceptor {
     fn name(&self) -> &'static str { "metrics" }
     fn on_receive(&self, ctx: &InterceptContext<'_>, headers: &mut Headers) -> Disposition {
         self.inner.record_receive(ctx);
@@ -3568,7 +3568,7 @@ struct MessageSizeInterceptor {
     sizes: Arc<Mutex<HashMap<String, Vec<usize>>>>,
 }
 
-impl Interceptor for MessageSizeInterceptor {
+impl InboundInterceptor for MessageSizeInterceptor {
     fn name(&self) -> &'static str { "message-size" }
     fn on_receive(&self, ctx: &InterceptContext<'_>, _headers: &mut Headers) -> Disposition {
         // std::mem::size_of gives the stack size of the message type.
@@ -3600,7 +3600,7 @@ struct SlowHandlerInterceptor {
     threshold: Duration,
 }
 
-impl Interceptor for SlowHandlerInterceptor {
+impl InboundInterceptor for SlowHandlerInterceptor {
     fn name(&self) -> &'static str { "slow-handler" }
     fn on_receive(&self, _ctx: &InterceptContext<'_>, headers: &mut Headers) -> Disposition {
         // Stash the start time in a header for on_complete to read.
@@ -3635,7 +3635,7 @@ struct CircuitBreakerInterceptor {
     threshold: u64,
 }
 
-impl Interceptor for CircuitBreakerInterceptor {
+impl InboundInterceptor for CircuitBreakerInterceptor {
     fn name(&self) -> &'static str { "circuit-breaker" }
 
     fn on_receive(&self, ctx: &InterceptContext<'_>, _headers: &mut Headers) -> Disposition {
@@ -3678,7 +3678,7 @@ use dcontext::{TraceContext, SpanContext};
 
 struct OtelInterceptor;
 
-impl Interceptor for OtelInterceptor {
+impl InboundInterceptor for OtelInterceptor {
     fn name(&self) -> &'static str { "opentelemetry" }
     fn on_receive(&self, ctx: &InterceptContext<'_>, headers: &mut Headers) -> Disposition {
         // Extract trace context from headers (injected by sender)
@@ -3722,10 +3722,10 @@ Interceptors are composable. A typical production setup:
 let metrics = MetricsInterceptor::new();
 let metrics_store = metrics.metrics().clone();  // for querying later
 
-runtime.add_interceptor(Box::new(OtelInterceptor))?;
-runtime.add_interceptor(Box::new(metrics))?;
-runtime.add_interceptor(Box::new(SlowHandlerInterceptor { threshold: Duration::from_secs(1) }))?;
-runtime.add_interceptor(Box::new(CircuitBreakerInterceptor::new(10)))?;
+runtime.add_inbound_interceptor(Box::new(OtelInterceptor))?;
+runtime.add_inbound_interceptor(Box::new(metrics))?;
+runtime.add_inbound_interceptor(Box::new(SlowHandlerInterceptor { threshold: Duration::from_secs(1) }))?;
+runtime.add_inbound_interceptor(Box::new(CircuitBreakerInterceptor::new(10)))?;
 
 // Later: query metrics
 let top_5_busiest = metrics_store.busiest_actors(5);
@@ -4613,7 +4613,7 @@ test-support = ["tokio/test-util"]
 | `GroupError` return type | `RuntimeError` return type | Wrap existing errors in `RuntimeError::Group(...)`. |
 | — | `NotSupportedError` / `RuntimeError` | New error types. Unsupported ops return `Err(NotSupported)`. |
 | — | `Envelope<M>`, `Headers` | New types, `tell()` accepts both `M` and `Envelope<M>`. |
-| — | `Interceptor` pipeline | New opt-in feature, no breakage. |
+| — | `InboundInterceptor` pipeline | New opt-in feature, no breakage. |
 | — | `SpawnConfig` / `MailboxConfig` | New, with defaults matching v0.1 behavior. |
 | — | Lifecycle hooks on `Actor` trait | Actor struct implements `on_start`/`on_stop`/`on_error` with default no-ops. |
 | — | `StreamRef<M, R>` / `BoxStream<R>` | New streaming trait. Adapters implement via channel shim. |
@@ -4649,7 +4649,7 @@ dactor/src/
 ├── lib.rs               ← public API, re-exports
 ├── actor.rs             ← ActorRef, ActorId, ActorRuntime, SpawnConfig
 ├── message.rs           ← Envelope, Headers, HeaderValue, built-in headers
-├── interceptor.rs       ← Interceptor trait, Disposition
+├── interceptor.rs       ← InboundInterceptor, OutboundInterceptor, Disposition
 ├── lifecycle.rs         ← ErrorAction (lifecycle hooks live on Actor trait)
 ├── supervision.rs       ← SupervisionStrategy, SupervisionAction, ChildTerminated
 ├── stream.rs            ← StreamRef, StreamSender, BoxStream, StreamSendError
@@ -4676,7 +4676,7 @@ dactor/src/
 
 1. **Should `Envelope<M>` be the only way to send messages?** Or should `tell(M)` auto-wrap in an envelope with empty headers? → **Proposed: both.** `tell(msg)` wraps automatically; `tell_envelope(env)` gives full control.
 
-2. **Should interceptors be per-runtime or per-actor?** → **Proposed: both.** Global interceptors via `runtime.add_interceptor()`, per-actor via `SpawnConfig`.
+2. **Should interceptors be per-runtime or per-actor?** → **Proposed: both.** Global interceptors via `runtime.add_inbound_interceptor()`, per-actor via `SpawnConfig`.
 
 3. **Should lifecycle hooks be a separate trait or methods on Actor?** → **Resolved: methods on `Actor` trait.** Since we adopted the Kameo/Coerce pattern (§10.6) where the actor struct implements `Actor`, lifecycle hooks belong directly on that trait with default no-op implementations. No separate `ActorLifecycle` trait needed.
 
