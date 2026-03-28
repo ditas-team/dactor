@@ -3690,6 +3690,204 @@ and returns `ActorNotFound`. If the remote **node** doesn't exist (wrong
 | Remote node down | `Err(Send)` | `Err(Send)` after timeout | Yes |
 | Remote actor stopped | `Err(Send)` | `Err(Actor { ActorNotFound })` | Yes (on remote) |
 
+### 10.6 Cluster Discovery
+
+**Problem:** In production deployments (Kubernetes, VMSS, cloud auto-scaling),
+nodes come and go dynamically. The actor framework needs to know when nodes
+join or leave the cluster, but **the framework itself should not own the
+discovery mechanism** — that's the infrastructure layer's responsibility
+(Kubernetes API, DNS, consul, etcd, etc.).
+
+**How existing frameworks handle discovery:**
+
+| Framework | Discovery mechanism | Pluggable? |
+|---|---|---|
+| **Erlang/OTP** | `net_adm:ping`, EPMD (Erlang Port Mapper Daemon) | Custom via `-connect_all` |
+| **Akka** | Akka Discovery — plugins for K8s API, DNS, AWS, config | ✅ Fully pluggable |
+| **Ractor** | `ractor_cluster` — static seed nodes or custom | Partially |
+| **Kameo** | libp2p Kademlia DHT — decentralized | Built-in P2P |
+| **Coerce** | `coerce-k8s` — Kubernetes pod label selection | ✅ Pluggable providers |
+
+**dactor design:** Introduce a `ClusterDiscovery` trait that the **application
+implements** to bridge its infrastructure's node discovery into dactor's
+cluster events. dactor provides built-in implementations for common platforms,
+but the trait is open for custom implementations.
+
+```rust
+/// Trait for cluster node discovery. Implemented by the application or
+/// by platform-specific crates (e.g., dactor-k8s, dactor-consul).
+///
+/// The discovery provider is responsible for detecting when nodes
+/// join or leave and reporting these events to the runtime.
+#[async_trait]
+pub trait ClusterDiscovery: Send + Sync + 'static {
+    /// Start discovering nodes. The provider calls `emitter.emit()`
+    /// for each node join/leave event it detects.
+    async fn start(&self, emitter: ClusterEventEmitter) -> Result<(), ActorError>;
+
+    /// Stop discovery (cleanup connections, watchers, etc.).
+    async fn stop(&self);
+}
+
+/// Handle provided to ClusterDiscovery for emitting events into the runtime.
+pub struct ClusterEventEmitter { /* internal channel to runtime */ }
+
+impl ClusterEventEmitter {
+    /// Report a node joining the cluster.
+    pub fn node_joined(&self, node_id: NodeId, addr: NodeAddr);
+
+    /// Report a node leaving the cluster (graceful or detected failure).
+    pub fn node_left(&self, node_id: NodeId, reason: LeaveReason);
+}
+
+/// Why a node left the cluster.
+#[derive(Debug, Clone)]
+pub enum LeaveReason {
+    /// Node shut down gracefully.
+    Graceful,
+    /// Node was detected as failed (missed heartbeats, connection lost).
+    Failed { detail: String },
+    /// Node was explicitly removed by an operator.
+    Removed,
+}
+
+/// Network address of a node.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeAddr {
+    pub host: String,
+    pub port: u16,
+}
+```
+
+**Built-in discovery providers** (separate crates):
+
+```rust
+// Kubernetes — watches pod endpoints matching a label selector
+let discovery = KubernetesDiscovery::new(KubernetesConfig {
+    namespace: "default".into(),
+    label_selector: "app=my-actor-cluster".into(),
+    port_name: "actor".into(),
+});
+
+// Static seed list — for development or static infrastructure
+let discovery = StaticDiscovery::new(vec![
+    NodeAddr { host: "node1.example.com".into(), port: 9000 },
+    NodeAddr { host: "node2.example.com".into(), port: 9000 },
+]);
+
+// DNS SRV — resolve nodes via DNS service records
+let discovery = DnsSrvDiscovery::new("_actor._tcp.my-cluster.example.com");
+
+// Register with runtime
+runtime.set_cluster_discovery(Box::new(discovery));
+```
+
+**Flow:**
+
+```mermaid
+sequenceDiagram
+    participant K as Infrastructure (K8s / DNS / Consul)
+    participant D as ClusterDiscovery impl
+    participant R as dactor Runtime
+    participant A as Application Actors
+
+    D->>K: watch for pod changes
+    K-->>D: pod "node-3" started
+    D->>R: emitter.node_joined(NodeId(3), addr)
+    R->>A: ClusterEvent::NodeJoined(NodeId(3))
+    Note over A: actors can now send messages to Node 3
+
+    K-->>D: pod "node-2" terminated
+    D->>R: emitter.node_left(NodeId(2), Failed)
+    R->>A: ClusterEvent::NodeLeft(NodeId(2))
+    Note over A: actors handle node departure
+```
+
+### 10.7 Node Health Monitoring
+
+**Problem:** Once nodes are discovered, the cluster needs to detect when a
+node becomes unhealthy (network partition, process crash, resource exhaustion)
+even if the infrastructure layer hasn't reported it yet.
+
+**How existing frameworks handle health:**
+
+| Framework | Health mechanism | Details |
+|---|---|---|
+| **Erlang/OTP** | Built-in heartbeat between connected nodes | `net_ticktime` config, automatic `nodedown` |
+| **Akka** | Phi accrual failure detector + heartbeats | Configurable threshold, `unreachable` → `down` |
+| **Ractor** | `ractor_cluster` — periodic ping/pong between peer nodes | Detects unresponsive peers |
+| **Kameo** | libp2p connection monitoring | P2P-level keepalive |
+| **Coerce** | Built-in health checks, system topics for node status | Liveness probes, cluster events |
+
+**dactor design:** A `NodeHealthMonitor` trait that adapters or applications
+can implement. The framework provides a default heartbeat-based implementation.
+
+```rust
+/// Configuration for node health monitoring.
+pub struct HealthConfig {
+    /// How often to send heartbeat pings to peer nodes.
+    pub heartbeat_interval: Duration,
+    /// How long to wait for a pong before marking a node as suspect.
+    pub heartbeat_timeout: Duration,
+    /// Number of consecutive missed heartbeats before declaring node dead.
+    pub max_missed_heartbeats: u32,
+}
+
+impl Default for HealthConfig {
+    fn default() -> Self {
+        Self {
+            heartbeat_interval: Duration::from_secs(5),
+            heartbeat_timeout: Duration::from_secs(2),
+            max_missed_heartbeats: 3,
+        }
+    }
+}
+```
+
+**Health states:**
+
+```mermaid
+graph LR
+    A[Healthy] -->|"missed 1 heartbeat"| B[Suspect]
+    B -->|"heartbeat received"| A
+    B -->|"missed max_missed_heartbeats"| C[Unreachable]
+    C -->|"heartbeat received"| A
+    C -->|"confirmed by discovery"| D[Down]
+    D -->|"node_joined again"| A
+```
+
+**How dactor combines discovery and health:**
+
+| Source | Detects | Latency |
+|---|---|---|
+| `ClusterDiscovery` (infrastructure) | Pod termination, scale-down, deployment rollback | Depends on infra (K8s: ~30s default) |
+| `NodeHealthMonitor` (heartbeat) | Network partition, process freeze, OOM kill | `heartbeat_interval × max_missed` (default: 15s) |
+
+Both sources feed into `ClusterEvent::NodeLeft`. The health monitor detects
+failures faster than infrastructure (which may have long polling intervals),
+while discovery detects planned changes (graceful shutdown, scale events)
+authoritatively.
+
+**Registration:**
+
+```rust
+runtime.set_cluster_discovery(Box::new(KubernetesDiscovery::new(config)));
+runtime.set_health_config(HealthConfig {
+    heartbeat_interval: Duration::from_secs(3),
+    heartbeat_timeout: Duration::from_secs(1),
+    max_missed_heartbeats: 5,
+});
+```
+
+**Adapter support:**
+
+| Adapter | Discovery | Health monitoring |
+|---|:---:|:---:|
+| dactor-ractor | ⚙️ Adapter | ✅ Library (`ractor_cluster` ping/pong) |
+| dactor-kameo | ✅ Library (libp2p DHT) | ⚙️ Adapter (heartbeat over libp2p) |
+| dactor-coerce | ✅ Library (`coerce-k8s`) | ✅ Library (built-in health checks) |
+| dactor-mock | ⚙️ Adapter (simulated) | ⚙️ Adapter (simulated via `MockCluster`) |
+
 ---
 
 ## 11. Observability
