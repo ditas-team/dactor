@@ -1858,77 +1858,8 @@ pub fn cancel_after(duration: Duration) -> CancellationToken {
 }
 ```
 
-**What happens on cancellation:**
-
-| Scenario | Result |
-|---|---|
-| Token cancelled before handler starts | `Err(RuntimeError::Actor(ActorError { code: Timeout }))` — message may still be delivered to handler (fire-and-forget after cancel) |
-| Token cancelled during handler execution | `Err(RuntimeError::Actor(ActorError { code: Timeout }))` — handler continues to completion but reply is discarded |
-| Token never cancelled, handler succeeds | `Ok(reply)` |
-| Token never cancelled, handler fails | `Err(RuntimeError::Actor(error))` |
-
-**Remote cancellation:**
-
-`CancellationToken` is an in-process primitive — it **cannot be serialized**
-or sent over the wire. For remote `ask()` calls, the adapter handles
-cancellation at the protocol layer:
-
-```mermaid
-sequenceDiagram
-    participant C as Caller (Node 1)
-    participant A as Adapter (Node 1)
-    participant N as Network
-    participant R as Remote Runtime (Node 2)
-    participant H as Handler (Node 2)
-
-    C->>A: ask(msg, Some(cancel_token))
-    A->>N: send request (request_id=42)
-    N->>R: deliver
-    R->>H: handle(msg)
-
-    Note over C: token.cancel() triggered
-    A->>N: send CancelRequest { request_id: 42 }
-    N->>R: deliver cancel
-    R->>R: drop reply channel for request 42
-
-    H-->>R: reply (discarded — already cancelled)
-    A-->>C: Err(Timeout)
-```
-
-The flow:
-
-1. **Caller** calls `ask(msg, Some(token))`. The adapter assigns a
-   `request_id` and sends the request over the network.
-2. **Caller** cancels the token (timeout or explicit). The adapter detects
-   this (via `select!` on `token.cancelled()`) and sends a **`CancelRequest`**
-   wire message with the `request_id` to the remote node.
-3. **Remote node** receives the `CancelRequest`, drops the reply channel
-   for that `request_id`. When the handler completes, the reply is discarded.
-4. **Caller** gets `Err(Timeout)` immediately — does not wait for the
-   remote handler to finish.
-
-```rust
-/// Wire message sent to remote node to cancel an in-flight ask/stream.
-/// This is an adapter-internal protocol message, not user-facing.
-#[derive(Serialize, Deserialize)]
-struct CancelRequest {
-    request_id: u64,
-}
-```
-
-**Key points:**
-
-- The `CancellationToken` stays local — only a `CancelRequest` wire message
-  crosses the network
-- Cancellation is **best-effort** — the remote handler may have already
-  completed before the cancel arrives (race condition is inherent in
-  distributed systems)
-- For `stream()`, the `CancelRequest` causes the remote node to close the
-  stream channel, which makes the actor's `StreamSender::send()` return
-  `ConsumerDropped`
-- If the network is down, the caller's token cancellation still returns
-  `Err(Timeout)` immediately — the caller is never blocked waiting for
-  a cancel acknowledgment
+**What happens on cancellation:** See §6.4 for the complete cancellation
+design (applies identically to ask and stream).
 
 ### 6.3 Streaming (Request-Stream)
 
@@ -2103,6 +2034,212 @@ All three are methods on `ActorRef<A>`, providing a unified API.
 **Dependencies:** The core crate adds `futures-core` (for the `Stream` trait)
 and `tokio-stream` (for `ReceiverStream`) as dependencies, both lightweight
 and standard in the async Rust ecosystem.
+
+### 6.4 Cancellation
+
+Cancellation applies to both `ask()` and `stream()` — the design is
+identical. `tell()` is fire-and-forget and does not support cancellation.
+
+**The problem:** Actors process messages sequentially on a single task
+(§4.3). How does a handler receive a cancellation signal while it's running,
+without violating the single-threaded execution guarantee?
+
+**Answer:** The handler is `async` — it `.await`s at yield points (database
+queries, network calls, channel sends). Cancellation is checked at those
+yield points via `tokio::select!` against a `CancellationToken` provided
+through `ActorContext`. The handler is never *interrupted* mid-computation
+— it cooperatively checks for cancellation.
+
+#### 6.4.1 Local Cancellation
+
+For local `ask()` / `stream()`, the caller's `CancellationToken` is passed
+directly to the runtime, which makes it available via `ctx.cancelled()`:
+
+```rust
+// Caller:
+let result = actor.ask(ExpensiveQuery { ... }, Some(cancel_after(Duration::from_secs(5)))).await?;
+
+// Handler:
+#[async_trait]
+impl Handler<ExpensiveQuery> for Worker {
+    async fn handle(&mut self, msg: ExpensiveQuery, ctx: &mut ActorContext)
+        -> Result<Vec<Row>, ActorError>
+    {
+        let mut results = Vec::new();
+        for batch in msg.batches() {
+            tokio::select! {
+                _ = ctx.cancelled() => {
+                    return Err(ActorError::new(ErrorCode::Cancelled, "cancelled by caller"));
+                }
+                rows = self.db.query(&batch) => {
+                    results.extend(rows?);
+                }
+            }
+        }
+        Ok(results)
+    }
+}
+```
+
+#### 6.4.2 Remote Cancellation
+
+`CancellationToken` is an in-process primitive — it **cannot be serialized**.
+For remote calls, the adapter bridges local and remote tokens via a
+`CancelRequest` **control message**:
+
+```mermaid
+sequenceDiagram
+    participant C as Caller (Node 1)
+    participant A as Adapter (Node 1)
+    participant N as Network
+    participant R as Remote Runtime (Node 2)
+    participant H as Handler (Node 2)
+
+    C->>A: ask(msg, Some(cancel_token))
+    A->>N: send Request { id: 42, msg }
+    N->>R: deliver
+    R->>R: create local_token for request 42
+    R->>H: handle(msg, ctx) where ctx.cancel = local_token
+
+    Note over H: handler runs, checks ctx.cancelled()<br/>at .await points
+
+    Note over C: caller's token.cancel() triggered
+    A->>N: send CancelRequest { id: 42 } [CONTROL CHANNEL]
+    N->>R: deliver via control channel (bypasses mailbox)
+    R->>R: local_token.cancel()
+
+    Note over H: next .await wakes via select!<br/>→ returns Err(Cancelled)
+
+    H-->>R: Err(Cancelled)
+    R->>N: forward error
+    A-->>C: Err(Cancelled)
+```
+
+**`CancelRequest` uses a dedicated control channel, not the actor's mailbox.**
+This is critical — if the cancel message were delivered through the normal
+mailbox, it would be queued behind all other pending messages and could not
+reach the handler in time. The control channel is a separate, unbounded,
+highest-priority path that the runtime monitors independently of the
+actor's message processing.
+
+```rust
+/// Control message sent to remote node to cancel an in-flight operation.
+/// Delivered via a dedicated control channel, NOT through the actor's
+/// mailbox — ensuring it is processed immediately regardless of mailbox
+/// depth or priority configuration.
+#[derive(Serialize, Deserialize)]
+struct CancelRequest {
+    /// The request_id assigned by the adapter when the ask/stream was initiated.
+    request_id: u64,
+}
+```
+
+#### 6.4.3 How the Runtime Delivers Cancellation
+
+The cancellation signal does **not** enter the actor's mailbox. Instead,
+the runtime manages it out-of-band:
+
+```
+                    ┌─────────────────────────────┐
+                    │       Actor Task             │
+                    │                              │
+  [Mailbox] ───────►│  loop {                      │
+  msg1, msg2, ...   │    let msg = mailbox.recv()  │
+                    │    select! {                 │
+                    │      _ = local_token ────────┤◄── CancelRequest triggers
+                    │          .cancelled() => {   │    local_token.cancel()
+                    │        return Cancelled;     │    (from runtime, not mailbox)
+                    │      }                       │
+                    │      _ = handler(msg) => {   │
+                    │        send reply;           │
+                    │      }                       │
+                    │    }                         │
+                    │  }                           │
+                    └─────────────────────────────┘
+```
+
+The runtime wraps each handler invocation in a `select!` that races the
+handler against `local_token.cancelled()`. This means:
+
+- **Handlers that opt in** (using `ctx.cancelled()` inside their own
+  `select!`) get fine-grained cancellation at their chosen yield points
+- **Handlers that don't opt in** still get cancelled at the outer `select!`
+  after the handler returns — the reply is discarded if the token has fired
+
+#### 6.4.4 Thread Safety Guarantees
+
+1. **No thread interruption** — the actor's single task is never interrupted.
+   Cancellation is cooperative: it triggers at `.await` points via `select!`.
+
+2. **`ctx.cancelled()` is a future, not a signal** — it only resolves when
+   polled at an `.await` point. Between `.await` points, the handler runs
+   uninterrupted.
+
+3. **No data races** — `CancellationToken` uses atomic operations internally.
+   The handler polling `ctx.cancelled()` and the runtime calling
+   `local_token.cancel()` happen on different tokio tasks, coordinated
+   safely by the tokio scheduler.
+
+4. **Cancellation granularity depends on the handler:**
+
+   | Handler type | Cancellation speed |
+   |---|---|
+   | Many `.await` points (batch processing) | Fast — cancels between batches |
+   | One long `.await` (single DB query) | Slow — cancels when query completes |
+   | CPU-bound, no `.await` | Cannot cancel until handler returns |
+   | Stream handler (sends many items) | Fast — `tx.send().await` checks each item |
+
+#### 6.4.5 Cancellation Outcomes
+
+| Scenario | `ask()` result | `stream()` result |
+|---|---|---|
+| Token cancelled before handler starts | `Err(Cancelled)` | `Err(Cancelled)` — stream never opens |
+| Token cancelled during handler | `Err(Cancelled)` | Stream closes, `StreamSender` returns `ConsumerDropped` |
+| Handler finishes before cancel arrives | `Ok(reply)` — cancel is a no-op | Stream items delivered, then ends normally |
+| No cancellation token (`None`) | Runs to completion | Runs to completion |
+| Handler cooperatively checks `ctx.cancelled()` | Returns `Err(Cancelled)` with partial results | Stops sending items, drops `StreamSender` |
+
+#### 6.4.6 `ErrorCode::Cancelled`
+
+```rust
+#[non_exhaustive]
+pub enum ErrorCode {
+    // ... existing codes ...
+
+    /// The operation was cancelled by the caller (via CancellationToken).
+    /// Analogous to gRPC `CANCELLED`.
+    Cancelled,
+}
+```
+
+#### 6.4.7 `ActorContext.cancelled()`
+
+```rust
+impl ActorContext {
+    /// Returns a future that completes when the current operation is
+    /// cancelled (by the caller or by timeout). Use with `tokio::select!`.
+    ///
+    /// For calls without a CancellationToken (`None`), this future
+    /// never completes — the operation runs to completion.
+    pub async fn cancelled(&self);
+}
+```
+
+#### 6.4.8 Helper: `cancel_after()`
+
+```rust
+/// Create a CancellationToken that auto-cancels after the given duration.
+/// Convenience for timeout-based cancellation.
+pub fn cancel_after(duration: Duration) -> CancellationToken {
+    let token = CancellationToken::new();
+    let t = token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(duration).await;
+        t.cancel();
+    });
+    token
+}
+```
 
 ---
 
