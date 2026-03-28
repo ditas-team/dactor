@@ -1239,7 +1239,6 @@ match actor.ask(Transfer { amount: 1000 }).await {
     }
     Err(other) => { /* other errors */ }
 }
-```
 
 /// Metadata about the message and its target, provided to interceptors
 /// alongside the mutable headers. All fields are read-only.
@@ -1308,34 +1307,58 @@ pub trait Interceptor: Send + Sync + 'static {
     fn name(&self) -> &'static str;
 
     /// Called before the message is delivered to the actor's handler.
-    fn on_receive(&self, ctx: &InterceptContext<'_>, headers: &mut Headers) -> Disposition {
-        let _ = ctx;
+    /// The message body is provided as `&dyn Any` — interceptors can
+    /// downcast to the concrete type for content-based decisions.
+    fn on_receive(
+        &self,
+        ctx: &InterceptContext<'_>,
+        headers: &mut Headers,
+        message: &dyn Any,
+    ) -> Disposition {
+        let _ = (ctx, message);
         Disposition::Continue
     }
 
     /// Called after the actor's handler finishes (for Tell/Ask) or
     /// after the stream ends (for Stream). Called exactly once per
     /// message, regardless of send mode.
-    fn on_complete(&self, ctx: &InterceptContext<'_>, headers: &Headers, outcome: &Outcome) {
+    fn on_complete(
+        &self,
+        ctx: &InterceptContext<'_>,
+        headers: &Headers,
+        outcome: &Outcome,
+    ) {
         let _ = (ctx, outcome);
     }
 
     /// Called for each item emitted by a streaming handler.
     /// Only invoked when `send_mode == Stream`. Default is a no-op.
-    fn on_stream_item(&self, ctx: &InterceptContext<'_>, headers: &Headers, seq: u64) {
-        let _ = (ctx, seq);
+    /// The item is provided as `&dyn Any` for optional downcasting.
+    fn on_stream_item(
+        &self,
+        ctx: &InterceptContext<'_>,
+        headers: &Headers,
+        seq: u64,
+        item: &dyn Any,
+    ) {
+        let _ = (ctx, seq, item);
     }
 }
 
 /// The outcome of a handler invocation, passed to `on_complete`.
 pub enum Outcome {
-    /// Tell: handler returned successfully.
-    /// Ask: handler returned a reply (type-erased; interceptors
-    ///   observe the event but cannot inspect the reply value).
-    Success,
+    /// Tell: handler returned successfully. No reply value.
+    TellSuccess,
+
+    /// Ask: handler returned a reply successfully.
+    /// The reply is type-erased — interceptors can downcast via
+    /// `reply.downcast_ref::<ConcreteReply>()` if they know the type.
+    AskSuccess {
+        reply: &dyn Any,
+    },
 
     /// The handler panicked or returned an error.
-    /// Carries the full structured `ActorError` (see §3.14).
+    /// Carries the full structured `ActorError` (see §9.1).
     HandlerError {
         error: ActorError,
     },
@@ -1381,14 +1404,91 @@ impl Interceptor for LoggingInterceptor {
 }
 ```
 
+**Interceptor access to message body and reply value:**
+
+Because `Message: Send + 'static`, all messages and replies are compatible
+with `Any`. Interceptors receive them as `&dyn Any` and can downcast to
+concrete types for content-aware interception.
+
+```rust
+use std::any::Any;
+
+/// An interceptor that validates transfer amounts and audits results.
+struct TransferAuditInterceptor;
+
+impl Interceptor for TransferAuditInterceptor {
+    fn name(&self) -> &'static str { "transfer-audit" }
+
+    fn on_receive(
+        &self,
+        ctx: &InterceptContext<'_>,
+        _headers: &mut Headers,
+        message: &dyn Any,
+    ) -> Disposition {
+        // Downcast to inspect the message body
+        if let Some(transfer) = message.downcast_ref::<TransferFunds>() {
+            if transfer.amount > 1_000_000 {
+                tracing::warn!(
+                    amount = transfer.amount,
+                    from = %transfer.from_account,
+                    "large transfer requires manual approval"
+                );
+                return Disposition::Reject("transfer exceeds $1M limit".into());
+            }
+        }
+        // For message types we don't care about, pass through
+        Disposition::Continue
+    }
+
+    fn on_complete(
+        &self,
+        ctx: &InterceptContext<'_>,
+        _headers: &Headers,
+        outcome: &Outcome,
+    ) {
+        // Downcast the reply to inspect the result
+        if let Outcome::AskSuccess { reply } = outcome {
+            if let Some(receipt) = reply.downcast_ref::<Receipt>() {
+                tracing::info!(
+                    tx_id = %receipt.transaction_id,
+                    actor = ctx.actor_name,
+                    "transfer completed successfully"
+                );
+            }
+        }
+    }
+}
+```
+
+**When to downcast vs. when not to:**
+
+| Interceptor type | Needs downcasting? | Example |
+|---|:---:|---|
+| Logging (generic) | ❌ | Logs `ctx.message_type` as a string — doesn't need the value |
+| Metrics | ❌ | Counts messages, measures latency — type-agnostic |
+| OpenTelemetry | ❌ | Reads/writes headers only |
+| Audit / compliance | ✅ | Inspects transfer amounts, PII fields |
+| Validation | ✅ | Checks message fields before handler runs |
+| Response caching | ✅ | Caches reply by message content hash |
+| Content-based routing | ✅ | Routes based on message fields |
+
+Most interceptors are generic and never downcast. Content-aware interceptors
+downcast when they recognize a specific message type and pass through for
+all others — this is safe because `downcast_ref` returns `None` for
+unrecognized types.
+
 **Registration:**
 
 ```rust
-// On the runtime:
-runtime.add_interceptor(LoggingInterceptor);
+// Global — applies to all actors:
+runtime.add_interceptor(Box::new(TransferAuditInterceptor));
 
-// Or per-actor at spawn time:
-runtime.spawn_with_config("my-actor", config, handler);
+// Or per-actor at spawn time via SpawnConfig:
+let config = SpawnConfig {
+    interceptors: vec![Box::new(TransferAuditInterceptor)],
+    ..Default::default()
+};
+runtime.spawn_with_config("bank", args, deps, config)?;
 ```
 
 ### 5.3 Dead Letter Handling
