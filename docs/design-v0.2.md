@@ -2203,23 +2203,26 @@ struct CancelRequest {
 The cancellation signal does **not** enter the actor's mailbox. Instead,
 the runtime manages it out-of-band:
 
-```
-                    ┌─────────────────────────────┐
-                    │       Actor Task             │
-                    │                              │
-  [Mailbox] ───────►│  loop {                      │
-  msg1, msg2, ...   │    let msg = mailbox.recv()  │
-                    │    select! {                 │
-                    │      _ = local_token ────────┤◄── CancelRequest triggers
-                    │          .cancelled() => {   │    local_token.cancel()
-                    │        return Cancelled;     │    (from runtime, not mailbox)
-                    │      }                       │
-                    │      _ = handler(msg) => {   │
-                    │        send reply;           │
-                    │      }                       │
-                    │    }                         │
-                    │  }                           │
-                    └─────────────────────────────┘
+```mermaid
+graph LR
+    subgraph "Normal Message Path"
+        M1[msg1] --> MB[Mailbox Queue]
+        M2[msg2] --> MB
+        M3[msg3] --> MB
+        MB --> RECV["mailbox.recv()"]
+    end
+
+    subgraph "Control Path (bypasses mailbox)"
+        CR[CancelRequest] --> RT[Runtime]
+        RT --> LT["local_token.cancel()"]
+    end
+
+    subgraph "Actor Task"
+        RECV --> SEL{"select!"}
+        LT --> SEL
+        SEL -->|"handler(msg)"| H[Handle message]
+        SEL -->|"cancelled()"| C[Return Err Cancelled]
+    end
 ```
 
 The runtime wraps each handler invocation in a `select!` that races the
