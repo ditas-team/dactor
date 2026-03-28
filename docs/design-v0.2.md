@@ -2765,14 +2765,28 @@ Ordering is a fundamental contract that actors rely on. dactor specifies:
    retries, and partitions can reorder messages. Applications requiring
    cross-node ordering should use sequence numbers or vector clocks.
 
-7. **Outbound network priority:** When multiple actors on the same node send
-   messages to remote nodes, those messages compete for network I/O. The
-   adapter maintains a **per-destination outbound send queue** that respects
-   the `Priority` header — high-priority outbound messages are sent before
-   low-priority ones. This ensures end-to-end priority: sender-side outbound
-   queue (§8.3) → network → receiver-side mailbox priority queue (§8.1).
+7. **Outbound network priority (optional, §8.3):** When the `outbound-priority`
+   feature is enabled, the runtime maintains a per-destination outbound send
+   queue that respects the `Priority` header. Without this feature, outbound
+   messages are sent in the order the adapter receives them (FIFO).
 
 ### 8.3 Outbound Send Queue
+
+> ⚠️ **Optional feature.** The outbound send queue interposes between the
+> application and the adapter's native network layer. This adds value
+> (priority ordering, lane separation) but also adds risk — it re-wraps
+> networking code that the underlying library already handles, which may
+> introduce bugs or performance regressions.
+>
+> **Default behavior (feature disabled):** Messages go directly to the
+> adapter's native send path. No priority ordering on the outbound side.
+> Priority is only enforced at the receiver's mailbox (§8.1).
+>
+> **When enabled (`features = ["outbound-priority"]`):** The dactor core
+> interposes a two-lane priority queue between the application and the
+> adapter's `NodeTransport`. This provides end-to-end priority but
+> requires the adapter to implement `NodeTransport` instead of using
+> its native send API directly.
 
 **Problem:** Priority in §8.1 only controls the *receiver's* mailbox ordering.
 If many actors on Node 1 call `tell()` to actors on Node 2, those outbound
@@ -3060,24 +3074,35 @@ mailbox would serialize all outbound sends). Instead, the `control_tx` and
 `user_tx` channels are `mpsc::UnboundedSender` — any actor on any tokio
 task can push a message into them concurrently without waiting.
 
-**Why NOT reusing the adapter's network layer directly:** Adapters like
-`ractor_cluster` have their own send queues, but they don't support
-priority ordering or lane separation. dactor wraps them:
+**Two modes of operation:**
 
 ```
-Without dactor core queue:
-  actor.tell() → adapter.send() → ractor_cluster TCP send buffer (FIFO)
-  ↑ no priority control
+Feature DISABLED (default — safe, zero overhead):
+  actor.tell() → adapter's native send() → library's TCP/libp2p/gRPC
+  ↑ uses adapter's proven, battle-tested network code directly
+  ↑ no priority on outbound side; priority only at receiver mailbox
 
-With dactor core queue:
+Feature ENABLED (outbound-priority — adds priority, adds risk):
   actor.tell() → core.enqueue(priority) → drain_loop → adapter.send()
-  ↑ priority-ordered, control lane first
+  ↑ dactor core interposes a priority queue
+  ↑ end-to-end priority, but re-wraps networking
 ```
 
-The adapter's `NodeTransport::send_to_node()` is the **last mile** — it
-receives already-prioritized, serialized bytes and just pushes them onto
-the wire. The adapter's own internal queue (if any) sees messages in the
-order dactor chose.
+**When to enable:** Applications with mixed-priority traffic where
+high-priority remote messages (health checks, cancellations) must not be
+delayed by bulk low-priority traffic. Most applications do NOT need this —
+receiver-side priority (§8.1) is sufficient.
+
+**Risk acknowledgment:** Interposing on the network path means dactor core
+handles buffering and ordering that the adapter library was designed to
+manage. This may cause:
+- Increased latency (extra queue hop)
+- Memory overhead (buffered messages in two places)
+- Subtle ordering bugs if the adapter's internal queue also reorders
+- Incompatibility with adapter-specific flow control or backpressure
+
+Applications should test thoroughly with the feature enabled before
+deploying to production.
 
 ### 8.4 Actor Pool / Worker Factory
 
