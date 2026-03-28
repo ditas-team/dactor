@@ -1491,7 +1491,156 @@ let config = SpawnConfig {
 runtime.spawn_with_config("bank", args, deps, config)?;
 ```
 
-### 5.3 Dead Letter Handling
+### 5.3 Outbound Interceptor (Sender-Side)
+
+**Rationale:** The interceptor pipeline in §5.2 runs on the **receiver side**
+— it intercepts messages arriving at an actor. But cross-cutting concerns
+like trace context propagation, correlation IDs, and auth tokens need to be
+**stamped onto outgoing messages by the sender**, before they leave the
+sending node.
+
+HTTP frameworks solve this with client middleware (e.g., reqwest's
+`RequestBuilder` middleware). gRPC has client interceptors. dactor introduces
+**outbound interceptors** that run on the sender side, automatically enriching
+every outgoing message's headers.
+
+This eliminates the need for `tell_envelope()` and `tell_with_priority()` as
+separate API methods — the outbound interceptor stamps headers automatically,
+keeping the caller's API clean:
+
+```rust
+// Without outbound interceptors (verbose):
+let mut env = Envelope::from(Transfer { amount: 500 });
+env.headers.insert(TraceContext::current());
+env.headers.insert(CorrelationId::new());
+env.headers.insert(Priority::High);
+actor.tell_envelope(env)?;
+
+// With outbound interceptors (clean):
+actor.tell(Transfer { amount: 500 })?;
+// ↑ outbound interceptors automatically inject TraceContext,
+//   CorrelationId, Priority, auth tokens, etc.
+```
+
+**Outbound interceptor trait:**
+
+```rust
+/// An outbound interceptor that enriches messages before they are sent.
+///
+/// Runs on the SENDER side, before the message enters the network or
+/// the receiver's mailbox. Can inject headers, modify existing headers,
+/// or reject the send.
+pub trait OutboundInterceptor: Send + Sync + 'static {
+    /// Human-readable name for this outbound interceptor.
+    fn name(&self) -> &'static str;
+
+    /// Called before a message is sent. Inspect or modify headers,
+    /// optionally reject the send.
+    fn on_send(
+        &self,
+        ctx: &OutboundContext<'_>,
+        headers: &mut Headers,
+    ) -> Disposition {
+        let _ = ctx;
+        Disposition::Continue
+    }
+}
+
+/// Context for outbound interceptors — describes the outgoing message.
+pub struct OutboundContext<'a> {
+    /// The target actor's ID.
+    pub target_id: ActorId,
+    /// The target actor's name (if known).
+    pub target_name: Option<&'a str>,
+    /// The Rust type name of the message being sent.
+    pub message_type: &'static str,
+    /// How the message is being sent.
+    pub send_mode: SendMode,
+    /// Whether this is a cross-node send.
+    pub remote: bool,
+}
+```
+
+**Registration:**
+
+```rust
+// Global — applies to all outgoing messages from this runtime:
+runtime.add_outbound_interceptor(Box::new(TraceContextPropagator));
+runtime.add_outbound_interceptor(Box::new(CorrelationIdInjector));
+runtime.add_outbound_interceptor(Box::new(AuthTokenInjector::new(token_provider)));
+```
+
+**Example: Trace context propagation**
+
+```rust
+struct TraceContextPropagator;
+
+impl OutboundInterceptor for TraceContextPropagator {
+    fn name(&self) -> &'static str { "trace-propagator" }
+
+    fn on_send(&self, _ctx: &OutboundContext<'_>, headers: &mut Headers) -> Disposition {
+        // Capture the current trace context and inject it into headers
+        if let Some(current_span) = tracing::Span::current().context() {
+            headers.insert(TraceContext::from_span(&current_span));
+        }
+        Disposition::Continue
+    }
+}
+```
+
+**Example: Auto-correlation ID**
+
+```rust
+struct CorrelationIdInjector;
+
+impl OutboundInterceptor for CorrelationIdInjector {
+    fn name(&self) -> &'static str { "correlation-id" }
+
+    fn on_send(&self, _ctx: &OutboundContext<'_>, headers: &mut Headers) -> Disposition {
+        // Only inject if not already present (don't overwrite forwarded IDs)
+        if headers.get::<CorrelationId>().is_none() {
+            headers.insert(CorrelationId(uuid::Uuid::new_v4().to_string()));
+        }
+        Disposition::Continue
+    }
+}
+```
+
+**Message flow with both inbound and outbound interceptors:**
+
+```mermaid
+sequenceDiagram
+    participant S as Sender Code
+    participant OI as Outbound Interceptors
+    participant N as Network / Mailbox
+    participant II as Inbound Interceptors
+    participant A as Actor Handler
+
+    S->>OI: tell(msg)
+    Note over OI: TraceContextPropagator.on_send()<br/>→ inject TraceContext header
+    Note over OI: CorrelationIdInjector.on_send()<br/>→ inject CorrelationId header
+    OI->>N: Envelope { headers + body }
+
+    N->>II: deliver
+    Note over II: LoggingInterceptor.on_receive()<br/>→ log correlation ID
+    Note over II: AuthInterceptor.on_receive()<br/>→ verify auth token
+    II->>A: handle(msg, ctx)
+    Note over A: ctx.headers has TraceContext,<br/>CorrelationId, etc.
+```
+
+**Impact on `ActorRef` API:**
+
+With outbound interceptors handling header injection, the `ActorRef` API
+simplifies. The `tell_envelope()` and `tell_with_priority()` convenience
+methods remain available for explicit control, but most users never need them:
+
+| Method | When to use |
+|---|---|
+| `tell(msg)` | Normal send — outbound interceptors add headers automatically |
+| `tell_envelope(env)` | Explicit header control — bypass or supplement outbound interceptors |
+| `tell_with_priority(msg, pri)` | Shorthand for priority — equivalent to outbound interceptor setting Priority header |
+
+### 5.4 Dead Letter Handling
 
 **Problem:** Messages can be lost in several ways: actor stopped before
 consuming them, mailbox overflow with `DropNewest`/`DropOldest`, interceptor
@@ -1567,31 +1716,27 @@ pub struct NullDeadLetterHandler;
 
 ## 6. Communication Patterns
 
+dactor supports three communication patterns, all as methods on `ActorRef<A>`:
+
 ```mermaid
 sequenceDiagram
-    participant Caller
-    participant Actor
+    participant C as Caller
+    participant A as Actor
 
-    rect rgb(200, 230, 200)
-        Note over Caller,Actor: Tell (fire-and-forget)
-        Caller->>Actor: tell(msg)
-        Note right of Actor: No reply
-    end
+    Note over C,A: 1. Tell (fire-and-forget)
+    C->>A: tell(msg)
+    Note right of A: handler runs, no reply
 
-    rect rgb(200, 210, 240)
-        Note over Caller,Actor: Ask (request-reply)
-        Caller->>Actor: ask(msg)
-        Actor-->>Caller: Reply (M::Reply)
-    end
+    Note over C,A: 2. Ask (request-reply)
+    C->>A: ask(msg)
+    A-->>C: M::Reply
 
-    rect rgb(240, 220, 200)
-        Note over Caller,Actor: Stream (request-stream)
-        Caller->>Actor: stream(msg, buffer)
-        Actor-->>Caller: item 1
-        Actor-->>Caller: item 2
-        Actor-->>Caller: item N
-        Actor-->>Caller: stream ends (drop sender)
-    end
+    Note over C,A: 3. Stream (request-stream)
+    C->>A: stream(msg, buffer)
+    A-->>C: item 1
+    A-->>C: item 2
+    A-->>C: item N
+    A-->>C: (stream ends)
 ```
 
 ### 6.1 Tell (Fire-and-Forget)
