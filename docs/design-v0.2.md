@@ -2476,6 +2476,12 @@ avoids forcing every actor to handle termination events.
 
 ## 8. Mailbox & Scheduling
 
+**Scope:** Mailbox configuration is **per-actor**. Each actor has its own
+independent mailbox with its own type (FIFO / bounded / priority), capacity,
+overflow strategy, and fairness policy. There is no global cross-actor
+priority queue — the runtime schedules actors independently, and each actor
+processes messages from its own mailbox in its own order.
+
 ### 8.1 Mailbox Configuration
 
 **Rationale:** kameo defaults to bounded, ractor to unbounded. Akka supports
