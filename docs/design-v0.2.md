@@ -1531,10 +1531,10 @@ pub enum DeadLetterReason {
     ActorStopped,
     /// The mailbox was full and the overflow strategy discarded the message.
     MailboxOverflow,
-    /// An interceptor dropped the message.
-    InterceptorDrop,
+    /// An interceptor dropped the message silently.
+    InterceptorDrop { interceptor: &'static str },
     /// An interceptor rejected the message.
-    InterceptorReject { reason: String },
+    InterceptorReject { interceptor: &'static str, reason: String },
     /// Network delivery failed (remote actor unreachable).
     NetworkFailure { detail: String },
 }
