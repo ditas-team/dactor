@@ -141,10 +141,12 @@ pub enum RuntimeError {
     /// A message was rejected by an interceptor before reaching the actor.
     /// For `tell()` this is silently swallowed (same as Drop).
     /// For `ask()` this is returned as an error to the caller.
-    Rejected { reason: String },
-    /// Error returned by an actor handler (local or deserialized from remote).
-    /// See §3.14 for the full `ActorError` model.
-    Actor(ActorError),
+    Rejected {
+        /// Name of the interceptor that rejected the message.
+        interceptor: &'static str,
+        /// Human-readable reason for the rejection.
+        reason: String,
+    },
 }
 ```
 
@@ -1195,11 +1197,11 @@ pub enum Disposition {
     /// — fire-and-forget has no error feedback. For `ask()`, the reply
     /// channel is dropped so the sender's `.await` yields a channel error.
     Drop,
-    /// Reject the message with a reason. Semantics differ by send mode:
+    /// Reject the message with a reason. The interceptor's `name()` is
+    /// automatically attached by the runtime. Semantics differ by send mode:
     /// - `tell()`: behaves like `Drop` (fire-and-forget has no error path)
-    /// - `ask()`: sender receives `Err(RuntimeError::Rejected { reason })`
-    ///   immediately — giving a clear, actionable error (e.g., "auth
-    ///   failed", "rate limit exceeded", "invalid payload")
+    /// - `ask()`: sender receives `Err(RuntimeError::Rejected { interceptor, reason })`
+    ///   immediately — giving a clear, actionable error
     Reject(String),
 }
 
@@ -1263,6 +1265,12 @@ pub enum SendMode {
 /// `on_complete` is called exactly **once** at the end of the stream,
 /// not per item. For per-item observation, use `on_stream_item`.
 pub trait Interceptor: Send + Sync + 'static {
+    /// Human-readable name for this interceptor (e.g., "auth-check",
+    /// "rate-limiter", "circuit-breaker"). Included in `Rejected` errors
+    /// and dead letter events so operators know which interceptor
+    /// blocked a message.
+    fn name(&self) -> &'static str;
+
     /// Called before the message is delivered to the actor's handler.
     fn on_receive(&self, ctx: &InterceptContext<'_>, headers: &mut Headers) -> Disposition {
         let _ = ctx;
@@ -1321,6 +1329,7 @@ use dcontext::CorrelationId;  // from external crate
 struct LoggingInterceptor;
 
 impl Interceptor for LoggingInterceptor {
+    fn name(&self) -> &'static str { "logging" }
     fn on_receive(&self, ctx: &InterceptContext<'_>, headers: &mut Headers) -> Disposition {
         let cid = headers.get::<CorrelationId>().map(|c| c.0.as_str()).unwrap_or("-");
         tracing::info!(
@@ -2338,7 +2347,7 @@ pub enum RuntimeError {
     Group(GroupError),
     Cluster(ClusterError),
     NotSupported(NotSupportedError),
-    Rejected { reason: String },
+    Rejected { interceptor: &'static str, reason: String },
     /// Error returned by an actor handler (local or deserialized from remote).
     Actor(ActorError),
 }
@@ -3033,6 +3042,7 @@ impl MetricsInterceptor {
 }
 
 impl Interceptor for MetricsInterceptor {
+    fn name(&self) -> &'static str { "metrics" }
     fn on_receive(&self, ctx: &InterceptContext<'_>, headers: &mut Headers) -> Disposition {
         self.inner.record_receive(ctx);
         Disposition::Continue
@@ -3135,6 +3145,7 @@ struct MessageSizeInterceptor {
 }
 
 impl Interceptor for MessageSizeInterceptor {
+    fn name(&self) -> &'static str { "message-size" }
     fn on_receive(&self, ctx: &InterceptContext<'_>, _headers: &mut Headers) -> Disposition {
         // std::mem::size_of gives the stack size of the message type.
         // For heap-allocated content, use a custom SizeOf header set by the sender.
@@ -3166,6 +3177,7 @@ struct SlowHandlerInterceptor {
 }
 
 impl Interceptor for SlowHandlerInterceptor {
+    fn name(&self) -> &'static str { "slow-handler" }
     fn on_receive(&self, _ctx: &InterceptContext<'_>, headers: &mut Headers) -> Disposition {
         // Stash the start time in a header for on_complete to read.
         headers.insert(HandlerStartTime(Instant::now()));
@@ -3200,6 +3212,8 @@ struct CircuitBreakerInterceptor {
 }
 
 impl Interceptor for CircuitBreakerInterceptor {
+    fn name(&self) -> &'static str { "circuit-breaker" }
+
     fn on_receive(&self, ctx: &InterceptContext<'_>, _headers: &mut Headers) -> Disposition {
         let count = self.error_counts
             .entry(ctx.actor_id)
@@ -3241,6 +3255,7 @@ use dcontext::{TraceContext, SpanContext};
 struct OtelInterceptor;
 
 impl Interceptor for OtelInterceptor {
+    fn name(&self) -> &'static str { "opentelemetry" }
     fn on_receive(&self, ctx: &InterceptContext<'_>, headers: &mut Headers) -> Disposition {
         // Extract trace context from headers (injected by sender)
         let parent = headers.get::<TraceContext>();
