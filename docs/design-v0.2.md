@@ -49,7 +49,7 @@ ractor, kameo, Actix, and Coerce.
 
 ## 2. Design Principles
 
-### Inclusion Rule
+### 2.1 Inclusion Rule
 
 **dactor abstracts the superset of capabilities supported by 2 or more actor
 frameworks.** If a behavior is common to at least two of the surveyed
@@ -66,7 +66,7 @@ that don't natively support a capability have two options:
 This ensures the **core API is rich and forward-looking** while each adapter
 remains honest about what it can deliver.
 
-### Capability Inclusion Matrix
+### 2.2 Capability Inclusion Matrix
 
 The table below counts how many of the 6 surveyed frameworks support each
 capability. **≥ 2** means it qualifies for inclusion in dactor.
@@ -93,7 +93,7 @@ capability. **≥ 2** means it qualifies for inclusion in dactor.
 | Priority mailbox | ~ | ✓ | — | ✓ | — | — | **2+** | ✅ |
 | Hot code upgrade | ✓ | — | — | — | — | — | **1** | ❌ |
 
-### `NotSupported` Error
+### 2.3 NotSupported Error
 
 All trait methods that might not be supported by every adapter return a
 `Result` type. A new error variant is introduced:
@@ -147,7 +147,7 @@ pub enum RuntimeError {
 }
 ```
 
-### RuntimeCapabilities Introspection
+### 2.4 RuntimeCapabilities Introspection
 
 Callers can pre-flight requirements at startup via `ActorRuntime::capabilities()`:
 
@@ -163,6 +163,7 @@ pub struct RuntimeCapabilities {
     pub priority_mailbox: bool,
     pub interceptors: bool,
 }
+```
 
 ---
 
@@ -186,7 +187,7 @@ pub struct RuntimeCapabilities {
 | **Streaming responses** | Multi-part `gen_server` reply | Akka Streams `Source` | — | — | — | — |
 | **Priority mailbox** | Selective receive (mimic) | `PriorityMailbox` (native) | — | Custom mailbox pluggable | — | — |
 
-### Key Takeaways
+### 3.1 Key Takeaways
 
 1. **Every framework** has tell (fire-and-forget) — this is the fundamental operation.
 2. **Most frameworks** also support ask (request-reply) — we should abstract it.
@@ -253,7 +254,7 @@ classDiagram
 ractor has `pre_start/post_stop`, kameo has `on_start/on_stop`.
 
 Lifecycle hooks are **methods on the `Actor` trait itself** (not a separate
-trait). Since the API decision (§10.6) adopts the Kameo/Coerce pattern where
+trait). Since the API decision adopts the Kameo/Coerce pattern where
 the actor struct implements `Actor`, lifecycle hooks live naturally alongside
 the actor's state. All hooks have default no-op implementations, so simple
 actors can ignore them entirely.
@@ -263,12 +264,12 @@ actors can ignore them entirely.
 /// State lives in `self`. Lifecycle hooks have default no-ops.
 pub trait Actor: Send + 'static {
     /// Called after the actor is spawned, before it processes any messages.
-    /// Use for initialization, resource acquisition, subscriptions, etc.
-    fn on_start(&mut self) {}
+    /// Use for async initialization, resource acquisition, subscriptions, etc.
+    async fn on_start(&mut self, ctx: &mut ActorContext) {}
 
     /// Called when the actor is stopping (graceful shutdown or supervision).
     /// Use for cleanup, resource release, flushing buffers, etc.
-    fn on_stop(&mut self) {}
+    async fn on_stop(&mut self) {}
 
     /// Called when a handler panics or returns an `ActorError`.
     /// Return an `ErrorAction` to control what happens next.
@@ -292,22 +293,59 @@ pub enum ErrorAction {
 }
 ```
 
-**Example:**
+**Spawning actors with parameters:**
+
+Every actor framework supports passing initialization parameters. In dactor,
+the actor struct's fields ARE the parameters — you construct the struct with
+the desired values and pass it to `spawn()`:
+
+```rust
+// Simple: fields are the parameters
+let counter = runtime.spawn("counter", Counter { count: 0, label: "main".into() });
+
+// With config (e.g., database connection string)
+let worker = runtime.spawn("db-worker", DatabaseWorker {
+    connection_string: "postgres://localhost/mydb".into(),
+    pool_size: 10,
+    conn: None,  // will be connected in on_start()
+});
+```
+
+| Framework | Pattern | dactor Equivalent |
+|---|---|---|
+| Erlang | `gen_server:start_link(Mod, Args, Opts)` → `init(Args)` | `runtime.spawn(name, MyActor { args... })` |
+| Akka | `Props(new MyActor(arg1, arg2))` | Actor struct fields = constructor args |
+| Ractor | `Actor::spawn(name, actor, arguments)` → `pre_start(args)` | Actor struct fields = args, `on_start()` = `pre_start` |
+| Kameo | `Actor::spawn(args)` → `on_start(args)` | Same pattern |
+| Coerce | `MyActor { fields }.into_actor(name, &sys)` | Same pattern |
+
+**Async initialization in `on_start`:**
+
+For actors that need async setup (database connections, service discovery,
+file I/O), use `on_start` — it runs after spawn but before any messages:
 
 ```rust
 struct DatabaseWorker {
-    conn: Option<DbConnection>,
+    connection_string: String,
+    pool_size: usize,
+    conn: Option<DbPool>,
 }
 
 impl Actor for DatabaseWorker {
-    fn on_start(&mut self) {
-        self.conn = Some(DbConnection::connect("postgres://..."));
-        tracing::info!("DatabaseWorker connected");
+    async fn on_start(&mut self, _ctx: &mut ActorContext) {
+        // Async initialization: connect to database
+        self.conn = Some(
+            DbPool::connect(&self.connection_string)
+                .max_connections(self.pool_size)
+                .await
+                .expect("failed to connect to database")
+        );
+        tracing::info!("DatabaseWorker connected to {}", self.connection_string);
     }
 
-    fn on_stop(&mut self) {
+    async fn on_stop(&mut self) {
         if let Some(conn) = self.conn.take() {
-            conn.close();
+            conn.close().await;
         }
         tracing::info!("DatabaseWorker disconnected");
     }
@@ -319,7 +357,21 @@ impl Actor for DatabaseWorker {
         }
     }
 }
+
+// Spawn with parameters — on_start() does the async work:
+let worker = runtime.spawn("db-worker", DatabaseWorker {
+    connection_string: "postgres://localhost/mydb".into(),
+    pool_size: 10,
+    conn: None,
+});
+// worker is immediately usable — messages queue until on_start() completes
 ```
+
+**Restart behavior:** When `ErrorAction::Restart` is triggered, the runtime
+calls `on_stop()`, then **re-creates the actor from the original spawn
+arguments** (or a factory function) and calls `on_start()` again. This means
+the actor's initial state (connection_string, pool_size) is preserved but
+runtime state (conn) is reset — matching Erlang's restart semantics.
 
 ### 4.2 Message Trait
 
@@ -2932,7 +2984,7 @@ error messages.
 
 ## 14. Adapter Support
 
-### Adapter Support Matrix (Planned)
+### 14.1 Capability Summary Matrix
 
 For each feature and each adapter, there are exactly three possibilities:
 
@@ -2964,7 +3016,7 @@ For each feature and each adapter, there are exactly three possibilities:
 | Cluster events | ⚙️ Adapter | ⚙️ Adapter | ✅ Library | ractor/kameo: adapter callback system; coerce: native cluster membership |
 
 
-### Strategy Key
+### 14.2 Strategy Key
 
 For each feature and each adapter, there are exactly three possibilities:
 
@@ -2972,7 +3024,7 @@ For each feature and each adapter, there are exactly three possibilities:
 - ⚙️ **Adapter Implemented** — the library does *not* support this; the adapter crate implements it with custom logic
 - ❌ **Not Supported** — returns `RuntimeError::NotSupported` at runtime
 
-### dactor-ractor
+### 14.3 dactor-ractor
 
 | Feature | Strategy | Implementation Detail |
 |---------|:---:|---|
@@ -2996,7 +3048,7 @@ For each feature and each adapter, there are exactly three possibilities:
 | Processing groups | ✅ Library | ractor has native `pg` module — maps `join_group` / `leave_group` / `broadcast_group` to `ractor::pg` API |
 | Cluster events | ⚙️ Adapter | ractor has no unified cluster events; adapter provides `RactorClusterEvents` callback system (implemented in v0.1) |
 
-### dactor-kameo
+### 14.4 dactor-kameo
 
 | Feature | Strategy | Implementation Detail |
 |---------|:---:|---|
@@ -3020,7 +3072,7 @@ For each feature and each adapter, there are exactly three possibilities:
 | Processing groups | ⚙️ Adapter | kameo has no processing groups; adapter maintains type-erased registry (implemented in v0.1) |
 | Cluster events | ⚙️ Adapter | kameo has no unified cluster events; adapter provides `KameoClusterEvents` callback system (implemented in v0.1) |
 
-### dactor-coerce
+### 14.5 dactor-coerce
 
 | Feature | Strategy | Implementation Detail |
 |---------|:---:|---|
@@ -3048,7 +3100,7 @@ For each feature and each adapter, there are exactly three possibilities:
 
 ## 15. Implementation Roadmap
 
-### Phase 1 — Foundation (v0.2.0)
+### 15.1 Phase 1 — Foundation (v0.2.0)
 1. Module reorganization (flat structure, one concept per file)
 2. Feature-gate `test_support` behind `test-support`
 3. Move `TestClock` out of `traits/clock.rs`
@@ -3058,28 +3110,28 @@ For each feature and each adapter, there are exactly three possibilities:
 7. Add `Interceptor` trait and pipeline
 8. Clean up `serde` dependency (make optional)
 
-### Phase 2 — Lifecycle & Config (v0.2.1)
+### 15.2 Phase 2 — Lifecycle & Config (v0.2.1)
 1. Lifecycle hooks on `Actor` trait (`on_start`, `on_stop`, `on_error`)
 2. Add `MailboxConfig` and `OverflowStrategy`
 3. Add `SpawnConfig` for per-actor configuration
 4. Add `spawn_with_config()` to `ActorRuntime`
 5. Update adapter crates
 
-### Phase 3 — Supervision (v0.3.0)
+### 15.3 Phase 3 — Supervision (v0.3.0)
 1. Add `SupervisionStrategy` trait
 2. Add `ChildTerminated` event
 3. Add `watch()` / `unwatch()` to `ActorRuntime`
 4. Built-in strategies: `OneForOne`, `OneForAll`, `RestForOne`
 5. Add `ErrorAction::Escalate` flow
 
-### Phase 4 — Ask Pattern & Streaming (v0.3.1)
+### 15.4 Phase 4 — Ask Pattern & Streaming (v0.3.1)
 1. Add `AskRef<M, R>` trait
 2. Add `StreamRef<M, R>` trait, `StreamSender<R>`, `BoxStream<R>`
 3. Implement for adapters (channel-based shim)
 4. Add timeout support for ask
 5. Add `futures-core` and `tokio-stream` dependencies
 
-### Phase 5 — Mock Cluster Crate (v0.4.0)
+### 15.5 Phase 5 — Mock Cluster Crate (v0.4.0)
 1. Create `dactor-mock` workspace crate
 2. `MockCluster` builder with multi-node setup
 3. `MockRuntime` implementing `ActorRuntime` per node
@@ -3095,14 +3147,14 @@ For each feature and each adapter, there are exactly three possibilities:
 
 ### 15.6 Dependency Cleanup
 
-### v0.1 dactor/Cargo.toml deps:
+#### v0.1 dactor/Cargo.toml deps:
 ```toml
 serde = { version = "1", features = ["derive"] }   # for NodeId
 tokio = { version = "1", features = ["time", "sync", "rt", "macros"] }
 tracing = "0.1"
 ```
 
-### v0.2 proposed:
+#### v0.2 proposed:
 ```toml
 [dependencies]
 tokio = { version = "1", features = ["time", "sync", "rt"] }  # drop macros
@@ -3146,7 +3198,7 @@ test-support = ["tokio/test-util"]
 
 ## 16. Module Layout
 
-### Before (v0.1)
+### 16.1 Before (v0.1)
 
 ```
 dactor/src/
@@ -3164,7 +3216,7 @@ dactor/src/
     └── test_clock.rs
 ```
 
-### After (v0.2)
+### 16.2 After (v0.2)
 
 ```
 dactor/src/
@@ -3221,7 +3273,7 @@ dactor/src/
 > **Note:** This analysis led to the decision in §4 to adopt the Kameo/Coerce
 > pattern. Retained here for reference.
 
-### 10.1 Pattern A: Ractor Style — `ActorRef<MessageEnum>`
+### A.1 Pattern A: Ractor Style — `ActorRef<MessageEnum>`
 
 ```rust
 // Single enum for ALL messages an actor handles
@@ -3263,7 +3315,7 @@ let count = call_t!(actor_ref, CounterMsg::Get, 10)?;           // ask
 - Reply channels are embedded in message enum (`RpcReplyPort<T>`)
 - State lives in `type State`, not in the actor struct
 
-### 10.2 Pattern B: Kameo Style — `ActorRef<ActorType>`, `impl Message<M>`
+### A.2 Pattern B: Kameo Style — `ActorRef<ActorType>`, `impl Message<M>`
 
 ```rust
 #[derive(Actor)]
@@ -3302,7 +3354,7 @@ let count: u64 = actor_ref.ask(Get).await?;                     // ask (type-saf
 - `type Reply` is defined per message → `ask()` returns the correct type at compile time
 - State is `&mut self`
 
-### 10.3 Pattern C: Coerce Style — `ActorRef<ActorType>`, `Handler<M>` + `Message`
+### A.3 Pattern C: Coerce Style — `ActorRef<ActorType>`, `Handler<M>` + `Message`
 
 ```rust
 struct Counter { count: u64 }
@@ -3343,7 +3395,7 @@ let count: u64 = actor.send(Get).await?;                        // ask (type-saf
 - **Separate `Handler<M>` trait** from `Message` — decouples message definition from handling
 - State is `&mut self`
 
-### 10.4 Comparison Matrix
+### A.4 Comparison Matrix
 
 | Aspect | Ractor (A) | Kameo (B) | Coerce (C) |
 |---|---|---|---|
@@ -3357,7 +3409,7 @@ let count: u64 = actor.send(Get).await?;                        // ask (type-saf
 | Boilerplate | Low (one enum) | Medium | High (two traits) |
 | Dynamic dispatch | Easy (any `ActorRef<Msg>`) | Harder (need actor type) | Harder (need actor type) |
 
-### 10.5 Can dactor Support Multiple Patterns?
+### A.5 Can dactor Support Multiple Patterns?
 
 **Not via cargo features on the same core traits** — the patterns differ at
 the type level (`ActorRef<M>` vs `ActorRef<A>`). However, a **layered
