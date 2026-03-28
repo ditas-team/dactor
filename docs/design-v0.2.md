@@ -2313,17 +2313,17 @@ pub fn cancel_after(duration: Duration) -> CancellationToken {
 ## 7. Actor Lifecycle & Supervision
 
 ```mermaid
-stateDiagram-v2
-    [*] --> Spawned: runtime.spawn()
-    Spawned --> Running: on_start()
-    Running --> Running: handle messages
-    Running --> Error: handler error/panic
-    Error --> Running: ErrorAction::Resume
-    Error --> Spawned: ErrorAction::Restart
-    Error --> Stopped: ErrorAction::Stop
-    Error --> Parent: ErrorAction::Escalate
-    Running --> Stopped: shutdown / supervision
-    Stopped --> [*]: on_stop()
+graph TD
+    S((Start)) -->|"runtime.spawn()"| SP[Spawned]
+    SP -->|"on_start()"| R[Running]
+    R -->|"handle messages"| R
+    R -->|"handler error / panic"| E{on_error}
+    E -->|Resume| R
+    E -->|Restart| SP
+    E -->|Stop| ST[Stopped]
+    E -->|Escalate| P[Parent Supervisor]
+    R -->|"shutdown / supervision"| ST
+    ST -->|"on_stop()"| F((End))
 ```
 
 ### 7.1 Supervision Strategies
