@@ -1085,6 +1085,7 @@ pub struct WireHeader {
 }
 
 /// An envelope wrapping a message body with typed headers.
+/// Used for LOCAL sends — the message is passed by move (no serialization).
 pub struct Envelope<M> {
     pub headers: Headers,
     pub body: M,
@@ -1096,6 +1097,22 @@ impl<M> From<M> for Envelope<M> {
     }
 }
 ```
+
+**`Envelope<M>` vs `WireEnvelope` — two distinct types for two paths:**
+
+| | `Envelope<M>` | `WireEnvelope` |
+|---|---|---|
+| **Used for** | Local sends (same process) | Remote sends (cross-node) |
+| **Message body** | `M` — typed, passed by move | `Vec<u8>` — serialized bytes |
+| **Headers** | `Headers` — TypeId-keyed TypeMap | `WireHeaders` — string→bytes map |
+| **Serialization** | None — zero-cost | Full — via `MessageSerializer` |
+| **Can contain `Arc`, closures** | ✅ Yes | ❌ No (must be serializable) |
+| **Version field** | No | `version: Option<u32>` |
+| **Defined in** | §5.1 | §10.1 |
+
+The runtime automatically chooses which path based on the target `ActorId`:
+- Same node (`target.node == local_node`) → `Envelope<M>`, pass by move
+- Different node → convert to `WireEnvelope`, serialize, send over network
 
 **How remote header transport works:**
 
