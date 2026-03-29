@@ -2651,6 +2651,18 @@ impl InboundInterceptor for ToggleableInterceptor {
             Disposition::Continue
         }
     }
+
+    fn on_complete(
+        &self, ctx: &InboundContext<'_>, headers: &Headers, outcome: &Outcome,
+    ) {
+        self.inner.on_complete(ctx, headers, outcome);
+    }
+
+    fn on_stream_item(
+        &self, ctx: &InboundContext<'_>, headers: &Headers, seq: u64, item: &dyn Any,
+    ) {
+        self.inner.on_stream_item(ctx, headers, seq, item);
+    }
 }
 ```
 
@@ -7335,3 +7347,107 @@ macros = ["dactor-macros"]      # proc-macro based actor definitions
 trait-actor = []                 # Handler<M> trait-based definitions
 ```
 
+
+---
+
+## Appendix B: Provider Adapter Gap Analysis
+
+> Deep analysis of how dactor's design maps to each provider, conducted 2026-03-29.
+> Identifies feature gaps, adapter challenges, and NotSupported capabilities per provider.
+
+### B.1 Cross-Provider Compatibility Matrix
+
+| dactor Feature | ractor | kameo | coerce | actix |
+|---|:---:|:---:|:---:|:---:|
+| **Actor trait + lifecycle** | ✅ Direct | ✅ Direct | ✅ Direct | ✅ Direct |
+| **Handler<M> per message** | ⚙️ Shim (enum dispatch) | ✅ Direct | ✅ Direct | ✅ Direct |
+| **Args/Deps/State split** | ⚙️ Shim (pack into Arguments) | ⚙️ Shim (construct in on_start) | ⚙️ Shim (build before spawn) | ⚙️ Shim (actor fields) |
+| **tell (fire-and-forget)** | ✅ `cast()` | ✅ `tell()` | ✅ `notify()` | ✅ `do_send()` |
+| **ask (request-reply)** | ✅ `call()` | ✅ `ask()` | ✅ `send()` | ✅ `send()` |
+| **stream (request-stream)** | ⚙️ Shim (mpsc channel) | ⚙️ Shim (StreamMessage) | ⚙️ Shim (mpsc channel) | ⚙️ Shim (mpsc channel) |
+| **Cancellation (CancellationToken)** | ⚙️ Shim (select + token) | ⚙️ Shim (select + token) | ⚙️ Shim (select + token) | ❌ Partial (drop future only) |
+| **Actor identity (ActorId)** | ✅ Direct | ✅ Direct | ✅ Direct | ✅ Direct |
+| **Watch / DeathWatch** | ✅ `monitor()` | ✅ `link()` | ⚙️ Shim (system actor) | ❌ NotSupported |
+| **Supervision (ErrorAction)** | ⚙️ Shim (SupervisionEvent) | ⚙️ Shim (on_panic/on_link_died) | ⚙️ Shim (adapter logic) | ⚙️ Partial (Supervisor only) |
+| **Unbounded mailbox** | ✅ Default | ✅ Default | ✅ Default | ❌ Not available |
+| **Bounded mailbox** | ⚙️ Shim (wrapper channel) | ✅ `spawn_bounded()` | ⚙️ Shim (wrapper queue) | ✅ `set_mailbox_capacity()` |
+| **Priority mailbox** | ❌ NotSupported | ❌ NotSupported | ❌ NotSupported | ❌ NotSupported |
+| **Interceptors (inbound/outbound)** | ⚙️ Adapter | ⚙️ Adapter | ⚙️ Adapter | ⚙️ Adapter |
+| **Processing groups** | ✅ `pg` module | ⚙️ Adapter | ✅ Sharding/pub-sub | ❌ NotSupported |
+| **Actor pools** | ✅ `Factory` module | ✅ `ActorPool` | ⚙️ Shim (sharding) | ⚙️ `SyncArbiter` |
+| **Remote tell/ask** | ✅ `ractor_cluster` | ✅ `RemoteActorRef` | ✅ `RemoteActorSystem` | ❌ NotSupported |
+| **Remote spawn** | ⚙️ Shim (SpawnManager) | ⚙️ Shim (SpawnManager) | ✅ `deploy_actor()` | ❌ NotSupported |
+| **Cluster discovery** | ⚙️ Shim (static seeds) | ✅ libp2p Kademlia | ✅ `coerce-k8s` | ❌ NotSupported |
+| **Health monitoring** | ✅ `ractor_cluster` ping | ✅ libp2p keepalive | ✅ Built-in health | ❌ NotSupported |
+| **Pluggable MessageSerializer** | ⚙️ Adapter | ⚙️ Partial (libp2p codec) | ❌ Fixed protobuf | N/A |
+| **Message versioning** | ⚙️ Adapter | ⚙️ Adapter | ⚙️ Adapter | N/A |
+
+**Legend:** ✅ Direct (native API) | ⚙️ Shim (adapter builds it) | ❌ NotSupported/N/A
+
+### B.2 Key Adapter Challenges per Provider
+
+#### Ractor
+
+1. **Handler dispatch**: ractor uses single `type Msg` enum; adapter must synthesize a type-erased enum + dynamic dispatch to per-message `Handler<M>` impls
+2. **Streaming**: no first-class streaming RPC; must build via mpsc channels on top of `call()`
+3. **Priority mailbox**: ractor has no priority queue; must return `NotSupported`
+4. **Remote spawn**: not built into `ractor_cluster`; must implement via SpawnManager system actor
+5. **Supervision**: `ErrorAction::Escalate` has no direct equivalent; must approximate via custom supervision trees
+
+#### Kameo
+
+1. **Streaming**: kameo has `StreamMessage` but semantics differ from dactor's `BoxStream` pattern
+2. **Priority mailbox**: kameo mailboxes are FIFO only; custom mailbox API exists but no priority queue implementation
+3. **Custom event loop**: kameo's `Actor::next()` hook (fully custom receive loop) cannot be expressed through dactor
+4. **Dedicated-thread actors**: `spawn_in_thread` has no dactor equivalent — lost in abstraction
+5. **Pluggable serializer**: kameo's remote uses libp2p internally; dactor's `MessageSerializer` can only wrap the payload, not replace the transport codec
+
+#### Coerce
+
+1. **Bounded mailbox**: coerce only has unbounded; adapter must wrap with bounded queue in front
+2. **Wire format**: coerce uses fixed protobuf transport; dactor's pluggable `MessageSerializer` can only operate within the payload, not replace framing
+3. **DeathWatch**: no direct "watch any actor" API; must build via system actors
+4. **Pools vs sharding**: coerce has cluster-wide sharding, not in-node worker pools; semantics differ
+5. **Persistence**: coerce has rich persistence (journaling, snapshots, recovery) that dactor does not model — lost in abstraction
+
+#### Actix
+
+1. **No remoting**: actix has NO distributed/remote actor support — all dactor cluster/remote features return `NotSupported`
+2. **No unbounded mailbox**: actix only supports bounded; dactor's `Unbounded` is `NotSupported`
+3. **No DeathWatch**: no general actor monitoring API
+4. **No processing groups**: no native group/broadcast mechanism
+5. **Limited supervision**: only `Supervisor` with restart; no `Escalate`, no `OneForAll`/`RestForOne`
+6. **Cancellation**: dropping the ask future cancels, but no in-actor cooperative cancellation via `ctx.cancelled()`
+
+### B.3 Provider-Specific Features Lost in Abstraction
+
+These features exist in the provider but cannot be accessed through dactor:
+
+| Provider | Lost Feature | Why |
+|---|---|---|
+| **ractor** | Fine-grained `SupervisionEvent` typing | Coarsened into dactor's `ErrorAction` |
+| **ractor** | Direct enum pattern matching on messages | Hidden behind `Handler<M>` dispatch |
+| **ractor** | `ActorStatus` control from handler | Not modeled in dactor |
+| **kameo** | `Actor::next()` custom event loop | dactor assumes message-driven loop |
+| **kameo** | `spawn_in_thread` (dedicated blocking thread) | No dactor equivalent |
+| **kameo** | `DelegatedReply`, `ForwardedReply` patterns | Not modeled in dactor ask |
+| **kameo** | libp2p `NetworkBehaviour` composition | dactor exposes only high-level cluster API |
+| **coerce** | `ActorTags` for metrics grouping | No dactor tag concept |
+| **coerce** | Persistence (journaling, snapshots, recovery) | Not modeled in dactor |
+| **coerce** | `Sharding` (cluster-wide actor distribution) | dactor pools are in-node only |
+| **coerce** | Protobuf-native remote message format | dactor wraps but can't replace |
+| **actix** | `Arbiter` thread affinity control | Not modeled in dactor |
+| **actix** | `SyncArbiter` (dedicated thread pool for sync actors) | Partially mapped to pools |
+| **actix** | `Context::notify_later` (self-messages) | No dactor self-message concept |
+
+### B.4 Recommendations
+
+1. **Actix adapter viability**: Given actix lacks remoting, clustering, unbounded mailbox, DeathWatch, and processing groups, a dactor-actix adapter would be significantly limited. Consider whether it's worth building or if actix should be excluded from the adapter matrix.
+
+2. **Priority mailbox**: No provider supports it natively. All adapters must return `NotSupported(PriorityMailbox)` or build a user-space approximation. Consider whether this feature is worth keeping in the design.
+
+3. **Persistence**: Coerce's persistence model (journaling + snapshots) is a significant feature that dactor doesn't model. Consider adding a `Persistence` extension trait in a future version.
+
+4. **Streaming**: All providers require adapter-level shimming for `stream()`. Consider documenting the exact expected semantics (ordering, backpressure, cancellation) more precisely so all adapters implement consistent behavior.
+
+5. **MessageSerializer pluggability**: Coerce's fixed protobuf transport limits dactor's pluggable serializer to payload-level only. Document this limitation clearly — the serializer controls message body encoding, not the transport framing.

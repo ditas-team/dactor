@@ -682,3 +682,26 @@ commands via `TestCommandHandler` trait. Same test runs against any adapter.
 11. **MessageComparer:** Single trait for priority ordering + fairness
 12. **Delegate health:** Provider detects failures, adapter reports via `on_node_unreachable`
 13. **Pluggable serialization:** `MessageSerializer` trait, default bincode, app can customize
+
+
+---
+
+## Phase 18: Provider Gap Analysis (2026-03-29)
+
+### 18.1 Deep provider adapter analysis
+**Request:** Compare dactor design against ractor, kameo, coerce, and actix. Identify
+detailed feature gaps, adapter challenges, and lost capabilities.
+
+**Action:** Conducted deep analysis of all four providers using dedicated research agents.
+Created Appendix B with:
+- Cross-provider compatibility matrix (20+ features × 4 providers)
+- Key adapter challenges per provider (5-6 items each)
+- Provider-specific features lost in abstraction (13 items)
+- Recommendations on adapter viability and design gaps
+
+**Key findings:**
+- **ractor:** Biggest challenge is Handler<M> dispatch vs single enum. Needs synthesized type-erased enum.
+- **kameo:** Closest match to dactor design. Loses custom event loop and dedicated-thread actors.
+- **coerce:** Nearly 1:1 Handler<M>. Loses persistence (journaling/snapshots) — significant gap.
+- **actix:** No remoting at all. Most cluster/remote features NotSupported. Questionable adapter viability.
+- **All providers:** Priority mailbox not natively supported anywhere. Streaming needs adapter shims everywhere.
