@@ -2123,6 +2123,82 @@ pub enum Outcome {
 }
 ```
 
+**Correlating request and reply across callbacks:**
+
+The interceptor sees the request message in `on_receive` and the reply in
+`on_complete` — but these are **separate callbacks**. The handler takes
+ownership of the message (`msg: M`, moved), so the original message is not
+available in `on_complete`. To correlate them, stash data from the request
+into headers during `on_receive` and read it back in `on_complete`:
+
+```rust
+/// Example: log the request message type alongside the reply value.
+struct RequestReplyLogger;
+
+// A local-only header to carry request info across callbacks.
+struct RequestInfo { message_type: String, received_at: Instant }
+impl HeaderValue for RequestInfo {
+    fn header_name(&self) -> &'static str { "internal.RequestInfo" }
+    fn to_bytes(&self) -> Option<Vec<u8>> { None }  // local-only
+    fn from_bytes(_: &[u8]) -> Result<Self, ActorError> { unreachable!() }
+    fn as_any(&self) -> &dyn std::any::Any { self }
+}
+
+impl InboundInterceptor for RequestReplyLogger {
+    fn name(&self) -> &'static str { "request-reply-logger" }
+
+    fn on_receive(
+        &self, ctx: &InboundContext<'_>, headers: &mut Headers, _msg: &dyn Any,
+    ) -> Disposition {
+        // Stash request info in headers for on_complete to read
+        headers.insert(RequestInfo {
+            message_type: ctx.message_type.to_string(),
+            received_at: Instant::now(),
+        });
+        Disposition::Continue
+    }
+
+    fn on_complete(
+        &self, ctx: &InboundContext<'_>, headers: &Headers, outcome: &Outcome,
+    ) {
+        let info = headers.get::<RequestInfo>();
+        let latency = info.map(|i| i.received_at.elapsed()).unwrap_or_default();
+
+        match outcome {
+            Outcome::AskSuccess { reply } => {
+                tracing::info!(
+                    actor = ctx.actor_name,
+                    request = info.map(|i| i.message_type.as_str()).unwrap_or("?"),
+                    latency_ms = latency.as_millis(),
+                    "ask completed with reply"
+                );
+            }
+            Outcome::StreamCompleted { items_emitted } => {
+                tracing::info!(
+                    actor = ctx.actor_name,
+                    request = info.map(|i| i.message_type.as_str()).unwrap_or("?"),
+                    items = items_emitted,
+                    latency_ms = latency.as_millis(),
+                    "stream completed"
+                );
+            }
+            _ => {}
+        }
+    }
+}
+```
+
+**Summary of what each callback sees:**
+
+| Callback | Sees request message? | Sees reply/items? | When called |
+|---|---|---|---|
+| `on_receive(msg)` | ✅ `message: &dyn Any` | ❌ | Before handler runs |
+| `on_complete(outcome)` | ❌ (stash in headers) | ✅ `AskSuccess { reply: &dyn Any }` | After handler finishes |
+| `on_stream_item(item)` | ❌ (stash in headers) | ✅ `item: &dyn Any` | Per stream item |
+
+Headers are the bridge — they're mutable in `on_receive` and readable in
+`on_complete` / `on_stream_item`, carrying data across the handler boundary.
+
 **Example: Logging interceptor (using external context crate)**
 
 ```rust
