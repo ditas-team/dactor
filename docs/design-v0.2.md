@@ -4029,14 +4029,10 @@ choice of `MessageSerializer` affects what evolution strategies are available:
 | Custom protobuf | Native field numbering, backward/forward compat | Best evolution, more setup |
 | Custom MessagePack | Similar to JSON but binary + compact | Good middle ground |
 
-### 11.2 Runtime Operations via System Actors
+### 11.2 Remote Actor Spawning
 
-All remote runtime operations (spawn, cancel, watch, health) are handled
-by **system actors** — see §10.2 for the complete design. System actors
-use the adapter's existing remote messaging, so dactor needs no separate
-network transport.
-
-### 11.3 Remote Actor Spawning
+> All remote runtime operations (spawn, cancel, watch) use **system actors**
+> (§10.2) via the adapter's existing remote messaging — no separate transport.
 
 All three backend libraries (ractor, kameo, coerce) support spawning actors
 on remote nodes. dactor exposes this via `SpawnConfig::target_node`.
@@ -4268,7 +4264,7 @@ where
 | Network partition | `spawn_with_config()` blocks until timeout, then returns `Err` |
 | Actor type not registered on remote | Remote node returns error; caller gets `Err(RuntimeError::Actor(ActorError { code: Unimplemented }))` |
 
-### 11.4 Serializable Actor References
+### 11.3 Serializable Actor References
 
 **Question:** Can I send an `ActorRef` to another machine and use it to call
 the actor from there?
@@ -4373,7 +4369,7 @@ impl<A: Actor> Deserialize for ActorRef<A> {
   practice, the adapter provides a custom deserializer or the ref is
   reconstructed post-deserialization.
 
-### 11.5 Remote Actor Call Example
+### 11.4 Remote Actor Call Example
 
 **Remote actor call example:**
 
@@ -4514,7 +4510,7 @@ sequenceDiagram
 | **Runtime error** | `RuntimeError::Actor(ActorError)` | Handler panicked, unhandled exception | Handler panics — adapter captures and wraps as `ActorError` |
 | **Infrastructure error** | `RuntimeError::Send` / `NotSupported` | Network timeout, node down, serialization failure | Message never reached the actor or reply was lost |
 
-### 11.6 Sending to Unavailable Actors
+### 11.5 Sending to Unavailable Actors
 
 When sending a message (local or remote) to an actor that is not available,
 the behavior depends on the send mode and the reason for unavailability.
@@ -4549,7 +4545,7 @@ graph LR
     NE --> A_NE
 ```
 
-#### Scenario 1: Actor not yet started (`on_start` in progress)
+#### 11.5.1 Scenario 1: Actor not yet started (`on_start` in progress)
 
 The actor has been spawned but `on_start()` has not completed.
 
@@ -4562,7 +4558,7 @@ The actor has been spawned but `on_start()` has not completed.
 This is by design — `spawn()` returns an `ActorRef` immediately, and
 callers can start sending without waiting for initialization.
 
-#### Scenario 2: Actor has stopped (was running, now dead)
+#### 11.5.2 Scenario 2: Actor has stopped (was running, now dead)
 
 The actor existed but has been stopped (graceful shutdown, error, or
 supervision decision).
@@ -4579,7 +4575,7 @@ the remote node replies with an error. The caller sees the same `ActorNotFound`
 error, but with higher latency. If the remote node itself is down, the caller
 sees `Err(RuntimeError::Send(...))` after a network timeout.
 
-#### Scenario 3: Actor does not exist (never spawned / wrong ID)
+#### 11.5.3 Scenario 3: Actor does not exist (never spawned / wrong ID)
 
 The `ActorRef` points to an actor that was never created, or the ID is
 invalid (e.g., stale reference from a previous incarnation).
@@ -4599,7 +4595,7 @@ invalid (e.g., stale reference from a previous incarnation).
 and returns `ActorNotFound`. If the remote **node** doesn't exist (wrong
 `NodeId`), the caller gets a network-level error after timeout.
 
-#### Summary table
+#### 11.5.4 Summary table
 
 | Scenario | `tell()` return | `ask()` return | Dead letter? |
 |---|---|---|---|
@@ -5011,7 +5007,7 @@ pipeline** (§3.2). Because interceptors see every message with full context
 also provides a built-in `MetricsInterceptor` and a `RuntimeMetrics` query
 API for common operational needs.
 
-#### 13.2 Built-in `MetricsInterceptor`
+### 13.2 Built-in `MetricsInterceptor`
 
 A ready-to-use interceptor that tracks per-actor and per-message-type
 statistics. Users register it once; it collects everything automatically.
@@ -5047,7 +5043,7 @@ impl InboundInterceptor for MetricsInterceptor {
 }
 ```
 
-#### 13.3 `MetricsStore` Query API
+### 13.3 `MetricsStore` Query API
 
 ```rust
 /// Queryable metrics collected by `MetricsInterceptor`.
@@ -5119,7 +5115,7 @@ pub struct MessageTypeMetrics {
 }
 ```
 
-#### 13.4 Custom Interceptor Examples
+### 13.4 Custom Interceptor Examples
 
 The built-in `MetricsInterceptor` covers common needs. For specialized
 observability, users write custom interceptors:
@@ -5279,7 +5275,7 @@ impl InboundInterceptor for OtelInterceptor {
 }
 ```
 
-#### 13.5 Registering Multiple Interceptors
+### 13.5 Registering Multiple Interceptors
 
 Interceptors are composable. A typical production setup:
 
@@ -6478,14 +6474,14 @@ For each feature and each adapter, there are exactly three possibilities:
 
 ### 17.6 Dependency Cleanup
 
-#### v0.1 dactor/Cargo.toml deps:
+**v0.1 dactor/Cargo.toml deps:**
 ```toml
 serde = { version = "1", features = ["derive"] }   # for NodeId
 tokio = { version = "1", features = ["time", "sync", "rt", "macros"] }
 tracing = "0.1"
 ```
 
-#### v0.2 proposed:
+**v0.2 proposed:**
 ```toml
 [dependencies]
 tokio = { version = "1", features = ["time", "sync", "rt"] }  # drop macros
