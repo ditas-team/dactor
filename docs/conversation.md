@@ -403,3 +403,150 @@ observability (§12→§11).
 8. **No opinionated context:** Headers are generic; concrete types from external crates
 9. **Sequential execution:** Fundamental actor model guarantee — `&mut self` without locks
 10. **MessageComparer:** Single trait for priority ordering + fairness in both mailbox and outbound queue
+
+---
+
+## Phase 12: Serialization & Wire Format (2026-03-29)
+
+### 12.1 Pluggable message serializer
+**Request:** Framework should provide different serializers and allow
+customization.
+
+**Decision:** `MessageSerializer` trait with `serialize<T>()` / `deserialize<T>()`.
+Built-in: `BincodeSerializer` (default, fast), `JsonSerializer` (readable).
+Custom: protobuf, MessagePack, etc. Registered via `runtime.set_message_serializer()`.
+
+### 12.2 Remote messages wrapped in envelope
+**Request:** Remote messages always wrapped in an envelope, right?
+
+**Decision:** Yes. `WireEnvelope` carries target, message_type, version, headers,
+body, request_id. `Envelope<M>` (local, typed) vs `WireEnvelope` (remote, bytes)
+— two distinct types, runtime auto-selects based on target node.
+
+### 12.3 Message versioning
+**Request:** Include optional serialization version for handling version changes.
+
+**Decision:** `WireEnvelope` gains `version: Option<u32>`. `Versioned` trait for
+messages to declare schema version. `MessageVersionHandler` trait for receiver-side
+migration (v1→v2), rejection, or pass-through. Built-in: `RejectVersionMismatch`,
+`AcceptWithWarning`.
+
+### 12.4 ErrorCodec for typed error translation
+**Request:** Runtime should provide error translator to map custom errors to
+ActorError. Should include type name so caller knows how to interpret.
+
+**Decision:** `ErrorPayload { type_name: String, data: Vec<u8> }` on `ActorError`.
+`ErrorCodec` trait — bidirectional encode/decode between custom error types and
+`ActorError`. Registered per error type. Caller uses `runtime.decode_error::<T>()`.
+
+---
+
+## Phase 13: Framework Runtime & Networking (2026-03-29)
+
+### 13.1 System actors for runtime operations
+**Request:** How does the runtime send requests over network if dactor doesn't
+own networking? Use system actors?
+
+**Decision:** Yes — `SpawnManager`, `CancelManager`, `WatchManager` are regular
+actors auto-spawned on every node. They use adapter's existing remote messaging.
+No separate transport needed. Added §10 Framework Runtime with architecture,
+registries, startup sequence.
+
+### 13.2 Remote cancellation via CancelManager
+**Request:** Same question for remote cancellation and other runtime operations.
+
+**Decision:** All runtime ops use system actors. `CancelManager` receives
+`CancelRequest` via adapter messaging, calls `local_token.cancel()`.
+Updated §6.4.2 to use system actor approach (removed "control channel" concept).
+
+### 13.3 AdapterCluster trait for node connections
+**Request:** When discovery detects a new node, adapter must establish transport.
+How does each provider handle dynamic join/leave?
+
+**Decision:** `AdapterCluster` trait with `connect()` / `disconnect()` /
+`on_node_unreachable()`. Per-provider details documented:
+- ractor: `client_connect()` → `NodeSession`
+- kameo: `swarm.dial()` → libp2p P2P
+- coerce: `RemoteActorSystem` → protobuf transport
+
+### 13.4 Health monitoring delegated to provider
+**Request:** If ractor already has heartbeats, why duplicate? What if they
+disagree on node health?
+
+**Decision:** dactor does NOT implement heartbeats. Provider detects failures →
+adapter reports via `on_node_unreachable()` → dactor emits `ClusterEvent::NodeLeft`.
+Removed `HealthMonitor` system actor. Provider is authoritative for connection health.
+
+### 13.5 Cluster state query API
+**Request:** Application should be able to query current nodes and their status.
+
+**Decision:** `runtime.cluster_state() → ClusterState` with `Vec<PeerNode>`.
+`PeerStatus` enum: Connected, Connecting, Unreachable, Disconnected.
+
+### 13.6 Outbound priority delegated to provider
+**Request:** Two-lane outbound queue re-wraps networking. As abstraction layer,
+dactor shouldn't own networking.
+
+**Decision:** Removed two-lane queue implementation from dactor core. dactor defines
+logical priority, enforces at mailbox level. Network-level priority is provider's
+responsibility — if provider supports it, adapter maps; otherwise FIFO outbound.
+
+### 13.7 MessageComparer replaces FairnessPolicy
+**Request:** System messages always first; user messages use priority queue with
+customizable comparer for ordering and starvation prevention.
+
+**Decision:** Unified `FairnessPolicy` + `PriorityOrdering` into single
+`MessageComparer` trait. `QueuedMessageMeta` provides priority, age, message_type,
+is_ask, origin_node. Same trait for mailbox and outbound queue.
+
+### 13.8 Pool Args/Deps handling
+**Request:** How does actor pool handle construction args and dependencies?
+
+**Decision:** `spawn_pool(name, config, args, deps_factory)`. Args shared (cloned N
+times, must impl Clone). Deps per-worker via `deps_factory(worker_index)`. On restart:
+same args, fresh deps from factory.
+
+---
+
+## Phase 14: Runtime Observability & Testing (2026-03-29)
+
+### 14.1 Runtime-level observability
+**Request:** §13 only covers message metrics. What about actor count, mailbox
+depth, cluster state, system actor health?
+
+**Decision:** Added §13.6 `RuntimeMetrics` — always available without interceptors:
+actor_count, actors_by_type, deepest_mailboxes, total_queued_messages, cluster state,
+system_actors_healthy, uptime.
+
+### 14.2 Integration test harness
+**Request:** Besides mock cluster, need real multi-process integration tests.
+Same control protocol for all adapters.
+
+**Decision:** `dactor-test-harness` crate with `TestNode` (standalone binary),
+`TestCluster` (launches N processes), `TestCommand/TestResponse` protocol.
+System commands (spawn, tell, ask, inspect, shutdown) + app-defined custom
+commands via `TestCommandHandler` trait. Same test runs against any adapter.
+
+### 14.3 Document formatting cleanup
+**Request:** Fix all label formats, remove duplicates, consistent heading levels.
+
+**Action:** Fixed §13 heading levels (####→###), removed §11.2 stub, renumbered
+§11 subsections, numbered §11.5 scenarios, fixed §17.6 sub-headings.
+
+---
+
+## Design Principles Established (Updated)
+
+1. **Superset rule:** Include capabilities supported by ≥2 of 6 frameworks
+2. **Three adapter strategies:** Library Native / Adapter Implemented / Not Supported
+3. **Fail-fast:** Unsupported calls return `Err`, not panic — app decides severity
+4. **Kameo/Coerce API:** `ActorRef<A>` typed to actor, `Handler<M>` per message
+5. **Args/Deps/State separation:** Args cross wire, Deps resolved locally, State rebuilt
+6. **Delegate networking:** dactor defines logical priority; network priority is provider's job
+7. **System actors for runtime ops:** SpawnManager, CancelManager, WatchManager — use adapter's messaging
+8. **Cooperative cancellation:** `CancellationToken` via `ctx.cancelled()` at `.await` points
+9. **No opinionated context:** Headers are generic; concrete types from external crates
+10. **Sequential execution:** Fundamental actor model guarantee — `&mut self` without locks
+11. **MessageComparer:** Single trait for priority ordering + fairness
+12. **Delegate health:** Provider detects failures, adapter reports via `on_node_unreachable`
+13. **Pluggable serialization:** `MessageSerializer` trait, default bincode, app can customize
