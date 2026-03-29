@@ -1083,7 +1083,591 @@ async fn main() {
 
 ---
 
-## 5. Message System
+dactor supports three communication patterns, all as methods on `ActorRef<A>`:
+
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant A as Actor
+
+    Note over C,A: 1. Tell (fire-and-forget)
+    C->>A: tell(msg)
+    Note right of A: handler runs, no reply
+
+    Note over C,A: 2. Ask (request-reply)
+    C->>A: ask(msg)
+    A-->>C: M::Reply
+
+    Note over C,A: 3. Stream (request-stream)
+    C->>A: stream(msg, buffer)
+    A-->>C: item 1
+    A-->>C: item 2
+    A-->>C: item N
+    A-->>C: (stream ends)
+```
+
+dactor supports three communication patterns, all as methods on `ActorRef<A>`:
+
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant A as Actor
+
+    Note over C,A: 1. Tell (fire-and-forget)
+    C->>A: tell(msg)
+    Note right of A: handler runs, no reply
+
+    Note over C,A: 2. Ask (request-reply)
+    C->>A: ask(msg)
+    A-->>C: M::Reply
+
+    Note over C,A: 3. Stream (request-stream)
+    C->>A: stream(msg, buffer)
+    A-->>C: item 1
+    A-->>C: item 2
+    A-->>C: item N
+    A-->>C: (stream ends)
+```
+
+### 4.9 Tell (Fire-and-Forget)
+
+The most fundamental communication pattern in the actor model. The sender
+delivers a message and does not wait for a reply. All 6 surveyed frameworks
+support this as the primary operation.
+
+```rust
+impl<A: Actor> ActorRef<A> {
+    /// Fire-and-forget: deliver a message to the actor's mailbox.
+    /// Only available for messages with `Reply = ()`.
+    /// Outbound interceptors run automatically before delivery,
+    /// stamping headers (trace context, correlation IDs, etc.).
+    pub fn tell<M>(&self, msg: M) -> Result<(), ActorSendError>
+    where
+        A: Handler<M>,
+        M: Message<Reply = ()>;
+}
+```
+
+**Key properties:**
+
+- Returns immediately — does not wait for the handler to execute
+- Returns `Ok(())` on successful mailbox delivery, `Err` if the actor is stopped
+- No reply channel — the sender has no way to know if the handler succeeded
+- Outbound interceptors enrich headers automatically — no need for manual
+  envelope construction
+- If an inbound interceptor returns `Reject`, it behaves the same as `Drop`
+  (no error path for fire-and-forget — the rejection goes to the dead letter handler)
+
+**Example:**
+
+```rust
+struct LogEvent { level: String, message: String }
+impl Message for LogEvent { type Reply = (); }
+
+// Fire-and-forget — outbound interceptors auto-inject trace context,
+// correlation ID, etc. No manual envelope needed.
+logger.tell(LogEvent {
+    level: "INFO".into(),
+    message: "user logged in".into(),
+}).unwrap();
+
+// Priority is set via an outbound interceptor, not a separate method:
+// e.g., PriorityInterceptor checks message type and sets Priority header
+logger.tell(LogEvent {
+    level: "ERROR".into(),
+    message: "disk full".into(),
+}).unwrap();
+```
+
+### 4.10 Ask (Request-Reply)
+
+**Rationale:** ractor, kameo, Akka, and Actix all support ask. Not having it
+forces users to implement reply channels manually.
+
+Ask is a method directly on `ActorRef<A>` (not a separate trait). The reply
+type is determined at compile time by `M::Reply`. Cancellation uses
+`tokio_util::sync::CancellationToken` — the standard Rust async cancellation
+primitive — instead of dedicated `_timeout` methods.
+
+```rust
+use tokio_util::sync::CancellationToken;
+
+impl<A: Actor> ActorRef<A> {
+    /// Request-reply: send a message and await the reply.
+    /// Pass `None` for no cancellation, or `Some(token)` for
+    /// timeout / explicit cancel / hierarchical scope cancellation.
+    pub async fn ask<M>(
+        &self, msg: M, cancel: Option<CancellationToken>,
+    ) -> Result<M::Reply, RuntimeError>
+    where
+        A: Handler<M>,
+        M: Message;
+}
+```
+
+**Cancellation via `CancellationToken`:**
+
+A `CancellationToken` (from `tokio_util::sync`) is the standard Rust async
+cancellation primitive. It subsumes timeouts, explicit cancels, and
+hierarchical scope cancellation — all with one parameter:
+
+```rust
+use tokio_util::sync::CancellationToken;
+
+// ── Simple ask (no cancellation) ────────────────────────────
+let balance = account.ask(GetBalance, None).await?;
+
+// ── Ask with timeout ────────────────────────────────────────
+// dactor provides a helper to create a token that auto-cancels after a duration:
+let balance = account.ask(GetBalance, Some(cancel_after(Duration::from_secs(5)))).await?;
+
+// ── Explicit cancellation (e.g., user pressed "Cancel") ─────
+let token = CancellationToken::new();
+let token_for_ui = token.clone();
+// UI thread: token_for_ui.cancel() when user clicks Cancel
+let balance = account.ask(GetBalance, Some(token)).await?;
+
+// ── Hierarchical: cancel all child operations ───────────────
+let parent_token = CancellationToken::new();
+let (r1, r2) = tokio::join!(
+    actor1.ask(Query1, Some(parent_token.child_token())),
+    actor2.ask(Query2, Some(parent_token.child_token())),
+);
+// Cancel everything if the parent scope ends:
+parent_token.cancel();  // both child tokens are also cancelled
+```
+
+**Helper:**
+
+```rust
+/// Create a CancellationToken that auto-cancels after the given duration.
+pub fn cancel_after(duration: Duration) -> CancellationToken {
+    let token = CancellationToken::new();
+    let t = token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(duration).await;
+        t.cancel();
+    });
+    token
+}
+```
+
+**What happens on cancellation:** See §6.4 for the complete cancellation
+design (applies identically to ask and stream).
+
+### 4.11 Streaming (Request-Stream)
+
+**Rationale:** Erlang supports multi-part `gen_server` replies where a server
+sends chunked results back to the caller over time. Akka has first-class
+support via Akka Streams `Source`, tightly integrated with actors. gRPC server
+streaming is the dominant RPC pattern for streaming data. In Rust, the async
+`Stream` trait (`futures_core::Stream`) is the standard abstraction, and
+`tokio::sync::mpsc` channels convert naturally into streams via
+`tokio_stream::wrappers::ReceiverStream`.
+
+dactor should provide a `stream()` method on actor references that sends a
+request to an actor and returns an async stream of response items. This enables
+use cases like:
+
+- Paginated data retrieval
+- Real-time event feeds / subscriptions
+- Long-running computation with progressive results
+- Fan-out aggregation with incremental delivery
+
+**Core types:**
+
+```rust
+use std::pin::Pin;
+use futures_core::Stream;
+
+/// A pinned, boxed, Send-safe async stream of items.
+/// This is the return type from `StreamRef::stream()` — the caller
+/// consumes it with `while let Some(item) = stream.next().await`.
+pub type BoxStream<T> = Pin<Box<dyn Stream<Item = T> + Send>>;
+
+/// A sender handle given to the actor's stream handler.
+/// The actor pushes items into this sender; the caller receives them
+/// as an async stream on the other end.
+///
+/// Backed by a bounded `mpsc` channel for backpressure.
+pub struct StreamSender<T: Send + 'static> {
+    inner: tokio::sync::mpsc::Sender<T>,
+}
+
+impl<T: Send + 'static> StreamSender<T> {
+    /// Send an item to the stream consumer.
+    /// Returns `Err` if the consumer has dropped the stream.
+    #[must_use = "check if the consumer dropped the stream to stop producing"]
+    pub async fn send(&self, item: T) -> Result<(), StreamSendError> {
+        self.inner.send(item).await
+            .map_err(|_| StreamSendError::ConsumerDropped)
+    }
+
+    /// Try to send without blocking. Returns `Err` if the channel is
+    /// full or the consumer has dropped.
+    pub fn try_send(&self, item: T) -> Result<(), StreamSendError> {
+        self.inner.try_send(item)
+            .map_err(|e| match e {
+                tokio::sync::mpsc::error::TrySendError::Full(_) =>
+                    StreamSendError::Full,
+                tokio::sync::mpsc::error::TrySendError::Closed(_) =>
+                    StreamSendError::ConsumerDropped,
+            })
+    }
+
+    /// Check if the consumer is still listening.
+    pub fn is_closed(&self) -> bool {
+        self.inner.is_closed()
+    }
+}
+
+#[derive(Debug)]
+pub enum StreamSendError {
+    /// The consumer dropped the stream (no longer reading).
+    ConsumerDropped,
+    /// The channel buffer is full (backpressure).
+    Full,
+}
+```
+
+**Extension trait on `ActorRef`:**
+
+Streaming is a method on `ActorRef<A>`. The actor's handler receives a
+`StreamSender<R>` to push items into:
+
+```rust
+impl<A: Actor> ActorRef<A> {
+    /// Send a request and receive a stream of responses.
+    ///
+    /// `buffer` controls the channel capacity (backpressure). A typical
+    /// default is 16 or 32.
+    ///
+    /// Pass `None` for no cancellation, or `Some(token)` to cancel the
+    /// stream externally. When the token is cancelled, the stream closes
+    /// and the actor's `StreamSender::send()` returns `ConsumerDropped`.
+    ///
+    /// Returns `Err(RuntimeError::NotSupported)` if the adapter doesn't
+    /// support streaming.
+    pub fn stream<M>(
+        &self,
+        msg: M,
+        buffer: usize,
+        cancel: Option<CancellationToken>,
+    ) -> Result<BoxStream<M::Reply>, RuntimeError>
+    where
+        A: Handler<M>,
+        M: Message;
+}
+```
+
+**How it works (adapter implementation pattern):**
+
+```
+Caller                       Adapter Layer                     Actor
+  │                               │                              │
+  │  stream(request, buf=16)      │                              │
+  │──────────────────────────────►│                              │
+  │                               │  create mpsc(16)             │
+  │                               │  tx = StreamSender(sender)   │
+  │                               │  rx = ReceiverStream(recv)   │
+  │                               │                              │
+  │                               │  deliver (request, tx)       │
+  │                               │─────────────────────────────►│
+  │◄─ return BoxStream(rx)        │                              │
+  │                               │                              │
+  │  .next().await ◄──────────────│◄── tx.send(item_1) ─────────│
+  │  .next().await ◄──────────────│◄── tx.send(item_2) ─────────│
+  │  .next().await ◄──────────────│◄── tx.send(item_3) ─────────│
+  │  None (stream ends) ◄────────│◄── drop(tx) ─────────────────│
+```
+
+**Backpressure:** The bounded channel naturally provides backpressure. If the
+caller is slow to consume, the actor's `tx.send().await` will suspend until
+the caller reads an item, preventing unbounded memory growth.
+
+**Cancellation:** When the caller drops the `BoxStream`, the `Receiver` is
+dropped, closing the channel. The actor's next `tx.send()` returns
+`StreamSendError::ConsumerDropped`, signaling it to stop producing.
+
+**Example usage (caller side):**
+
+```rust
+use tokio_stream::StreamExt;
+
+async fn get_logs(log_actor: &ActorRef<LogServer>) {
+    let mut stream = log_actor.stream(GetLogs { since: yesterday() }, 32, None).unwrap();
+
+    while let Some(entry) = stream.next().await {
+        println!("{}: {}", entry.timestamp, entry.message);
+    }
+}
+```
+
+**Example usage (actor handler side):**
+
+```rust
+// The actor receives a tuple of (request, StreamSender)
+// when dispatched via stream(). The adapter wraps the handler.
+async fn handle_get_logs(request: GetLogs, tx: StreamSender<LogEntry>) {
+    for entry in database.query_logs(request.since).await {
+        if tx.send(entry).await.is_err() {
+            break; // consumer dropped the stream
+        }
+    }
+    // dropping tx closes the stream on the caller side
+}
+```
+
+**Relationship to Tell and Ask:** The three patterns form a spectrum:
+- `tell()` — request → no reply (fire-and-forget)
+- `ask()` — request → single reply
+- `stream()` — request → multiple replies
+
+All three are methods on `ActorRef<A>`, providing a unified API.
+
+**Dependencies:** The core crate adds `futures-core` (for the `Stream` trait)
+and `tokio-stream` (for `ReceiverStream`) as dependencies, both lightweight
+and standard in the async Rust ecosystem.
+
+### 4.12 Cancellation
+
+Cancellation applies to both `ask()` and `stream()` — the design is
+identical. `tell()` is fire-and-forget and does not support cancellation.
+
+**The problem:** Actors process messages sequentially on a single task
+(§4.3). How does a handler receive a cancellation signal while it's running,
+without violating the single-threaded execution guarantee?
+
+**Answer:** The handler is `async` — it `.await`s at yield points (database
+queries, network calls, channel sends). Cancellation is checked at those
+yield points via `tokio::select!` against a `CancellationToken` provided
+through `ActorContext`. The handler is never *interrupted* mid-computation
+— it cooperatively checks for cancellation.
+
+#### 4.12.1 Local Cancellation
+
+For local `ask()` / `stream()`, the caller's `CancellationToken` is passed
+directly to the runtime, which makes it available via `ctx.cancelled()`:
+
+```rust
+// Caller:
+let result = actor.ask(ExpensiveQuery { ... }, Some(cancel_after(Duration::from_secs(5)))).await?;
+
+// Handler:
+#[async_trait]
+impl Handler<ExpensiveQuery> for Worker {
+    async fn handle(&mut self, msg: ExpensiveQuery, ctx: &mut ActorContext)
+        -> Result<Vec<Row>, ActorError>
+    {
+        let mut results = Vec::new();
+        for batch in msg.batches() {
+            tokio::select! {
+                _ = ctx.cancelled() => {
+                    return Err(ActorError::new(ErrorCode::Cancelled, "cancelled by caller"));
+                }
+                rows = self.db.query(&batch) => {
+                    results.extend(rows?);
+                }
+            }
+        }
+        Ok(results)
+    }
+}
+```
+
+#### 4.12.2 Remote Cancellation
+
+`CancellationToken` is an in-process primitive — it **cannot be serialized**.
+For remote calls, the runtime's local `CancelManager` system actor sends a
+`CancelRequest` to the remote node's `CancelManager` system actor (see §10.2).
+This uses the adapter's existing remote messaging — no separate transport.
+
+```mermaid
+sequenceDiagram
+    participant C as Caller (Node 1)
+    participant R as Runtime (Node 1)
+    participant CM1 as CancelManager (Node 1)
+    participant CM2 as CancelManager (Node 2)
+    participant H as Handler (Node 2)
+
+    C->>R: ask(msg, Some(cancel_token))
+    R->>R: assign request_id=42, create local tracking
+    R->>H: deliver message to handler (via adapter messaging)
+    Note over H: handler runs, checks ctx.cancelled()
+
+    Note over C: caller's token.cancel() triggered
+    R->>CM1: cancel request_id=42
+    CM1->>CM2: tell(CancelRequest { request_id: 42 })
+    Note over CM1,CM2: sent via adapter's remote actor messaging<br/>with Priority::CRITICAL
+    CM2->>CM2: lookup request_id=42 → local_token.cancel()
+
+    Note over H: next .await wakes via select!<br/>→ returns Err(Cancelled)
+
+    H-->>R: Err(Cancelled)
+    R-->>C: Err(Cancelled)
+```
+
+**`CancelRequest` is sent as a `Priority::CRITICAL` message to the remote
+`CancelManager` system actor.** Since `CancelManager` has its own mailbox
+(separate from the target actor's mailbox), the cancel is not blocked by
+the target actor's message queue.
+
+On the remote node, `CancelManager` maintains a map of `request_id →
+local CancellationToken`. When it receives a `CancelRequest`, it calls
+`token.cancel()`, which wakes the handler's `select!` at the next `.await`
+point.
+
+```rust
+/// System actor that handles cancellation requests on this node.
+/// One per node, spawned automatically by the runtime.
+pub(crate) struct CancelManager {
+    active_requests: HashMap<u64, CancellationToken>,
+}
+
+impl Actor for CancelManager {
+    type Args = ();
+    type Deps = ();
+    fn create(_args: (), _deps: ()) -> Self {
+        CancelManager { active_requests: HashMap::new() }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct CancelRequest {
+    pub request_id: u64,
+}
+
+impl Message for CancelRequest { type Reply = (); }
+
+#[async_trait]
+impl Handler<CancelRequest> for CancelManager {
+    async fn handle(&mut self, msg: CancelRequest, _ctx: &mut ActorContext) {
+        if let Some(token) = self.active_requests.remove(&msg.request_id) {
+            token.cancel();
+        }
+    }
+}
+```
+
+#### 4.12.3 How the Runtime Delivers Cancellation
+
+The cancellation signal does **not** enter the actor's mailbox. Instead,
+the runtime manages it out-of-band:
+
+```mermaid
+graph LR
+    subgraph "Normal Message Path"
+        M1[msg1] --> MB[Mailbox Queue]
+        M2[msg2] --> MB
+        M3[msg3] --> MB
+        MB --> RECV["mailbox.recv()"]
+    end
+
+    subgraph "Control Path (bypasses mailbox)"
+        CR[CancelRequest] --> RT[Runtime]
+        RT --> LT["local_token.cancel()"]
+    end
+
+    subgraph "Actor Task"
+        RECV --> SEL{"select!"}
+        LT --> SEL
+        SEL -->|"handler(msg)"| H[Handle message]
+        SEL -->|"cancelled()"| C[Return Err Cancelled]
+    end
+```
+
+The runtime wraps each handler invocation in a `select!` that races the
+handler against `local_token.cancelled()`. This means:
+
+- **Handlers that opt in** (using `ctx.cancelled()` inside their own
+  `select!`) get fine-grained cancellation at their chosen yield points
+- **Handlers that don't opt in** still get cancelled at the outer `select!`
+  after the handler returns — the reply is discarded if the token has fired
+
+#### 4.12.4 Thread Safety Guarantees
+
+1. **No thread interruption** — the actor's single task is never interrupted.
+   Cancellation is cooperative: it triggers at `.await` points via `select!`.
+
+2. **`ctx.cancelled()` is a future, not a signal** — it only resolves when
+   polled at an `.await` point. Between `.await` points, the handler runs
+   uninterrupted.
+
+3. **No data races** — `CancellationToken` uses atomic operations internally.
+   The handler polling `ctx.cancelled()` and the runtime calling
+   `local_token.cancel()` happen on different tokio tasks, coordinated
+   safely by the tokio scheduler.
+
+4. **Cancellation granularity depends on the handler:**
+
+   | Handler type | Cancellation speed |
+   |---|---|
+   | Many `.await` points (batch processing) | Fast — cancels between batches |
+   | One long `.await` (single DB query) | Slow — cancels when query completes |
+   | CPU-bound, no `.await` | Cannot cancel until handler returns |
+   | Stream handler (sends many items) | Fast — `tx.send().await` checks each item |
+
+#### 4.12.5 Cancellation Outcomes
+
+| Scenario | `ask()` result | `stream()` result |
+|---|---|---|
+| Token cancelled before handler starts | `Err(Cancelled)` | `Err(Cancelled)` — stream never opens |
+| Token cancelled during handler | `Err(Cancelled)` | Stream closes, `StreamSender` returns `ConsumerDropped` |
+| Handler finishes before cancel arrives | `Ok(reply)` — cancel is a no-op | Stream items delivered, then ends normally |
+| No cancellation token (`None`) | Runs to completion | Runs to completion |
+| Handler cooperatively checks `ctx.cancelled()` | Returns `Err(Cancelled)` with partial results | Stops sending items, drops `StreamSender` |
+
+#### 4.12.6 `ErrorCode::Cancelled`
+
+```rust
+#[non_exhaustive]
+pub enum ErrorCode {
+    // ... existing codes ...
+
+    /// The operation was cancelled by the caller (via CancellationToken).
+    /// Analogous to gRPC `CANCELLED`.
+    Cancelled,
+}
+```
+
+#### 4.12.7 `ActorContext.cancelled()`
+
+```rust
+impl ActorContext {
+    /// Returns a future that completes when the current operation is
+    /// cancelled (by the caller or by timeout). Use with `tokio::select!`.
+    ///
+    /// For calls without a CancellationToken (`None`), this future
+    /// never completes — the operation runs to completion.
+    pub async fn cancelled(&self);
+}
+```
+
+#### 4.12.8 Helper: `cancel_after()`
+
+```rust
+/// Create a CancellationToken that auto-cancels after the given duration.
+/// Convenience for timeout-based cancellation.
+pub fn cancel_after(duration: Duration) -> CancellationToken {
+    let token = CancellationToken::new();
+    let t = token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(duration).await;
+        t.cancel();
+    });
+    token
+}
+```
+
+---
+
+## 5. Messaging & Mailbox
+
+**Scope:** Mailbox configuration is **per-actor**. Each actor has its own
+independent mailbox with its own type (FIFO / bounded / priority), capacity,
+overflow strategy, and fairness policy. There is no global cross-actor
+priority queue — the runtime schedules actors independently, and each actor
+processes messages from its own mailbox in its own order.
 
 ### 5.1 Envelope & Headers
 
@@ -2120,736 +2704,7 @@ runtime.add_outbound_interceptor(Box::new(throttle))?;
 
 ---
 
-## 6. Communication Patterns
-
-dactor supports three communication patterns, all as methods on `ActorRef<A>`:
-
-```mermaid
-sequenceDiagram
-    participant C as Caller
-    participant A as Actor
-
-    Note over C,A: 1. Tell (fire-and-forget)
-    C->>A: tell(msg)
-    Note right of A: handler runs, no reply
-
-    Note over C,A: 2. Ask (request-reply)
-    C->>A: ask(msg)
-    A-->>C: M::Reply
-
-    Note over C,A: 3. Stream (request-stream)
-    C->>A: stream(msg, buffer)
-    A-->>C: item 1
-    A-->>C: item 2
-    A-->>C: item N
-    A-->>C: (stream ends)
-```
-
-### 6.1 Tell (Fire-and-Forget)
-
-The most fundamental communication pattern in the actor model. The sender
-delivers a message and does not wait for a reply. All 6 surveyed frameworks
-support this as the primary operation.
-
-```rust
-impl<A: Actor> ActorRef<A> {
-    /// Fire-and-forget: deliver a message to the actor's mailbox.
-    /// Only available for messages with `Reply = ()`.
-    /// Outbound interceptors run automatically before delivery,
-    /// stamping headers (trace context, correlation IDs, etc.).
-    pub fn tell<M>(&self, msg: M) -> Result<(), ActorSendError>
-    where
-        A: Handler<M>,
-        M: Message<Reply = ()>;
-}
-```
-
-**Key properties:**
-
-- Returns immediately — does not wait for the handler to execute
-- Returns `Ok(())` on successful mailbox delivery, `Err` if the actor is stopped
-- No reply channel — the sender has no way to know if the handler succeeded
-- Outbound interceptors enrich headers automatically — no need for manual
-  envelope construction
-- If an inbound interceptor returns `Reject`, it behaves the same as `Drop`
-  (no error path for fire-and-forget — the rejection goes to the dead letter handler)
-
-**Example:**
-
-```rust
-struct LogEvent { level: String, message: String }
-impl Message for LogEvent { type Reply = (); }
-
-// Fire-and-forget — outbound interceptors auto-inject trace context,
-// correlation ID, etc. No manual envelope needed.
-logger.tell(LogEvent {
-    level: "INFO".into(),
-    message: "user logged in".into(),
-}).unwrap();
-
-// Priority is set via an outbound interceptor, not a separate method:
-// e.g., PriorityInterceptor checks message type and sets Priority header
-logger.tell(LogEvent {
-    level: "ERROR".into(),
-    message: "disk full".into(),
-}).unwrap();
-```
-
-### 6.2 Ask (Request-Reply)
-
-**Rationale:** ractor, kameo, Akka, and Actix all support ask. Not having it
-forces users to implement reply channels manually.
-
-Ask is a method directly on `ActorRef<A>` (not a separate trait). The reply
-type is determined at compile time by `M::Reply`. Cancellation uses
-`tokio_util::sync::CancellationToken` — the standard Rust async cancellation
-primitive — instead of dedicated `_timeout` methods.
-
-```rust
-use tokio_util::sync::CancellationToken;
-
-impl<A: Actor> ActorRef<A> {
-    /// Request-reply: send a message and await the reply.
-    /// Pass `None` for no cancellation, or `Some(token)` for
-    /// timeout / explicit cancel / hierarchical scope cancellation.
-    pub async fn ask<M>(
-        &self, msg: M, cancel: Option<CancellationToken>,
-    ) -> Result<M::Reply, RuntimeError>
-    where
-        A: Handler<M>,
-        M: Message;
-}
-```
-
-**Cancellation via `CancellationToken`:**
-
-A `CancellationToken` (from `tokio_util::sync`) is the standard Rust async
-cancellation primitive. It subsumes timeouts, explicit cancels, and
-hierarchical scope cancellation — all with one parameter:
-
-```rust
-use tokio_util::sync::CancellationToken;
-
-// ── Simple ask (no cancellation) ────────────────────────────
-let balance = account.ask(GetBalance, None).await?;
-
-// ── Ask with timeout ────────────────────────────────────────
-// dactor provides a helper to create a token that auto-cancels after a duration:
-let balance = account.ask(GetBalance, Some(cancel_after(Duration::from_secs(5)))).await?;
-
-// ── Explicit cancellation (e.g., user pressed "Cancel") ─────
-let token = CancellationToken::new();
-let token_for_ui = token.clone();
-// UI thread: token_for_ui.cancel() when user clicks Cancel
-let balance = account.ask(GetBalance, Some(token)).await?;
-
-// ── Hierarchical: cancel all child operations ───────────────
-let parent_token = CancellationToken::new();
-let (r1, r2) = tokio::join!(
-    actor1.ask(Query1, Some(parent_token.child_token())),
-    actor2.ask(Query2, Some(parent_token.child_token())),
-);
-// Cancel everything if the parent scope ends:
-parent_token.cancel();  // both child tokens are also cancelled
-```
-
-**Helper:**
-
-```rust
-/// Create a CancellationToken that auto-cancels after the given duration.
-pub fn cancel_after(duration: Duration) -> CancellationToken {
-    let token = CancellationToken::new();
-    let t = token.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(duration).await;
-        t.cancel();
-    });
-    token
-}
-```
-
-**What happens on cancellation:** See §6.4 for the complete cancellation
-design (applies identically to ask and stream).
-
-### 6.3 Streaming (Request-Stream)
-
-**Rationale:** Erlang supports multi-part `gen_server` replies where a server
-sends chunked results back to the caller over time. Akka has first-class
-support via Akka Streams `Source`, tightly integrated with actors. gRPC server
-streaming is the dominant RPC pattern for streaming data. In Rust, the async
-`Stream` trait (`futures_core::Stream`) is the standard abstraction, and
-`tokio::sync::mpsc` channels convert naturally into streams via
-`tokio_stream::wrappers::ReceiverStream`.
-
-dactor should provide a `stream()` method on actor references that sends a
-request to an actor and returns an async stream of response items. This enables
-use cases like:
-
-- Paginated data retrieval
-- Real-time event feeds / subscriptions
-- Long-running computation with progressive results
-- Fan-out aggregation with incremental delivery
-
-**Core types:**
-
-```rust
-use std::pin::Pin;
-use futures_core::Stream;
-
-/// A pinned, boxed, Send-safe async stream of items.
-/// This is the return type from `StreamRef::stream()` — the caller
-/// consumes it with `while let Some(item) = stream.next().await`.
-pub type BoxStream<T> = Pin<Box<dyn Stream<Item = T> + Send>>;
-
-/// A sender handle given to the actor's stream handler.
-/// The actor pushes items into this sender; the caller receives them
-/// as an async stream on the other end.
-///
-/// Backed by a bounded `mpsc` channel for backpressure.
-pub struct StreamSender<T: Send + 'static> {
-    inner: tokio::sync::mpsc::Sender<T>,
-}
-
-impl<T: Send + 'static> StreamSender<T> {
-    /// Send an item to the stream consumer.
-    /// Returns `Err` if the consumer has dropped the stream.
-    #[must_use = "check if the consumer dropped the stream to stop producing"]
-    pub async fn send(&self, item: T) -> Result<(), StreamSendError> {
-        self.inner.send(item).await
-            .map_err(|_| StreamSendError::ConsumerDropped)
-    }
-
-    /// Try to send without blocking. Returns `Err` if the channel is
-    /// full or the consumer has dropped.
-    pub fn try_send(&self, item: T) -> Result<(), StreamSendError> {
-        self.inner.try_send(item)
-            .map_err(|e| match e {
-                tokio::sync::mpsc::error::TrySendError::Full(_) =>
-                    StreamSendError::Full,
-                tokio::sync::mpsc::error::TrySendError::Closed(_) =>
-                    StreamSendError::ConsumerDropped,
-            })
-    }
-
-    /// Check if the consumer is still listening.
-    pub fn is_closed(&self) -> bool {
-        self.inner.is_closed()
-    }
-}
-
-#[derive(Debug)]
-pub enum StreamSendError {
-    /// The consumer dropped the stream (no longer reading).
-    ConsumerDropped,
-    /// The channel buffer is full (backpressure).
-    Full,
-}
-```
-
-**Extension trait on `ActorRef`:**
-
-Streaming is a method on `ActorRef<A>`. The actor's handler receives a
-`StreamSender<R>` to push items into:
-
-```rust
-impl<A: Actor> ActorRef<A> {
-    /// Send a request and receive a stream of responses.
-    ///
-    /// `buffer` controls the channel capacity (backpressure). A typical
-    /// default is 16 or 32.
-    ///
-    /// Pass `None` for no cancellation, or `Some(token)` to cancel the
-    /// stream externally. When the token is cancelled, the stream closes
-    /// and the actor's `StreamSender::send()` returns `ConsumerDropped`.
-    ///
-    /// Returns `Err(RuntimeError::NotSupported)` if the adapter doesn't
-    /// support streaming.
-    pub fn stream<M>(
-        &self,
-        msg: M,
-        buffer: usize,
-        cancel: Option<CancellationToken>,
-    ) -> Result<BoxStream<M::Reply>, RuntimeError>
-    where
-        A: Handler<M>,
-        M: Message;
-}
-```
-
-**How it works (adapter implementation pattern):**
-
-```
-Caller                       Adapter Layer                     Actor
-  │                               │                              │
-  │  stream(request, buf=16)      │                              │
-  │──────────────────────────────►│                              │
-  │                               │  create mpsc(16)             │
-  │                               │  tx = StreamSender(sender)   │
-  │                               │  rx = ReceiverStream(recv)   │
-  │                               │                              │
-  │                               │  deliver (request, tx)       │
-  │                               │─────────────────────────────►│
-  │◄─ return BoxStream(rx)        │                              │
-  │                               │                              │
-  │  .next().await ◄──────────────│◄── tx.send(item_1) ─────────│
-  │  .next().await ◄──────────────│◄── tx.send(item_2) ─────────│
-  │  .next().await ◄──────────────│◄── tx.send(item_3) ─────────│
-  │  None (stream ends) ◄────────│◄── drop(tx) ─────────────────│
-```
-
-**Backpressure:** The bounded channel naturally provides backpressure. If the
-caller is slow to consume, the actor's `tx.send().await` will suspend until
-the caller reads an item, preventing unbounded memory growth.
-
-**Cancellation:** When the caller drops the `BoxStream`, the `Receiver` is
-dropped, closing the channel. The actor's next `tx.send()` returns
-`StreamSendError::ConsumerDropped`, signaling it to stop producing.
-
-**Example usage (caller side):**
-
-```rust
-use tokio_stream::StreamExt;
-
-async fn get_logs(log_actor: &ActorRef<LogServer>) {
-    let mut stream = log_actor.stream(GetLogs { since: yesterday() }, 32, None).unwrap();
-
-    while let Some(entry) = stream.next().await {
-        println!("{}: {}", entry.timestamp, entry.message);
-    }
-}
-```
-
-**Example usage (actor handler side):**
-
-```rust
-// The actor receives a tuple of (request, StreamSender)
-// when dispatched via stream(). The adapter wraps the handler.
-async fn handle_get_logs(request: GetLogs, tx: StreamSender<LogEntry>) {
-    for entry in database.query_logs(request.since).await {
-        if tx.send(entry).await.is_err() {
-            break; // consumer dropped the stream
-        }
-    }
-    // dropping tx closes the stream on the caller side
-}
-```
-
-**Relationship to Tell and Ask:** The three patterns form a spectrum:
-- `tell()` — request → no reply (fire-and-forget)
-- `ask()` — request → single reply
-- `stream()` — request → multiple replies
-
-All three are methods on `ActorRef<A>`, providing a unified API.
-
-**Dependencies:** The core crate adds `futures-core` (for the `Stream` trait)
-and `tokio-stream` (for `ReceiverStream`) as dependencies, both lightweight
-and standard in the async Rust ecosystem.
-
-### 6.4 Cancellation
-
-Cancellation applies to both `ask()` and `stream()` — the design is
-identical. `tell()` is fire-and-forget and does not support cancellation.
-
-**The problem:** Actors process messages sequentially on a single task
-(§4.3). How does a handler receive a cancellation signal while it's running,
-without violating the single-threaded execution guarantee?
-
-**Answer:** The handler is `async` — it `.await`s at yield points (database
-queries, network calls, channel sends). Cancellation is checked at those
-yield points via `tokio::select!` against a `CancellationToken` provided
-through `ActorContext`. The handler is never *interrupted* mid-computation
-— it cooperatively checks for cancellation.
-
-#### 6.4.1 Local Cancellation
-
-For local `ask()` / `stream()`, the caller's `CancellationToken` is passed
-directly to the runtime, which makes it available via `ctx.cancelled()`:
-
-```rust
-// Caller:
-let result = actor.ask(ExpensiveQuery { ... }, Some(cancel_after(Duration::from_secs(5)))).await?;
-
-// Handler:
-#[async_trait]
-impl Handler<ExpensiveQuery> for Worker {
-    async fn handle(&mut self, msg: ExpensiveQuery, ctx: &mut ActorContext)
-        -> Result<Vec<Row>, ActorError>
-    {
-        let mut results = Vec::new();
-        for batch in msg.batches() {
-            tokio::select! {
-                _ = ctx.cancelled() => {
-                    return Err(ActorError::new(ErrorCode::Cancelled, "cancelled by caller"));
-                }
-                rows = self.db.query(&batch) => {
-                    results.extend(rows?);
-                }
-            }
-        }
-        Ok(results)
-    }
-}
-```
-
-#### 6.4.2 Remote Cancellation
-
-`CancellationToken` is an in-process primitive — it **cannot be serialized**.
-For remote calls, the runtime's local `CancelManager` system actor sends a
-`CancelRequest` to the remote node's `CancelManager` system actor (see §10.2).
-This uses the adapter's existing remote messaging — no separate transport.
-
-```mermaid
-sequenceDiagram
-    participant C as Caller (Node 1)
-    participant R as Runtime (Node 1)
-    participant CM1 as CancelManager (Node 1)
-    participant CM2 as CancelManager (Node 2)
-    participant H as Handler (Node 2)
-
-    C->>R: ask(msg, Some(cancel_token))
-    R->>R: assign request_id=42, create local tracking
-    R->>H: deliver message to handler (via adapter messaging)
-    Note over H: handler runs, checks ctx.cancelled()
-
-    Note over C: caller's token.cancel() triggered
-    R->>CM1: cancel request_id=42
-    CM1->>CM2: tell(CancelRequest { request_id: 42 })
-    Note over CM1,CM2: sent via adapter's remote actor messaging<br/>with Priority::CRITICAL
-    CM2->>CM2: lookup request_id=42 → local_token.cancel()
-
-    Note over H: next .await wakes via select!<br/>→ returns Err(Cancelled)
-
-    H-->>R: Err(Cancelled)
-    R-->>C: Err(Cancelled)
-```
-
-**`CancelRequest` is sent as a `Priority::CRITICAL` message to the remote
-`CancelManager` system actor.** Since `CancelManager` has its own mailbox
-(separate from the target actor's mailbox), the cancel is not blocked by
-the target actor's message queue.
-
-On the remote node, `CancelManager` maintains a map of `request_id →
-local CancellationToken`. When it receives a `CancelRequest`, it calls
-`token.cancel()`, which wakes the handler's `select!` at the next `.await`
-point.
-
-```rust
-/// System actor that handles cancellation requests on this node.
-/// One per node, spawned automatically by the runtime.
-pub(crate) struct CancelManager {
-    active_requests: HashMap<u64, CancellationToken>,
-}
-
-impl Actor for CancelManager {
-    type Args = ();
-    type Deps = ();
-    fn create(_args: (), _deps: ()) -> Self {
-        CancelManager { active_requests: HashMap::new() }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-pub(crate) struct CancelRequest {
-    pub request_id: u64,
-}
-
-impl Message for CancelRequest { type Reply = (); }
-
-#[async_trait]
-impl Handler<CancelRequest> for CancelManager {
-    async fn handle(&mut self, msg: CancelRequest, _ctx: &mut ActorContext) {
-        if let Some(token) = self.active_requests.remove(&msg.request_id) {
-            token.cancel();
-        }
-    }
-}
-```
-
-#### 6.4.3 How the Runtime Delivers Cancellation
-
-The cancellation signal does **not** enter the actor's mailbox. Instead,
-the runtime manages it out-of-band:
-
-```mermaid
-graph LR
-    subgraph "Normal Message Path"
-        M1[msg1] --> MB[Mailbox Queue]
-        M2[msg2] --> MB
-        M3[msg3] --> MB
-        MB --> RECV["mailbox.recv()"]
-    end
-
-    subgraph "Control Path (bypasses mailbox)"
-        CR[CancelRequest] --> RT[Runtime]
-        RT --> LT["local_token.cancel()"]
-    end
-
-    subgraph "Actor Task"
-        RECV --> SEL{"select!"}
-        LT --> SEL
-        SEL -->|"handler(msg)"| H[Handle message]
-        SEL -->|"cancelled()"| C[Return Err Cancelled]
-    end
-```
-
-The runtime wraps each handler invocation in a `select!` that races the
-handler against `local_token.cancelled()`. This means:
-
-- **Handlers that opt in** (using `ctx.cancelled()` inside their own
-  `select!`) get fine-grained cancellation at their chosen yield points
-- **Handlers that don't opt in** still get cancelled at the outer `select!`
-  after the handler returns — the reply is discarded if the token has fired
-
-#### 6.4.4 Thread Safety Guarantees
-
-1. **No thread interruption** — the actor's single task is never interrupted.
-   Cancellation is cooperative: it triggers at `.await` points via `select!`.
-
-2. **`ctx.cancelled()` is a future, not a signal** — it only resolves when
-   polled at an `.await` point. Between `.await` points, the handler runs
-   uninterrupted.
-
-3. **No data races** — `CancellationToken` uses atomic operations internally.
-   The handler polling `ctx.cancelled()` and the runtime calling
-   `local_token.cancel()` happen on different tokio tasks, coordinated
-   safely by the tokio scheduler.
-
-4. **Cancellation granularity depends on the handler:**
-
-   | Handler type | Cancellation speed |
-   |---|---|
-   | Many `.await` points (batch processing) | Fast — cancels between batches |
-   | One long `.await` (single DB query) | Slow — cancels when query completes |
-   | CPU-bound, no `.await` | Cannot cancel until handler returns |
-   | Stream handler (sends many items) | Fast — `tx.send().await` checks each item |
-
-#### 6.4.5 Cancellation Outcomes
-
-| Scenario | `ask()` result | `stream()` result |
-|---|---|---|
-| Token cancelled before handler starts | `Err(Cancelled)` | `Err(Cancelled)` — stream never opens |
-| Token cancelled during handler | `Err(Cancelled)` | Stream closes, `StreamSender` returns `ConsumerDropped` |
-| Handler finishes before cancel arrives | `Ok(reply)` — cancel is a no-op | Stream items delivered, then ends normally |
-| No cancellation token (`None`) | Runs to completion | Runs to completion |
-| Handler cooperatively checks `ctx.cancelled()` | Returns `Err(Cancelled)` with partial results | Stops sending items, drops `StreamSender` |
-
-#### 6.4.6 `ErrorCode::Cancelled`
-
-```rust
-#[non_exhaustive]
-pub enum ErrorCode {
-    // ... existing codes ...
-
-    /// The operation was cancelled by the caller (via CancellationToken).
-    /// Analogous to gRPC `CANCELLED`.
-    Cancelled,
-}
-```
-
-#### 6.4.7 `ActorContext.cancelled()`
-
-```rust
-impl ActorContext {
-    /// Returns a future that completes when the current operation is
-    /// cancelled (by the caller or by timeout). Use with `tokio::select!`.
-    ///
-    /// For calls without a CancellationToken (`None`), this future
-    /// never completes — the operation runs to completion.
-    pub async fn cancelled(&self);
-}
-```
-
-#### 6.4.8 Helper: `cancel_after()`
-
-```rust
-/// Create a CancellationToken that auto-cancels after the given duration.
-/// Convenience for timeout-based cancellation.
-pub fn cancel_after(duration: Duration) -> CancellationToken {
-    let token = CancellationToken::new();
-    let t = token.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(duration).await;
-        t.cancel();
-    });
-    token
-}
-```
-
----
-
-## 7. Actor Lifecycle & Supervision
-
-```mermaid
-graph TD
-    S((Start)) -->|"runtime.spawn()"| SP[Spawned]
-    SP -->|"on_start()"| R[Running]
-    R -->|"handle messages"| R
-    R -->|"handler error / panic"| E{on_error}
-    E -->|Resume| R
-    E -->|Restart| SP
-    E -->|Stop| ST[Stopped]
-    E -->|Escalate| P[Parent Supervisor]
-    R -->|"shutdown / supervision"| ST
-    ST -->|"on_stop()"| F((End))
-```
-
-### 7.1 Supervision Strategies
-
-**Rationale:** Erlang supervisors, Akka supervision strategies, ractor
-parent-child supervision, kameo `on_link_died`.
-
-```rust
-/// Notification sent to a supervisor when a child actor terminates.
-pub struct ChildTerminated {
-    pub child_id: ActorId,
-    pub child_name: String,
-    /// `None` for graceful shutdown, `Some(reason)` for failure.
-    pub reason: Option<String>,
-}
-
-/// Strategy applied by a supervisor when a child fails.
-pub trait SupervisionStrategy: Send + Sync + 'static {
-    fn on_child_failed(&self, event: &ChildTerminated) -> SupervisionAction;
-}
-
-pub enum SupervisionAction {
-    /// Restart the failed child actor.
-    Restart,
-    /// Stop the failed child and don't restart.
-    Stop,
-    /// Escalate the failure to the parent supervisor.
-    Escalate,
-}
-
-/// Built-in strategies (matching Erlang/Akka conventions):
-pub struct OneForOne;       // restart only the failed child
-pub struct OneForAll;       // restart all children when one fails
-pub struct RestForOne;      // restart the failed child and all after it
-```
-
-**When the adapter does not support supervision:**
-
-Supervision involves two capabilities: `watch` (monitoring actor termination)
-and `ErrorAction::Restart` / `Escalate` (reacting to failures). If the
-adapter doesn't support these natively and can't implement them as shims,
-the framework degrades as follows:
-
-| Feature | Adapter supports | Adapter doesn't support |
-|---|---|---|
-| `watch()` / `unwatch()` | Delivers `ChildTerminated` to watcher | Returns `Err(NotSupported)` — app should check `runtime.is_supported(RuntimeCapability::Watch)` at startup |
-| `ErrorAction::Restart` | Runtime re-creates actor via `Actor::create(args, deps)` → `on_start()` | Actor is **stopped** instead — `Restart` degrades to `Stop`. A warning is logged: `"adapter does not support restart, stopping actor"` |
-| `ErrorAction::Escalate` | Runtime forwards failure to parent supervisor | Actor is **stopped** instead — `Escalate` degrades to `Stop`. Warning logged. |
-| `SupervisionStrategy` | Applied when child fails | Ignored — strategies have no effect without `watch` support |
-| `Handler<ChildTerminated>` | Notifications delivered | Never invoked — no watch means no termination notifications |
-
-**Recommended startup validation:**
-
-```rust
-let caps = runtime.capabilities();
-if !runtime.is_supported(RuntimeCapability::Watch) {
-    tracing::warn!("adapter does not support supervision — actors will stop on error, not restart");
-    // Application can decide: continue without supervision, or fail fast
-}
-```
-
-**Design rationale — degrade to Stop, don't panic:**
-
-When `Restart` or `Escalate` is requested but the adapter can't fulfill it,
-the safest behavior is to stop the actor. This avoids:
-- Silent infinite loops (if restart were silently ignored)
-- Panics that bring down the whole runtime
-- Undefined behavior from partial restart support
-
-The application's `on_error()` still runs, and the dead letter handler
-receives any unprocessed messages. The warning log makes the degradation
-visible to operators.
-
-**DeathWatch** — any actor can watch another:
-
-```rust
-pub trait ActorRuntime: Send + Sync + 'static {
-    // ... existing methods ...
-
-    /// Watch an actor. When it terminates, the watcher receives a
-    /// `ChildTerminated` notification via its message handler.
-    /// Returns `Err(NotSupported)` if the adapter doesn't support death watch.
-    fn watch<A: Actor>(
-        &self,
-        watcher: &ActorRef<A>,
-        target: ActorId,
-    ) -> Result<(), RuntimeError>;
-
-    /// Stop watching an actor.
-    /// Returns `Err(NotSupported)` if the adapter doesn't support death watch.
-    fn unwatch<A: Actor>(
-        &self,
-        watcher: &ActorRef<A>,
-        target: ActorId,
-    ) -> Result<(), RuntimeError>;
-}
-```
-
-### 7.2 Watch / DeathWatch
-
-**Problem:** When an actor calls `watch(target)`, how does it receive the
-`ChildTerminated` notification? Does the runtime inject a synthetic message,
-or must the actor explicitly implement a handler for it?
-
-**Decision:** The actor must implement `Handler<ChildTerminated>`. This is
-explicit, type-safe, and consistent with the Handler pattern — no magic
-injection.
-
-```rust
-/// Notification delivered when a watched actor terminates.
-/// Actors that call `watch()` must implement `Handler<ChildTerminated>`
-/// to receive these notifications.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChildTerminated {
-    pub child_id: ActorId,
-    pub child_name: String,
-    /// `None` for graceful shutdown, `Some(reason)` for failure.
-    pub reason: Option<String>,
-}
-
-impl Message for ChildTerminated {
-    type Reply = ();
-}
-```
-
-**Usage:**
-
-```rust
-struct Supervisor {
-    children: Vec<ActorId>,
-}
-
-impl Actor for Supervisor {}
-
-#[async_trait]
-impl Handler<ChildTerminated> for Supervisor {
-    async fn handle(&mut self, msg: ChildTerminated, ctx: &mut ActorContext) {
-        tracing::warn!(child = %msg.child_id, reason = ?msg.reason, "child died");
-        self.children.retain(|id| *id != msg.child_id);
-        // Optionally restart the child
-    }
-}
-```
-
-If an actor calls `watch()` but does **not** implement `Handler<ChildTerminated>`,
-the notification is silently dropped (same as an unhandled message). This
-avoids forcing every actor to handle termination events.
-
----
-
-## 8. Mailbox & Scheduling
-
-**Scope:** Mailbox configuration is **per-actor**. Each actor has its own
-independent mailbox with its own type (FIFO / bounded / priority), capacity,
-overflow strategy, and fairness policy. There is no global cross-actor
-priority queue — the runtime schedules actors independently, and each actor
-processes messages from its own mailbox in its own order.
-
-### 8.1 Mailbox Configuration
+### 5.6 Mailbox Configuration
 
 **Rationale:** kameo defaults to bounded, ractor to unbounded. Akka supports
 priority mailboxes natively, kameo supports custom mailboxes. The abstraction
@@ -3105,7 +2960,7 @@ runtime.set_outbound_queue_config(OutboundQueueConfig {
 });
 ```
 
-### 8.2 Message Ordering Guarantees
+### 5.7 Message Ordering Guarantees
 
 Ordering is a fundamental contract that actors rely on. dactor specifies:
 
@@ -3137,7 +2992,7 @@ Ordering is a fundamental contract that actors rely on. dactor specifies:
    queue that respects the `Priority` header. Without this feature, outbound
    messages are sent in the order the adapter receives them (FIFO).
 
-### 8.3 Network-Level Message Priority
+### 5.8 Network-Level Message Priority
 
 **Problem:** Priority in §8.1 controls the *receiver's* mailbox ordering
 only. When messages travel across the network, they compete for I/O
@@ -3184,7 +3039,7 @@ messages are sent FIFO — priority is only enforced at the receiver's mailbox.
   priority matters mainly under sustained high-throughput scenarios where
   the send buffer is consistently full.
 
-### 8.4 Actor Pool / Worker Factory
+### 5.9 Actor Pool / Worker Factory
 
 **Rationale:** A single actor processes messages sequentially — this is safe
 but limits throughput. When work is stateless or partitionable, a **pool of
@@ -3406,7 +3261,171 @@ having multiple workers, each processing their own messages.
 
 ---
 
-## 9. Error Model
+## 6. Actor Lifecycle & Supervision
+
+```mermaid
+graph TD
+    S((Start)) -->|"runtime.spawn()"| SP[Spawned]
+    SP -->|"on_start()"| R[Running]
+    R -->|"handle messages"| R
+    R -->|"handler error / panic"| E{on_error}
+    E -->|Resume| R
+    E -->|Restart| SP
+    E -->|Stop| ST[Stopped]
+    E -->|Escalate| P[Parent Supervisor]
+    R -->|"shutdown / supervision"| ST
+    ST -->|"on_stop()"| F((End))
+```
+
+### 6.1 Supervision Strategies
+
+**Rationale:** Erlang supervisors, Akka supervision strategies, ractor
+parent-child supervision, kameo `on_link_died`.
+
+```rust
+/// Notification sent to a supervisor when a child actor terminates.
+pub struct ChildTerminated {
+    pub child_id: ActorId,
+    pub child_name: String,
+    /// `None` for graceful shutdown, `Some(reason)` for failure.
+    pub reason: Option<String>,
+}
+
+/// Strategy applied by a supervisor when a child fails.
+pub trait SupervisionStrategy: Send + Sync + 'static {
+    fn on_child_failed(&self, event: &ChildTerminated) -> SupervisionAction;
+}
+
+pub enum SupervisionAction {
+    /// Restart the failed child actor.
+    Restart,
+    /// Stop the failed child and don't restart.
+    Stop,
+    /// Escalate the failure to the parent supervisor.
+    Escalate,
+}
+
+/// Built-in strategies (matching Erlang/Akka conventions):
+pub struct OneForOne;       // restart only the failed child
+pub struct OneForAll;       // restart all children when one fails
+pub struct RestForOne;      // restart the failed child and all after it
+```
+
+**When the adapter does not support supervision:**
+
+Supervision involves two capabilities: `watch` (monitoring actor termination)
+and `ErrorAction::Restart` / `Escalate` (reacting to failures). If the
+adapter doesn't support these natively and can't implement them as shims,
+the framework degrades as follows:
+
+| Feature | Adapter supports | Adapter doesn't support |
+|---|---|---|
+| `watch()` / `unwatch()` | Delivers `ChildTerminated` to watcher | Returns `Err(NotSupported)` — app should check `runtime.is_supported(RuntimeCapability::Watch)` at startup |
+| `ErrorAction::Restart` | Runtime re-creates actor via `Actor::create(args, deps)` → `on_start()` | Actor is **stopped** instead — `Restart` degrades to `Stop`. A warning is logged: `"adapter does not support restart, stopping actor"` |
+| `ErrorAction::Escalate` | Runtime forwards failure to parent supervisor | Actor is **stopped** instead — `Escalate` degrades to `Stop`. Warning logged. |
+| `SupervisionStrategy` | Applied when child fails | Ignored — strategies have no effect without `watch` support |
+| `Handler<ChildTerminated>` | Notifications delivered | Never invoked — no watch means no termination notifications |
+
+**Recommended startup validation:**
+
+```rust
+let caps = runtime.capabilities();
+if !runtime.is_supported(RuntimeCapability::Watch) {
+    tracing::warn!("adapter does not support supervision — actors will stop on error, not restart");
+    // Application can decide: continue without supervision, or fail fast
+}
+```
+
+**Design rationale — degrade to Stop, don't panic:**
+
+When `Restart` or `Escalate` is requested but the adapter can't fulfill it,
+the safest behavior is to stop the actor. This avoids:
+- Silent infinite loops (if restart were silently ignored)
+- Panics that bring down the whole runtime
+- Undefined behavior from partial restart support
+
+The application's `on_error()` still runs, and the dead letter handler
+receives any unprocessed messages. The warning log makes the degradation
+visible to operators.
+
+**DeathWatch** — any actor can watch another:
+
+```rust
+pub trait ActorRuntime: Send + Sync + 'static {
+    // ... existing methods ...
+
+    /// Watch an actor. When it terminates, the watcher receives a
+    /// `ChildTerminated` notification via its message handler.
+    /// Returns `Err(NotSupported)` if the adapter doesn't support death watch.
+    fn watch<A: Actor>(
+        &self,
+        watcher: &ActorRef<A>,
+        target: ActorId,
+    ) -> Result<(), RuntimeError>;
+
+    /// Stop watching an actor.
+    /// Returns `Err(NotSupported)` if the adapter doesn't support death watch.
+    fn unwatch<A: Actor>(
+        &self,
+        watcher: &ActorRef<A>,
+        target: ActorId,
+    ) -> Result<(), RuntimeError>;
+}
+```
+
+### 6.2 Watch / DeathWatch
+
+**Problem:** When an actor calls `watch(target)`, how does it receive the
+`ChildTerminated` notification? Does the runtime inject a synthetic message,
+or must the actor explicitly implement a handler for it?
+
+**Decision:** The actor must implement `Handler<ChildTerminated>`. This is
+explicit, type-safe, and consistent with the Handler pattern — no magic
+injection.
+
+```rust
+/// Notification delivered when a watched actor terminates.
+/// Actors that call `watch()` must implement `Handler<ChildTerminated>`
+/// to receive these notifications.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChildTerminated {
+    pub child_id: ActorId,
+    pub child_name: String,
+    /// `None` for graceful shutdown, `Some(reason)` for failure.
+    pub reason: Option<String>,
+}
+
+impl Message for ChildTerminated {
+    type Reply = ();
+}
+```
+
+**Usage:**
+
+```rust
+struct Supervisor {
+    children: Vec<ActorId>,
+}
+
+impl Actor for Supervisor {}
+
+#[async_trait]
+impl Handler<ChildTerminated> for Supervisor {
+    async fn handle(&mut self, msg: ChildTerminated, ctx: &mut ActorContext) {
+        tracing::warn!(child = %msg.child_id, reason = ?msg.reason, "child died");
+        self.children.retain(|id| *id != msg.child_id);
+        // Optionally restart the child
+    }
+}
+```
+
+If an actor calls `watch()` but does **not** implement `Handler<ChildTerminated>`,
+the notification is silently dropped (same as an unhandled message). This
+avoids forcing every actor to handle termination events.
+
+---
+
+## 7. Error Model
 
 ```mermaid
 graph TB
@@ -3424,7 +3443,7 @@ graph TB
     AE --> Chain[chain: Vec&lt;String&gt;<br/>source error chain]
 ```
 
-### 9.1 ActorError — Structured, Serializable Errors
+### 7.1 ActorError — Structured, Serializable Errors
 
 **Problem:** When a caller makes a remote `ask()` and the actor fails, what
 error can be sent back? Rust's `dyn Error` is **not serializable** — it
@@ -3884,7 +3903,7 @@ the full `ActorError` rather than a plain string. See §5.2 for the
 authoritative `Outcome` enum definition (with `TellSuccess`, `AskSuccess`,
 etc.).
 
-### 9.2 Error Mapping per Adapter
+### 7.2 Error Mapping per Adapter
 
 | dactor `ErrorCode` | ractor | kameo | coerce |
 |---|---|---|---|
@@ -3901,7 +3920,7 @@ etc.).
 
 ---
 
-## 10. Framework Runtime
+## 8. Framework Runtime
 
 The dactor runtime is the infrastructure layer that sits between application
 actors and the adapter. It manages system actors, internal registries, and
@@ -3909,7 +3928,7 @@ node-to-node coordination — all using the adapter's existing actor messaging
 infrastructure. The runtime doesn't own the network or the actor execution
 engine; it uses the adapter for both.
 
-### 10.1 Architecture
+### 8.1 Architecture
 
 ```mermaid
 graph TB
@@ -3945,7 +3964,7 @@ graph TB
     SM & CM & WM --> AR
 ```
 
-### 10.2 System Actors
+### 8.2 System Actors
 
 System actors are **native provider actors** — they are built directly on
 top of the provider crate (ractor, kameo, coerce), not on dactor's
@@ -3993,7 +4012,7 @@ The dactor runtime invokes system actors through the adapter — it never
 sends messages directly. The adapter knows how to reach the system actors
 on remote nodes using the provider's native identity and transport.
 
-### 10.3 Internal Registries
+### 8.3 Internal Registries
 
 | Registry | Purpose | Populated by |
 |---|---|---|
@@ -4002,7 +4021,7 @@ on remote nodes using the provider's native identity and transport.
 | `ErrorCodecRegistry` | Maps error type name → `ErrorCodec` for encode/decode (§9.1) | `runtime.register_error_codec()` at startup |
 | `NodeDirectory` | Maps `NodeId` → peer system actor `ActorRef`s | Auto-populated on cluster join (§11.1) |
 
-### 10.4 Startup Sequence
+### 8.4 Startup Sequence
 
 ```mermaid
 sequenceDiagram
@@ -4040,9 +4059,9 @@ sequenceDiagram
 
 ---
 
-## 11. Remote Actors
+## 9. Remote Actors
 
-### 11.1 Serialization Contract
+### 9.1 Serialization Contract
 
 **Problem:** When messages cross node boundaries, they must be serialized.
 Not all messages need to be serializable (local-only actors don't need it).
@@ -4393,7 +4412,7 @@ choice of `MessageSerializer` affects what evolution strategies are available:
 | Custom protobuf | Native field numbering, backward/forward compat | Best evolution, more setup |
 | Custom MessagePack | Similar to JSON but binary + compact | Good middle ground |
 
-### 11.2 Remote Actor Spawning
+### 9.2 Remote Actor Spawning
 
 > All remote runtime operations (spawn, cancel, watch) use **system actors**
 > (§10.2) via the adapter's existing remote messaging — no separate transport.
@@ -4628,7 +4647,7 @@ where
 | Network partition | `spawn_with_config()` blocks until timeout, then returns `Err` |
 | Actor type not registered on remote | Remote node returns error; caller gets `Err(RuntimeError::Actor(ActorError { code: Unimplemented }))` |
 
-### 11.3 Serializable Actor References
+### 9.3 Serializable Actor References
 
 **Question:** Can I send an `ActorRef` to another machine and use it to call
 the actor from there?
@@ -4733,7 +4752,7 @@ impl<A: Actor> Deserialize for ActorRef<A> {
   practice, the adapter provides a custom deserializer or the ref is
   reconstructed post-deserialization.
 
-### 11.4 Remote Actor Call Example
+### 9.4 Remote Actor Call Example
 
 **Remote actor call example:**
 
@@ -4874,7 +4893,7 @@ sequenceDiagram
 | **Runtime error** | `RuntimeError::Actor(ActorError)` | Handler panicked, unhandled exception | Handler panics — adapter captures and wraps as `ActorError` |
 | **Infrastructure error** | `RuntimeError::Send` / `NotSupported` | Network timeout, node down, serialization failure | Message never reached the actor or reply was lost |
 
-### 11.5 Sending to Unavailable Actors
+### 9.5 Sending to Unavailable Actors
 
 When sending a message (local or remote) to an actor that is not available,
 the behavior depends on the send mode and the reason for unavailability.
@@ -4909,7 +4928,7 @@ graph LR
     NE --> A_NE
 ```
 
-#### 11.5.1 Scenario 1: Actor not yet started (`on_start` in progress)
+#### 9.5.1 Scenario 1: Actor not yet started (`on_start` in progress)
 
 The actor has been spawned but `on_start()` has not completed.
 
@@ -4922,7 +4941,7 @@ The actor has been spawned but `on_start()` has not completed.
 This is by design — `spawn()` returns an `ActorRef` immediately, and
 callers can start sending without waiting for initialization.
 
-#### 11.5.2 Scenario 2: Actor has stopped (was running, now dead)
+#### 9.5.2 Scenario 2: Actor has stopped (was running, now dead)
 
 The actor existed but has been stopped (graceful shutdown, error, or
 supervision decision).
@@ -4939,7 +4958,7 @@ the remote node replies with an error. The caller sees the same `ActorNotFound`
 error, but with higher latency. If the remote node itself is down, the caller
 sees `Err(RuntimeError::Send(...))` after a network timeout.
 
-#### 11.5.3 Scenario 3: Actor does not exist (never spawned / wrong ID)
+#### 9.5.3 Scenario 3: Actor does not exist (never spawned / wrong ID)
 
 The `ActorRef` points to an actor that was never created, or the ID is
 invalid (e.g., stale reference from a previous incarnation).
@@ -4959,7 +4978,7 @@ invalid (e.g., stale reference from a previous incarnation).
 and returns `ActorNotFound`. If the remote **node** doesn't exist (wrong
 `NodeId`), the caller gets a network-level error after timeout.
 
-#### 11.5.4 Summary table
+#### 9.5.4 Summary table
 
 | Scenario | `tell()` return | `ask()` return | Dead letter? |
 |---|---|---|---|
@@ -4971,7 +4990,7 @@ and returns `ActorNotFound`. If the remote **node** doesn't exist (wrong
 
 ---
 
-## 12. Cluster Management
+## 10. Cluster Management
 
 **Problem:** In production deployments (Kubernetes, VMSS, cloud auto-scaling),
 nodes come and go dynamically. The actor framework needs to know when nodes
@@ -4989,7 +5008,7 @@ discovery mechanism** — that's the infrastructure layer's responsibility
 | **Kameo** | libp2p Kademlia DHT — decentralized | Built-in P2P |
 | **Coerce** | `coerce-k8s` — Kubernetes pod label selection | ✅ Pluggable providers |
 
-### 12.1 Cluster Discovery
+### 10.1 Cluster Discovery
 
 **dactor design:** Introduce a `ClusterDiscovery` trait that the **application
 implements** to bridge its infrastructure's node discovery into dactor's
@@ -5086,7 +5105,7 @@ sequenceDiagram
     Note over A: actors handle node departure
 ```
 
-### 12.2 Node Join/Leave Protocol
+### 10.2 Node Join/Leave Protocol
 
 When `ClusterDiscovery` detects a new node, the flow is:
 
@@ -5176,7 +5195,7 @@ sequenceDiagram
     R->>App: ClusterEvent::NodeLeft(NodeId(2))
 ```
 
-### 12.3 Node Health Monitoring
+### 10.3 Node Health Monitoring
 
 **Problem:** Once nodes are discovered, the cluster needs to detect when a
 node becomes unhealthy (network partition, process crash, resource exhaustion).
@@ -5261,7 +5280,7 @@ only that the adapter reports failures via `on_node_unreachable`.
 | dactor-coerce | ✅ Provider: built-in health checks → `on_node_unreachable` |
 | dactor-mock | ⚙️ Simulated: `MockCluster::crash_node()` triggers `on_node_unreachable` |
 
-### 12.4 Cluster State API
+### 10.4 Cluster State API
 
 Applications need to query the current cluster topology at runtime — which
 nodes are connected, their status, and what system actors are available.
@@ -5350,9 +5369,9 @@ metrics_store.cluster_unreachable_count()   // currently unreachable
 
 ---
 
-## 13. Observability
+## 11. Observability
 
-### 13.1 Overview
+### 11.1 Overview
 
 **Problem:** In production, operators need visibility into actor system health:
 which actors are busiest, which fail most, what message sizes look like, how
@@ -5365,7 +5384,7 @@ pipeline** (§3.2). Because interceptors see every message with full context
 also provides a built-in `MetricsInterceptor` and a `RuntimeMetrics` query
 API for common operational needs.
 
-### 13.2 Built-in `MetricsInterceptor`
+### 11.2 Built-in `MetricsInterceptor`
 
 A ready-to-use interceptor that tracks per-actor and per-message-type
 statistics. Users register it once; it collects everything automatically.
@@ -5401,7 +5420,7 @@ impl InboundInterceptor for MetricsInterceptor {
 }
 ```
 
-### 13.3 `MetricsStore` Query API
+### 11.3 `MetricsStore` Query API
 
 ```rust
 /// Queryable metrics collected by `MetricsInterceptor`.
@@ -5473,7 +5492,7 @@ pub struct MessageTypeMetrics {
 }
 ```
 
-### 13.4 Custom Interceptor Examples
+### 11.4 Custom Interceptor Examples
 
 The built-in `MetricsInterceptor` covers common needs. For specialized
 observability, users write custom interceptors:
@@ -5630,7 +5649,7 @@ impl InboundInterceptor for OtelInterceptor {
 }
 ```
 
-### 13.5 Registering Multiple Interceptors
+### 11.5 Registering Multiple Interceptors
 
 Interceptors are composable. A typical production setup:
 
@@ -5651,7 +5670,7 @@ let top_5_failing = metrics_store.most_failed_actors(5);
 Interceptors execute in registration order. The pipeline is:
 `OTel → Metrics → SlowHandler → CircuitBreaker → Actor Handler → CircuitBreaker.on_complete → SlowHandler.on_complete → Metrics.on_complete → OTel.on_complete`
 
-### 13.6 Runtime Observability
+### 11.6 Runtime Observability
 
 Message-level metrics (§13.1–13.5) cover what actors **do**. Runtime
 observability covers what the system **is** — how many actors exist, how
@@ -5752,9 +5771,9 @@ Interceptor-based metrics (§13.2) add message-level detail on top.
 
 ---
 
-## 14. Testing
+## 12. Testing
 
-### 14.1 Feature-Gated Test Support
+### 12.1 Feature-Gated Test Support
 
 **Rationale:** `TestClock`, `TestRuntime`, `TestClusterEvents` are test
 utilities. They should not be compiled into production binaries.
@@ -5779,7 +5798,7 @@ Downstream crates use:
 dactor = { version = "0.2", features = ["test-support"] }
 ```
 
-### 14.2 Mock Cluster Crate (`dactor-mock`)
+### 12.2 Mock Cluster Crate (`dactor-mock`)
 
 **Rationale:** The existing `test_support` module in the `dactor` core crate
 provides `TestRuntime` — a single-node, in-memory mock useful for unit-testing
@@ -6122,7 +6141,7 @@ bincode = "1"          # default codec
 | **Inspection** | N/A | In-flight count, dropped count, corrupted count, `flush()` |
 | **Use case** | Unit testing single actors | Integration testing cluster behavior, chaos testing |
 
-### 14.3 Adapter Conformance Test Suite
+### 12.3 Adapter Conformance Test Suite
 
 **Problem:** With multiple traits and capabilities, adapters risk subtle
 incompleteness — an adapter might forget to run interceptors on stream
@@ -6180,7 +6199,7 @@ pub async fn run_all<R: ActorRuntime>(runtime: &R) {
 **Error mapping tables** — each adapter documents how it maps the underlying
 library's errors to dactor's `ErrorCode`:
 
-### 14.4 Integration Test Harness (`dactor-test-harness`)
+### 12.4 Integration Test Harness (`dactor-test-harness`)
 
 **Problem:** The mock cluster (§14.2) tests cluster behavior in a single
 process with simulated networking. But real distributed bugs often only
@@ -6423,9 +6442,9 @@ TestCluster::builder()
 
 ---
 
-## 15. Developer Experience
+## 13. Developer Experience
 
-### 15.1 Proc-Macro for Reduced Boilerplate (`dactor-macros`)
+### 13.1 Proc-Macro for Reduced Boilerplate (`dactor-macros`)
 
 The trait-based API (§10.6) is explicit and type-safe but requires repetitive
 boilerplate — each message needs a struct, a `Message` impl, and a `Handler`
@@ -6614,7 +6633,7 @@ members = ["dactor", "dactor-macros", "dactor-ractor", "dactor-kameo", "dactor-c
 | `pub async fn bar(&mut self, x: u64)` | `struct Bar { x: u64 }` + `impl Message` + `impl Handler<Bar>` |
 | `pub async fn baz(&self) -> String` | `struct Baz;` + `impl Message { type Reply = String }` + `impl Handler<Baz>` |
 
-### 15.2 Closure-based Actors (Backward Compatibility)
+### 13.2 Closure-based Actors (Backward Compatibility)
 
 **Backward compatibility with closures:**
 
@@ -6645,7 +6664,7 @@ fn spawn_fn<M, H>(&self, name: &str, handler: H) -> ActorRef<ClosureActor<M>>
 where M: Send + 'static, H: FnMut(M) + Send + 'static;
 ```
 
-### 15.3 Proc-Macro Error Handling
+### 13.3 Proc-Macro Error Handling
 
 The `dactor-macros` proc-macro crate must emit clear, actionable compile
 errors for patterns it cannot support. This section documents the expected
@@ -6670,9 +6689,9 @@ error messages.
 
 ---
 
-## 16. Adapter Support
+## 14. Adapter Support
 
-### 16.1 Capability Summary Matrix
+### 14.1 Capability Summary Matrix
 
 For each feature and each adapter, there are exactly three possibilities:
 
@@ -6703,7 +6722,7 @@ For each feature and each adapter, there are exactly three possibilities:
 | Cluster events | ⚙️ Adapter | ⚙️ Adapter | ✅ Library | ractor/kameo: adapter callback system; coerce: native cluster membership |
 
 
-### 16.2 Strategy Key
+### 14.2 Strategy Key
 
 For each feature and each adapter, there are exactly three possibilities:
 
@@ -6711,7 +6730,7 @@ For each feature and each adapter, there are exactly three possibilities:
 - ⚙️ **Adapter Implemented** — the library does *not* support this; the adapter crate implements it with custom logic
 - ❌ **Not Supported** — returns `RuntimeError::NotSupported` at runtime
 
-### 16.3 dactor-ractor
+### 14.3 dactor-ractor
 
 | Feature | Strategy | Implementation Detail |
 |---------|:---:|---|
@@ -6734,7 +6753,7 @@ For each feature and each adapter, there are exactly three possibilities:
 | Processing groups | ✅ Library | ractor has native `pg` module — maps `join_group` / `leave_group` / `broadcast_group` to `ractor::pg` API |
 | Cluster events | ⚙️ Adapter | ractor has no unified cluster events; adapter provides `RactorClusterEvents` callback system (implemented in v0.1) |
 
-### 16.4 dactor-kameo
+### 14.4 dactor-kameo
 
 | Feature | Strategy | Implementation Detail |
 |---------|:---:|---|
@@ -6757,7 +6776,7 @@ For each feature and each adapter, there are exactly three possibilities:
 | Processing groups | ⚙️ Adapter | kameo has no processing groups; adapter maintains type-erased registry (implemented in v0.1) |
 | Cluster events | ⚙️ Adapter | kameo has no unified cluster events; adapter provides `KameoClusterEvents` callback system (implemented in v0.1) |
 
-### 16.5 dactor-coerce
+### 14.5 dactor-coerce
 
 | Feature | Strategy | Implementation Detail |
 |---------|:---:|---|
@@ -6782,9 +6801,9 @@ For each feature and each adapter, there are exactly three possibilities:
 
 ---
 
-## 17. Implementation Roadmap
+## 15. Implementation Roadmap
 
-### 17.1 Phase 1 — Foundation (v0.2.0)
+### 15.1 Phase 1 — Foundation (v0.2.0)
 1. Module reorganization (flat structure, one concept per file)
 2. Feature-gate `test_support` behind `test-support`
 3. Move `TestClock` out of `traits/clock.rs`
@@ -6794,28 +6813,28 @@ For each feature and each adapter, there are exactly three possibilities:
 7. Add `Interceptor` trait and pipeline
 8. Clean up `serde` dependency (make optional)
 
-### 17.2 Phase 2 — Lifecycle & Config (v0.2.1)
+### 15.2 Phase 2 — Lifecycle & Config (v0.2.1)
 1. Lifecycle hooks on `Actor` trait (`on_start`, `on_stop`, `on_error`)
 2. Add `MailboxConfig` and `OverflowStrategy`
 3. Add `SpawnConfig` for per-actor configuration
 4. Add `spawn_with_config()` to `ActorRuntime`
 5. Update adapter crates
 
-### 17.3 Phase 3 — Supervision (v0.3.0)
+### 15.3 Phase 3 — Supervision (v0.3.0)
 1. Add `SupervisionStrategy` trait
 2. Add `ChildTerminated` event
 3. Add `watch()` / `unwatch()` to `ActorRuntime`
 4. Built-in strategies: `OneForOne`, `OneForAll`, `RestForOne`
 5. Add `ErrorAction::Escalate` flow
 
-### 17.4 Phase 4 — Ask Pattern & Streaming (v0.3.1)
+### 15.4 Phase 4 — Ask Pattern & Streaming (v0.3.1)
 1. Add `AskRef<M, R>` trait
 2. Add `StreamRef<M, R>` trait, `StreamSender<R>`, `BoxStream<R>`
 3. Implement for adapters (channel-based shim)
 4. Add timeout support for ask
 5. Add `futures-core` and `tokio-stream` dependencies
 
-### 17.5 Phase 5 — Mock Cluster Crate (v0.4.0)
+### 15.5 Phase 5 — Mock Cluster Crate (v0.4.0)
 1. Create `dactor-mock` workspace crate
 2. `MockCluster` builder with multi-node setup
 3. `MockRuntime` implementing `ActorRuntime` per node
@@ -6829,7 +6848,7 @@ For each feature and each adapter, there are exactly three possibilities:
 
 ---
 
-### 17.6 Dependency Cleanup
+### 15.6 Dependency Cleanup
 
 **v0.1 dactor/Cargo.toml deps:**
 ```toml
@@ -6859,7 +6878,7 @@ test-support = ["tokio/test-util"]
 
 ---
 
-### 17.7 Breaking Changes & Migration
+### 15.7 Breaking Changes & Migration
 
 | v0.1 | v0.2 | Migration |
 |------|------|-----------|
@@ -6880,9 +6899,9 @@ test-support = ["tokio/test-util"]
 
 ---
 
-## 18. Module Layout
+## 16. Module Layout
 
-### 18.1 Before (v0.1)
+### 16.1 Before (v0.1)
 
 ```
 dactor/src/
@@ -6900,7 +6919,7 @@ dactor/src/
     └── test_clock.rs
 ```
 
-### 18.2 After (v0.2)
+### 16.2 After (v0.2)
 
 ```
 dactor/src/
@@ -6930,7 +6949,7 @@ dactor/src/
 
 ---
 
-## 19. Open Questions
+## 17. Open Questions
 
 1. **Should `Envelope<M>` be the only way to send messages?** → **Resolved: No.** `tell(msg)` is the only send method. Outbound interceptors handle header injection automatically. `Envelope<M>` remains as an internal transport type between interceptors and the runtime — not exposed to callers.
 
