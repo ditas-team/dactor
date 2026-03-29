@@ -4907,6 +4907,93 @@ only that the adapter reports failures via `on_node_unreachable`.
 | dactor-coerce | ✅ Provider: built-in health checks → `on_node_unreachable` |
 | dactor-mock | ⚙️ Simulated: `MockCluster::crash_node()` triggers `on_node_unreachable` |
 
+### 12.4 Cluster State API
+
+Applications need to query the current cluster topology at runtime — which
+nodes are connected, their status, and what system actors are available.
+The runtime exposes a read-only `ClusterState` API:
+
+```rust
+impl ActorRuntime {
+    /// Get a snapshot of the current cluster state.
+    fn cluster_state(&self) -> ClusterState;
+}
+
+/// Read-only snapshot of the cluster topology.
+#[derive(Debug, Clone)]
+pub struct ClusterState {
+    /// This node's identity.
+    pub local_node: NodeId,
+    /// All known peer nodes and their current status.
+    pub peers: Vec<PeerNode>,
+}
+
+/// Information about a peer node in the cluster.
+#[derive(Debug, Clone)]
+pub struct PeerNode {
+    /// The peer's node ID.
+    pub node_id: NodeId,
+    /// Network address (as reported by ClusterDiscovery).
+    pub addr: NodeAddr,
+    /// Current connection status.
+    pub status: PeerStatus,
+    /// When this node was first seen (joined the cluster).
+    pub joined_at: Instant,
+    /// When the last successful communication occurred.
+    pub last_seen: Instant,
+}
+
+/// Connection status of a peer node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerStatus {
+    /// Transport connected, handshake completed, fully operational.
+    Connected,
+    /// Discovery reported the node, but transport not yet established.
+    Connecting,
+    /// Provider reported the node as unreachable (health check failed).
+    /// May recover if the network partition heals.
+    Unreachable,
+    /// Node confirmed down (discovery + provider both agree it's gone).
+    Disconnected,
+}
+```
+
+**Usage:**
+
+```rust
+// List all connected peers
+let state = runtime.cluster_state();
+println!("Local node: {}", state.local_node);
+for peer in &state.peers {
+    println!("  {} ({:?}) — last seen {:?} ago",
+        peer.node_id, peer.status, peer.last_seen.elapsed());
+}
+
+// Check if a specific node is reachable before spawning on it
+let node3_ok = state.peers.iter()
+    .any(|p| p.node_id == NodeId(3) && p.status == PeerStatus::Connected);
+if node3_ok {
+    runtime.spawn_with_config("worker", args, deps,
+        SpawnConfig { target_node: Some(NodeId(3)), ..Default::default() })?;
+}
+
+// Get count of healthy nodes for scaling decisions
+let connected_count = state.peers.iter()
+    .filter(|p| p.status == PeerStatus::Connected)
+    .count();
+```
+
+**Integration with observability (§13):**
+
+The `MetricsInterceptor` can expose cluster metrics automatically:
+
+```rust
+// Cluster metrics available via MetricsStore:
+metrics_store.cluster_peer_count()          // total known peers
+metrics_store.cluster_connected_count()     // currently connected
+metrics_store.cluster_unreachable_count()   // currently unreachable
+```
+
 ---
 
 ## 13. Observability
