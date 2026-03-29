@@ -3526,9 +3526,16 @@ pub enum Outcome {
 **Problem:** When messages cross node boundaries, they must be serialized.
 Not all messages need to be serializable (local-only actors don't need it).
 The design must make this explicit without forcing serialization on all users.
+Additionally, different applications have different serialization needs —
+some want speed (bincode), some want human-readability (JSON), some want
+schema evolution (protobuf).
 
-**Design:** A marker trait `RemoteMessage` extends `Message` with serialization
-bounds. Only messages intended for remote actors need to implement it.
+**Design:** Two components:
+
+1. **`RemoteMessage`** — a marker trait that identifies messages capable of
+   crossing node boundaries
+2. **`MessageSerializer`** — a pluggable trait that controls how messages
+   are serialized/deserialized for wire transport
 
 ```rust
 /// Marker for messages that can cross node boundaries.
@@ -3543,34 +3550,195 @@ where
 {}
 ```
 
-**Compile-time enforcement:** When an adapter detects a cross-node send
-(the target `ActorId.node` differs from the local node), it requires the
-message to implement `RemoteMessage`. This is enforced at the adapter's
-`tell()` / `ask()` implementation:
+**`MessageSerializer` — pluggable serialization:**
 
 ```rust
-// Inside adapter's cross-node send path:
-fn send_remote<M: RemoteMessage>(&self, target: ActorId, msg: M) -> Result<(), RuntimeError> {
-    let bytes = bincode::serialize(&msg)
-        .map_err(|e| RuntimeError::Send(ActorSendError(format!("serialization failed: {e}"))))?;
-    self.network.deliver(target, bytes)
+/// Trait for serializing and deserializing messages for wire transport.
+///
+/// The runtime uses this for all remote communication: tell, ask, stream,
+/// remote spawn (actor Args), error payloads, and headers.
+///
+/// Applications can register a custom serializer to use a format that
+/// fits their needs (speed, readability, schema evolution, compression).
+pub trait MessageSerializer: Send + Sync + 'static {
+    /// Human-readable name (for logging and diagnostics).
+    fn name(&self) -> &'static str;
+
+    /// Serialize a value to bytes.
+    fn serialize<T: Serialize>(&self, value: &T) -> Result<Vec<u8>, ActorError>;
+
+    /// Deserialize a value from bytes.
+    fn deserialize<T: DeserializeOwned>(&self, bytes: &[u8]) -> Result<T, ActorError>;
 }
 ```
 
-**Local sends** never serialize — messages are passed by move through channels.
-This means local-only messages can contain non-serializable types (`Arc`, channels,
-closures) without any issue.
+**Built-in serializers:**
 
-**Schema evolution:** dactor does not prescribe a versioning strategy. Recommended
-approaches (all compatible with serde):
+```rust
+/// Bincode — fast, compact binary format. Default.
+pub struct BincodeSerializer;
 
-| Strategy | How | When |
+impl MessageSerializer for BincodeSerializer {
+    fn name(&self) -> &'static str { "bincode" }
+
+    fn serialize<T: Serialize>(&self, value: &T) -> Result<Vec<u8>, ActorError> {
+        bincode::serialize(value)
+            .map_err(|e| ActorError::new(ErrorCode::Internal, format!("bincode serialize: {e}")))
+    }
+
+    fn deserialize<T: DeserializeOwned>(&self, bytes: &[u8]) -> Result<T, ActorError> {
+        bincode::deserialize(bytes)
+            .map_err(|e| ActorError::new(ErrorCode::Internal, format!("bincode deserialize: {e}")))
+    }
+}
+
+/// JSON — human-readable, good for debugging and interop.
+pub struct JsonSerializer;
+
+impl MessageSerializer for JsonSerializer {
+    fn name(&self) -> &'static str { "json" }
+
+    fn serialize<T: Serialize>(&self, value: &T) -> Result<Vec<u8>, ActorError> {
+        serde_json::to_vec(value)
+            .map_err(|e| ActorError::new(ErrorCode::Internal, format!("json serialize: {e}")))
+    }
+
+    fn deserialize<T: DeserializeOwned>(&self, bytes: &[u8]) -> Result<T, ActorError> {
+        serde_json::from_slice(bytes)
+            .map_err(|e| ActorError::new(ErrorCode::Internal, format!("json deserialize: {e}")))
+    }
+}
+```
+
+**Registration:**
+
+```rust
+// Default: bincode (fast, compact)
+let runtime = RactorRuntime::new();  // uses BincodeSerializer
+
+// Override with JSON (readable, good for debugging)
+runtime.set_message_serializer(Box::new(JsonSerializer));
+
+// Or a custom serializer (e.g., protobuf, MessagePack, compressed bincode)
+runtime.set_message_serializer(Box::new(MyCustomSerializer));
+```
+
+**Where the serializer is used:**
+
+| What | Serialized via `MessageSerializer` |
+|---|---|
+| Remote `tell()` / `ask()` message body | ✅ |
+| Remote `ask()` reply | ✅ |
+| `stream()` items | ✅ |
+| Remote spawn `Args` | ✅ |
+| `ActorError` (including `ErrorPayload`) | ✅ |
+| `WireHeaders` (header values via `HeaderValue::to_bytes`) | ❌ — headers serialize themselves |
+| `CancelRequest` and control messages | ❌ — fixed internal format |
+| Local sends | ❌ — no serialization, pass by move |
+
+**Compile-time enforcement:** When an adapter detects a cross-node send
+(the target `ActorId.node` differs from the local node), it requires the
+message to implement `RemoteMessage`. The runtime uses the registered
+`MessageSerializer` for the actual byte conversion.
+
+**Remote messages are always wrapped in a `WireEnvelope`:**
+
+Every remote message travels as a `WireEnvelope` — the wire-format
+representation of an `Envelope`. This ensures headers (trace context,
+priority, correlation ID) travel atomically with the message body. The
+`MessageSerializer` serializes the entire `WireEnvelope`, not just the body.
+
+```rust
+/// Wire-format envelope sent over the network.
+/// Combines serialized headers + serialized message body into one unit.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct WireEnvelope {
+    /// Target actor ID on the remote node.
+    pub target: ActorId,
+    /// The Rust type name of the message (for handler dispatch on remote).
+    pub message_type: String,
+    /// Send mode — how the remote should handle this.
+    pub send_mode: SendMode,
+    /// Serialized headers (from `Headers::to_wire()`).
+    pub headers: WireHeaders,
+    /// Serialized message body (from `MessageSerializer::serialize()`).
+    pub body: Vec<u8>,
+    /// For ask: a request_id so the reply can be routed back.
+    pub request_id: Option<u64>,
+}
+```
+
+```mermaid
+graph LR
+    subgraph "Sender side"
+        M[Message body] --> S["MessageSerializer::serialize()"]
+        H[Headers] --> TW["Headers::to_wire()"]
+        S --> WE["WireEnvelope { headers, body, target, ... }"]
+        TW --> WE
+        WE --> SS["MessageSerializer::serialize(wire_envelope)"]
+        SS --> B["bytes on wire"]
+    end
+    subgraph "Receiver side"
+        B2["bytes from wire"] --> DS["MessageSerializer::deserialize()"]
+        DS --> WE2[WireEnvelope]
+        WE2 --> DH["Headers::from_wire()"]
+        WE2 --> DM["MessageSerializer::deserialize(body)"]
+        DH --> E["Envelope { headers, body }"]
+        DM --> E
+        E --> HA[Actor Handler]
+    end
+```
+
+**The send path in detail:**
+
+```rust
+// Inside the runtime's cross-node send path:
+fn send_remote<M: RemoteMessage>(
+    &self, target: ActorId, msg: M, headers: Headers,
+) -> Result<(), RuntimeError> {
+    // 1. Run outbound interceptors (stamp headers)
+    let mut headers = headers;
+    for interceptor in &self.outbound_interceptors {
+        interceptor.on_send(&ctx, &mut headers, &msg as &dyn Any);
+    }
+
+    // 2. Serialize message body
+    let body = self.serializer.serialize(&msg)?;
+
+    // 3. Convert headers to wire format
+    let wire_headers = headers.to_wire();
+
+    // 4. Build wire envelope
+    let envelope = WireEnvelope {
+        target,
+        message_type: std::any::type_name::<M>().to_string(),
+        send_mode: SendMode::Tell,
+        headers: wire_headers,
+        body,
+        request_id: None,
+    };
+
+    // 5. Serialize the entire envelope
+    let bytes = self.serializer.serialize(&envelope)?;
+
+    // 6. Hand to adapter's transport
+    self.adapter.send_to_node(target.node, bytes)
+}
+```
+
+**Local sends** never serialize — the `Envelope { headers, body }` is passed
+by move through in-process channels. Messages can contain non-serializable
+types (`Arc`, channels, closures) without any issue.
+
+**Schema evolution:** dactor does not prescribe a versioning strategy. The
+choice of `MessageSerializer` affects what evolution strategies are available:
+
+| Serializer | Schema evolution | Trade-off |
 |---|---|---|
-| `#[serde(default)]` | New fields get defaults on old receivers | Adding fields |
-| `#[serde(rename)]` | Field renamed without breaking old format | Renaming fields |
-| `#[serde(deny_unknown_fields)]` | Strict: reject messages with unexpected fields | Strict compatibility |
-| Protobuf / flatbuffers | Use a schema-evolution-native format via custom `MessageCodec` | Complex evolution |
-| Envelope version header | Add a `SchemaVersion(u32)` header; handler checks before processing | Explicit versioning |
+| `BincodeSerializer` (default) | `#[serde(default)]` for new fields | Fast + compact, but fragile across versions |
+| `JsonSerializer` | `#[serde(default)]`, `#[serde(rename)]`, ignore unknown fields | Readable + flexible, but larger |
+| Custom protobuf | Native field numbering, backward/forward compat | Best evolution, more setup |
+| Custom MessagePack | Similar to JSON but binary + compact | Good middle ground |
 
 ### 10.2 Remote Actor Spawning
 
