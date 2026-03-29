@@ -2437,9 +2437,9 @@ actor.tell(Transfer { amount: 500 })?;
 ```rust
 /// An outbound interceptor that enriches messages before they are sent.
 ///
-/// Runs on the SENDER side, before the message enters the network or
-/// the receiver's mailbox. Can inject headers, modify existing headers,
-/// or reject the send.
+/// Runs on the SENDER side. Intercepts both outgoing requests AND
+/// incoming replies/stream items — like HTTP client middleware that
+/// sees both the request and the response.
 pub trait OutboundInterceptor: Send + Sync + 'static {
     /// Human-readable name for this outbound interceptor.
     fn name(&self) -> &'static str;
@@ -2455,6 +2455,30 @@ pub trait OutboundInterceptor: Send + Sync + 'static {
     ) -> Disposition {
         let _ = (ctx, message);
         Disposition::Continue
+    }
+
+    /// Called when an ask() reply is received back on the sender side.
+    /// Allows the sender to observe, log, or validate the reply.
+    /// The reply is type-erased — downcast if you know the type.
+    fn on_reply(
+        &self,
+        ctx: &OutboundContext<'_>,
+        headers: &Headers,
+        outcome: &Outcome,
+    ) {
+        let _ = (ctx, outcome);
+    }
+
+    /// Called for each stream item received back on the sender side.
+    /// Allows per-item observation from the sender's perspective.
+    fn on_stream_item(
+        &self,
+        ctx: &OutboundContext<'_>,
+        headers: &Headers,
+        seq: u64,
+        item: &dyn Any,
+    ) {
+        let _ = (ctx, seq, item);
     }
 }
 
@@ -2472,6 +2496,20 @@ pub struct OutboundContext<'a> {
     pub remote: bool,
 }
 ```
+
+**Outbound vs Inbound — what each side intercepts:**
+
+| | Outbound (sender side) | Inbound (receiver side) |
+|---|---|---|
+| **Request message** | `on_send(msg)` — before sending | `on_receive(msg)` — before handling |
+| **Ask reply** | `on_reply(outcome)` — when reply arrives back | `on_complete(AskSuccess)` — after handler returns |
+| **Stream item** | `on_stream_item(item)` — when item arrives back | `on_stream_item(item)` — when handler emits |
+| **Stream end** | `on_reply(StreamCompleted)` — when stream ends | `on_complete(StreamCompleted)` — when handler finishes |
+| **Error** | `on_reply(HandlerError)` — when error arrives back | `on_complete(HandlerError)` — when handler fails |
+| **Can reject?** | ✅ `on_send` returns `Disposition` | ✅ `on_receive` returns `Disposition` |
+
+This mirrors HTTP client/server middleware: the client (outbound) sees
+request → response, the server (inbound) sees request → handler → response.
 
 **Registration:**
 
