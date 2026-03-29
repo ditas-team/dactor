@@ -126,29 +126,7 @@ impl std::error::Error for NotSupportedError {}
 
 A unified error enum encompasses all runtime errors:
 
-```rust
-/// Unified error type for all ActorRuntime operations.
-#[derive(Debug)]
-pub enum RuntimeError {
-    /// The actor's mailbox is closed or the send failed.
-    Send(ActorSendError),
-    /// Processing group operation failed.
-    Group(GroupError),
-    /// Cluster event operation failed.
-    Cluster(ClusterError),
-    /// The requested operation is not supported by this adapter.
-    NotSupported(NotSupportedError),
-    /// A message was rejected by an interceptor before reaching the actor.
-    /// For `tell()` this is silently swallowed (same as Drop).
-    /// For `ask()` this is returned as an error to the caller.
-    Rejected {
-        /// Name of the interceptor that rejected the message.
-        interceptor: &'static str,
-        /// Human-readable reason for the rejection.
-        reason: String,
-    },
-}
-```
+> **`RuntimeError`** is defined in full in §7.1, which includes the `Actor(ActorError)` variant added after the error model is introduced. The variants include: `Send(ActorSendError)`, `Group(GroupError)`, `Cluster(ClusterError)`, `NotSupported(NotSupportedError)`, `Rejected { interceptor, reason }`, and `Actor(ActorError)`.
 
 ### 2.4 Capability Introspection
 
@@ -951,6 +929,11 @@ pub enum ClusterEvent {
     NodeLeft(NodeId),
 }
 
+/// Opaque handle returned by `ClusterEvents::subscribe()`.
+/// Pass to `unsubscribe()` to remove the subscription.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SubscriptionId(pub u64);
+
 /// A handle to a scheduled timer that can be cancelled.
 pub trait TimerHandle: Send + 'static {
     /// Cancel the timer. Idempotent.
@@ -976,7 +959,7 @@ pub struct ActorContext {
 
 impl ActorContext {
     /// Spawn a child actor (delegates to the runtime).
-    pub fn spawn<A: Actor>(&self, name: &str, actor: A) -> ActorRef<A> { ... }
+    pub fn spawn<A: Actor<Deps = ()>>(&self, name: &str, args: A::Args) -> ActorRef<A> { ... }
 
     /// Schedule a one-shot message to an actor.
     pub fn send_after<A, M>(&self, target: &ActorRef<A>, delay: Duration, msg: M)
@@ -996,7 +979,7 @@ Collect all per-actor settings into a config struct:
 pub struct SpawnConfig {
     pub mailbox: MailboxConfig,
     pub inbound_interceptors: Vec<Box<dyn InboundInterceptor>>,
-    /// Message comparer for priority mailboxes (§8.1).
+    /// Message comparer for priority mailboxes (§5.6).
     /// `None` = `StrictPriorityComparer` (default).
     pub comparer: Option<Box<dyn MessageComparer>>,
     /// Target node for the actor. `None` = spawn locally (default).
@@ -1082,29 +1065,6 @@ async fn main() {
 ```
 
 ---
-
-dactor supports three communication patterns, all as methods on `ActorRef<A>`:
-
-```mermaid
-sequenceDiagram
-    participant C as Caller
-    participant A as Actor
-
-    Note over C,A: 1. Tell (fire-and-forget)
-    C->>A: tell(msg)
-    Note right of A: handler runs, no reply
-
-    Note over C,A: 2. Ask (request-reply)
-    C->>A: ask(msg)
-    A-->>C: M::Reply
-
-    Note over C,A: 3. Stream (request-stream)
-    C->>A: stream(msg, buffer)
-    A-->>C: item 1
-    A-->>C: item 2
-    A-->>C: item N
-    A-->>C: (stream ends)
-```
 
 dactor supports three communication patterns, all as methods on `ActorRef<A>`:
 
@@ -1479,7 +1439,7 @@ impl Handler<ExpensiveQuery> for Worker {
 
 `CancellationToken` is an in-process primitive — it **cannot be serialized**.
 For remote calls, the runtime's local `CancelManager` system actor sends a
-`CancelRequest` to the remote node's `CancelManager` system actor (see §10.2).
+`CancelRequest` to the remote node's `CancelManager` system actor (see §8.2).
 This uses the adapter's existing remote messaging — no separate transport.
 
 ```mermaid
@@ -1723,6 +1683,24 @@ impl Default for PoolConfig {
 /// routes it to one worker according to the routing strategy.
 /// Implements the same ActorRef<A> interface as a single actor.
 pub struct PoolRef<A: Actor> { /* ... */ }
+
+impl<A: Actor> PoolRef<A> {
+    /// Fire-and-forget: route a message to a pool worker.
+    pub fn tell<M>(&self, msg: M) -> Result<(), ActorSendError>
+    where A: Handler<M>, M: Message<Reply = ()> { ... }
+
+    /// Request-reply: route a message to a pool worker and await the reply.
+    pub async fn ask<M>(
+        &self, msg: M, cancel: Option<CancellationToken>,
+    ) -> Result<M::Reply, RuntimeError>
+    where A: Handler<M>, M: Message { ... }
+
+    /// Request-stream: route a message to a pool worker and receive a stream.
+    pub fn stream<M>(
+        &self, msg: M, buffer: usize, cancel: Option<CancellationToken>,
+    ) -> Result<BoxStream<M::Reply>, RuntimeError>
+    where A: Handler<M>, M: Message { ... }
+}
 
 impl ActorRuntime {
     /// Spawn a pool of N identical worker actors.
@@ -1977,47 +1955,7 @@ pub struct MessageId(pub u64);
 
 Interceptors receive both, but with different mutability:
 
-```rust
-pub trait InboundInterceptor: Send + Sync + 'static {
-    fn on_receive(
-        &self,
-        ctx: &InboundContext<'_>,
-        runtime_headers: &RuntimeHeaders,  // read-only (MessageId, timestamp)
-        headers: &mut Headers,              // mutable (user/interceptor headers)
-        message: &dyn Any,
-    ) -> Disposition;
-
-    fn on_complete(
-        &self,
-        ctx: &InboundContext<'_>,
-        runtime_headers: &RuntimeHeaders,  // same MessageId as on_receive
-        headers: &Headers,                  // read-only in on_complete
-        outcome: &Outcome,
-    );
-    // ...
-}
-
-pub trait OutboundInterceptor: Send + Sync + 'static {
-    fn on_send(
-        &self,
-        ctx: &OutboundContext<'_>,
-        runtime_headers: &RuntimeHeaders,  // read-only
-        headers: &mut Headers,              // mutable
-        message: &dyn Any,
-    ) -> Disposition;
-
-    fn on_reply(
-        &self,
-        ctx: &OutboundContext<'_>,
-        runtime_headers: &RuntimeHeaders,  // same MessageId as on_send
-        headers: &Headers,
-        outcome: &Outcome,
-    );
-    // ...
-}
-```
-
-| Header type | Who sets | Interceptor access | Contents |
+| Header type| Who sets | Interceptor access | Contents |
 |---|---|---|---|
 | `RuntimeHeaders` | Runtime (automatic) | **Read-only** `&RuntimeHeaders` | `MessageId`, `timestamp` |
 | `Headers` | Interceptors / application | **Mutable** `&mut Headers` in `on_receive`/`on_send` | Trace context, correlation ID, priority, custom headers |
@@ -2162,7 +2100,7 @@ The only built-in header type is `Priority` (used by priority mailboxes):
 
 ```rust
 /// Message priority level for priority mailboxes.
-/// See §8.1 for details and usage.
+/// See §5.6 for details and usage.
 pub use crate::mailbox::Priority;
 
 impl HeaderValue for Priority {
@@ -2960,7 +2898,7 @@ pub struct NullDeadLetterHandler;
 
 ### 5.5 Outbound Throttling (`dactor-throttle`)
 
-**Problem:** Without network-level priority (§8.3), a chatty actor can
+**Problem:** Without network-level priority (§5.8), a chatty actor can
 flood the outbound path and overwhelm peer nodes. dactor's core doesn't
 implement throttling (consistent with "delegate, don't own"), but outbound
 interceptors have the ability to `Reject` messages — which is all that's
@@ -3140,7 +3078,7 @@ pub enum MailboxConfig {
     },
     /// Priority mailbox — messages are delivered in priority order rather
     /// than FIFO. Priority is determined by the `Priority` header in the
-    /// message envelope, ordered by the `MessageComparer` trait (§8.1).
+    /// message envelope, ordered by the `MessageComparer` trait (§5.6).
     ///
     /// Supported natively by: Akka (`PriorityMailbox`), Kameo (custom mailbox).
     /// Adapter-implemented for: ractor (priority queue wrapper).
@@ -3176,7 +3114,7 @@ impl Default for MailboxConfig {
 }
 ```
 
-**Priority header** (defined in §3.1, listed here for reference):
+**Priority header** (defined in §5.6):
 
 ```rust
 /// Priority level for a message. Used by priority mailboxes to determine
@@ -3285,8 +3223,8 @@ pub struct QueuedMessageMeta {
 }
 
 /// Trait that controls message ordering in a priority queue.
-/// Used by both the actor's inbound mailbox (§8.1) and the
-/// outbound send queue's user lane (§8.3).
+/// Used by both the actor's inbound mailbox (§5.6) and the
+/// outbound send queue's user lane (§5.8).
 ///
 /// The queue calls `compare()` to decide which of two messages
 /// should be dequeued first. Return `Ordering::Less` if `a` should
@@ -3367,7 +3305,7 @@ let config = SpawnConfig {
 runtime.spawn_with_config("worker", args, deps, config)?;
 ```
 
-**Also used by the outbound send queue (§8.3):**
+**Also used by the outbound send queue (§5.8):**
 
 ```rust
 runtime.set_outbound_queue_config(OutboundQueueConfig {
@@ -3403,14 +3341,14 @@ Ordering is a fundamental contract that actors rely on. dactor specifies:
    retries, and partitions can reorder messages. Applications requiring
    cross-node ordering should use sequence numbers or vector clocks.
 
-7. **Outbound network priority (optional, §8.3):** When the `outbound-priority`
+7. **Outbound network priority (optional, §5.8):** When the `outbound-priority`
    feature is enabled, the runtime maintains a per-destination outbound send
    queue that respects the `Priority` header. Without this feature, outbound
    messages are sent in the order the adapter receives them (FIFO).
 
 ### 5.8 Network-Level Message Priority
 
-**Problem:** Priority in §8.1 controls the *receiver's* mailbox ordering
+**Problem:** Priority in §5.6 controls the *receiver's* mailbox ordering
 only. When messages travel across the network, they compete for I/O
 resources. A `CRITICAL` message can get stuck behind thousands of
 `BACKGROUND` messages in the network send buffer.
@@ -3445,7 +3383,7 @@ messages are sent FIFO — priority is only enforced at the receiver's mailbox.
 
 **What this means for applications:**
 
-- **Receiver-side priority (§8.1) is always available** — the mailbox
+- **Receiver-side priority (§5.6) is always available** — the mailbox
   priority queue works regardless of network ordering.
 - **End-to-end priority** depends on the provider. With Akka-style providers
   that support outbound lanes, high-priority messages reach the receiver
@@ -3753,6 +3691,10 @@ pub enum ErrorCode {
     /// Catch-all for errors that don't fit other categories.
     /// Analogous to gRPC `UNKNOWN`.
     Unknown,
+
+    /// The operation was cancelled by the caller (via CancellationToken).
+    /// Analogous to gRPC `CANCELLED`.
+    Cancelled,
 }
 
 /// A single key-value detail attached to an `ActorError`.
@@ -3961,13 +3903,11 @@ impl ActorError {
 ```mermaid
 sequenceDiagram
     participant C as Caller
+    participant A1 as Actor
 
-    Note over C: Local ask — same process
-        Note over C: Local ask — same process
-        participant A1 as Actor
-        C->>A1: ask(msg)
-        A1-->>C: Result::Err(ActorError)<br/>code: Internal<br/>message: panic message<br/>chain: panicked at ...
-    end
+    Note over C,A1: Local ask — same process
+    C->>A1: ask(msg)
+    A1-->>C: Result::Err(ActorError)<br/>code: Internal<br/>message: panic message<br/>chain: panicked at ...
 ```
 
 ```mermaid
@@ -4008,6 +3948,7 @@ impl ActorError {
             message,
             details: Vec::new(),
             chain,
+            payload: None,
         }
     }
 
@@ -4079,6 +4020,49 @@ match account.ask(TransferFunds { amount: 1000 }).await {
 The `RuntimeError` enum gains an `Actor` variant for handler-returned errors:
 
 ```rust
+/// Error returned when sending a message to an actor fails
+/// (mailbox closed, actor stopped, network failure for remote sends).
+#[derive(Debug, Clone)]
+pub struct ActorSendError {
+    pub reason: String,
+}
+
+impl fmt::Display for ActorSendError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "actor send failed: {}", self.reason)
+    }
+}
+
+impl std::error::Error for ActorSendError {}
+
+/// Error returned by processing group operations.
+#[derive(Debug, Clone)]
+pub struct GroupError {
+    pub reason: String,
+}
+
+impl fmt::Display for GroupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "group error: {}", self.reason)
+    }
+}
+
+impl std::error::Error for GroupError {}
+
+/// Error returned by cluster event operations.
+#[derive(Debug, Clone)]
+pub struct ClusterError {
+    pub reason: String,
+}
+
+impl fmt::Display for ClusterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "cluster error: {}", self.reason)
+    }
+}
+
+impl std::error::Error for ClusterError {}
+
 pub enum RuntimeError {
     Send(ActorSendError),
     Group(GroupError),
@@ -4212,8 +4196,8 @@ on remote nodes using the provider's native identity and transport.
 |---|---|---|
 | `TypeRegistry` | Maps type name → `ActorFactory` for remote spawn (§9.2) | `runtime.register_remote_actor::<A>()` at startup |
 | `HeaderRegistry` | Maps header name → deserializer for `Headers::from_wire()` (§5.1) | `registry.register::<H>()` at startup |
-| `ErrorCodecRegistry` | Maps error type name → `ErrorCodec` for encode/decode (§9.1) | `runtime.register_error_codec()` at startup |
-| `NodeDirectory` | Maps `NodeId` → peer system actor `ActorRef`s | Auto-populated on cluster join (§11.1) |
+| `ErrorCodecRegistry` | Maps error type name → `ErrorCodec` for encode/decode (§7.1) | `runtime.register_error_codec()` at startup |
+| `NodeDirectory` | Maps `NodeId` → peer system actor `ActorRef`s | Auto-populated on cluster join (§10.2) |
 
 ### 8.4 Startup Sequence
 
@@ -4609,7 +4593,7 @@ choice of `MessageSerializer` affects what evolution strategies are available:
 ### 9.2 Remote Actor Spawning
 
 > All remote runtime operations (spawn, cancel, watch) use **system actors**
-> (§10.2) via the adapter's existing remote messaging — no separate transport.
+> (§8.2) via the adapter's existing remote messaging — no separate transport.
 
 All three backend libraries (ractor, kameo, coerce) support spawning actors
 on remote nodes. dactor exposes this via `SpawnConfig::target_node`.
@@ -4629,7 +4613,7 @@ let config = SpawnConfig {
     target_node: Some(NodeId("node-3".into())),
     ..Default::default()
 };
-let actor = runtime.spawn_with_config("counter", Counter { count: 0 }, config)?;
+let actor = runtime.spawn_with_config("counter", Counter { count: 0 }, (), config)?;
 // actor is an ActorRef<Counter> — location-transparent
 // tell/ask work identically, adapter handles network transport
 ```
@@ -4649,6 +4633,7 @@ impl Handler<ScaleOut> for Coordinator {
             let worker = ctx.spawn_with_config(
                 &format!("worker-{}", node_id.0),
                 Worker { task: msg.task.clone() },
+                (),
                 config,
             )?;
             self.workers.push(worker);
@@ -5415,23 +5400,6 @@ on top of the provider's heartbeat, two problems arise:
 `AdapterCluster` trait. The adapter reports health events to dactor, which
 translates them into `ClusterEvent::NodeLeft`:
 
-```rust
-/// Extension to AdapterCluster for health event reporting.
-/// The adapter's provider-native health monitoring detects failures
-/// and reports them to dactor via this callback.
-pub trait AdapterCluster: Send + Sync + 'static {
-    /// Establish transport connection (see §12.3).
-    async fn connect(&self, node_id: NodeId, addr: NodeAddr) -> Result<(), ActorError>;
-
-    /// Disconnect from peer (see §12.3).
-    async fn disconnect(&self, node_id: NodeId) -> Result<(), ActorError>;
-
-    /// Register a callback that the adapter invokes when its native
-    /// health monitoring detects a node failure.
-    fn on_node_unreachable(&self, callback: Box<dyn Fn(NodeId) + Send + Sync>);
-}
-```
-
 **Flow:**
 
 ```mermaid
@@ -5599,7 +5567,7 @@ impl MetricsInterceptor {
 
 impl InboundInterceptor for MetricsInterceptor {
     fn name(&self) -> &'static str { "metrics" }
-    fn on_receive(&self, ctx: &InboundContext<'_>, headers: &mut Headers) -> Disposition {
+    fn on_receive(&self, ctx: &InboundContext<'_>, headers: &mut Headers, _message: &dyn Any) -> Disposition {
         self.inner.record_receive(ctx);
         Disposition::Continue
     }
@@ -5608,7 +5576,7 @@ impl InboundInterceptor for MetricsInterceptor {
         self.inner.record_complete(ctx, outcome);
     }
 
-    fn on_stream_item(&self, ctx: &InboundContext<'_>, _headers: &Headers, seq: u64) {
+    fn on_stream_item(&self, ctx: &InboundContext<'_>, _headers: &Headers, seq: u64, _item: &dyn Any) {
         self.inner.record_stream_item(ctx, seq);
     }
 }
@@ -5702,7 +5670,7 @@ struct MessageSizeInterceptor {
 
 impl InboundInterceptor for MessageSizeInterceptor {
     fn name(&self) -> &'static str { "message-size" }
-    fn on_receive(&self, ctx: &InboundContext<'_>, _headers: &mut Headers) -> Disposition {
+    fn on_receive(&self, ctx: &InboundContext<'_>, _headers: &mut Headers, _message: &dyn Any) -> Disposition {
         // std::mem::size_of gives the stack size of the message type.
         // For heap-allocated content, use a custom SizeOf header set by the sender.
         let mut sizes = self.sizes.lock().unwrap();
@@ -5731,7 +5699,7 @@ struct SlowHandlerInterceptor {
 
 impl InboundInterceptor for SlowHandlerInterceptor {
     fn name(&self) -> &'static str { "slow-handler" }
-    fn on_receive(&self, _ctx: &InboundContext<'_>, headers: &mut Headers) -> Disposition {
+    fn on_receive(&self, _ctx: &InboundContext<'_>, headers: &mut Headers, _message: &dyn Any) -> Disposition {
         // Stash the start time in a header for on_complete to read.
         headers.insert(HandlerStartTime(Instant::now()));
         Disposition::Continue
@@ -5767,7 +5735,7 @@ struct CircuitBreakerInterceptor {
 impl InboundInterceptor for CircuitBreakerInterceptor {
     fn name(&self) -> &'static str { "circuit-breaker" }
 
-    fn on_receive(&self, ctx: &InboundContext<'_>, _headers: &mut Headers) -> Disposition {
+    fn on_receive(&self, ctx: &InboundContext<'_>, _headers: &mut Headers, _message: &dyn Any) -> Disposition {
         let count = self.error_counts
             .entry(ctx.actor_id)
             .or_insert(AtomicU64::new(0));
@@ -5782,7 +5750,7 @@ impl InboundInterceptor for CircuitBreakerInterceptor {
 
     fn on_complete(&self, ctx: &InboundContext<'_>, _headers: &Headers, outcome: &Outcome) {
         match outcome {
-            Outcome::Success => {
+            Outcome::TellSuccess => {
                 // Reset on success
                 if let Some(count) = self.error_counts.get(&ctx.actor_id) {
                     count.store(0, Ordering::Relaxed);
@@ -5809,7 +5777,7 @@ struct OtelInterceptor;
 
 impl InboundInterceptor for OtelInterceptor {
     fn name(&self) -> &'static str { "opentelemetry" }
-    fn on_receive(&self, ctx: &InboundContext<'_>, headers: &mut Headers) -> Disposition {
+    fn on_receive(&self, ctx: &InboundContext<'_>, headers: &mut Headers, _message: &dyn Any) -> Disposition {
         // Extract trace context from headers (injected by sender)
         let parent = headers.get::<TraceContext>();
 
@@ -5830,7 +5798,7 @@ impl InboundInterceptor for OtelInterceptor {
     fn on_complete(&self, _ctx: &InboundContext<'_>, headers: &Headers, outcome: &Outcome) {
         if let Some(span_ctx) = headers.get::<SpanContext>() {
             match outcome {
-                Outcome::Success => span_ctx.0.set_status(StatusCode::Ok),
+                Outcome::TellSuccess => span_ctx.0.set_status(StatusCode::Ok),
                 Outcome::HandlerError { error } => {
                     span_ctx.0.set_status(StatusCode::Error);
                     span_ctx.0.record_error(&error.message);
@@ -5866,7 +5834,7 @@ Interceptors execute in registration order. The pipeline is:
 
 ### 11.6 Runtime Observability
 
-Message-level metrics (§13.1–13.5) cover what actors **do**. Runtime
+Message-level metrics (§11.1–11.5) cover what actors **do**. Runtime
 observability covers what the system **is** — how many actors exist, how
 deep their mailboxes are, how the cluster looks, and whether the runtime
 itself is healthy.
@@ -5894,7 +5862,7 @@ pub struct RuntimeMetrics {
     pub total_queued_messages: usize,
 
     // ── Cluster ──────────────────────────────────────
-    /// Current cluster state (same as §12.4).
+    /// Current cluster state (same as §10.4).
     pub cluster: ClusterState,
 
     // ── System actors ────────────────────────────────
@@ -5956,12 +5924,12 @@ let healthy = rm.system_actors_healthy
 | Cluster state, peer count | Runtime (NodeDirectory) | ❌ No |
 | System actor health | Runtime (ping system actors) | ❌ No |
 | Uptime | Runtime (start timestamp) | ❌ No |
-| Per-actor message count, latency, errors | `MetricsInterceptor` (§13.2) | ✅ Yes |
-| Per-message-type throughput | `MetricsInterceptor` (§13.2) | ✅ Yes |
+| Per-actor message count, latency, errors | `MetricsInterceptor` (§11.2) | ✅ Yes |
+| Per-message-type throughput | `MetricsInterceptor` (§11.2) | ✅ Yes |
 | Custom metrics (message size, etc.) | Custom interceptors (§11.4) | ✅ Yes |
 
 Runtime metrics are **always available** — they don't depend on interceptors.
-Interceptor-based metrics (§13.2) add message-level detail on top.
+Interceptor-based metrics (§11.2) add message-level detail on top.
 
 ---
 
