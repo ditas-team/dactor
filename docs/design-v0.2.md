@@ -735,13 +735,6 @@ a central coordinator.
 
 ```rust
 /// Globally unique identifier for an actor across all nodes in a cluster.
-///
-/// Combines the `NodeId` of the node that spawned the actor with a
-/// node-local sequence number. This guarantees uniqueness without
-/// requiring a central coordinator — each node independently assigns
-/// local IDs and the `(node, local)` pair is globally unique.
-///
-/// For single-node deployments, `node` defaults to `NodeId(0)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ActorId {
     /// The node that spawned this actor.
@@ -756,95 +749,111 @@ impl fmt::Display for ActorId {
     }
 }
 
-pub trait ActorRef<M: Send + 'static>: Clone + Send + Sync + 'static {
-    /// The actor's unique identity.
-    fn id(&self) -> ActorId;
+/// A reference to a running actor of type `A`.
+///
+/// `ActorRef<A>` is typed to the ACTOR, not the message. You can send
+/// any message type `M` for which `A: Handler<M>`.
+pub struct ActorRef<A: Actor> { /* internal handle */ }
 
-    /// Fire-and-forget: deliver a raw message.
-    fn tell(&self, msg: M) -> Result<(), ActorSendError>;
+impl<A: Actor> ActorRef<A> {
+    /// The actor's unique identity.
+    pub fn id(&self) -> ActorId { ... }
+
+    /// Fire-and-forget: deliver a message.
+    pub fn tell<M>(&self, msg: M) -> Result<(), ActorSendError>
+    where A: Handler<M>, M: Message<Reply = ()> { ... }
+
+    /// Request-reply: send a message and await the reply.
+    pub async fn ask<M>(
+        &self, msg: M, cancel: Option<CancellationToken>,
+    ) -> Result<M::Reply, RuntimeError>
+    where A: Handler<M>, M: Message { ... }
+
+    /// Request-stream: send a request and receive a stream of responses.
+    pub fn stream<M>(
+        &self, msg: M, buffer: usize, cancel: Option<CancellationToken>,
+    ) -> Result<BoxStream<M::Reply>, RuntimeError>
+    where A: Handler<M>, M: Message { ... }
 
     /// Check if the actor is still alive.
-    /// Returns `Err(NotSupported)` if the adapter cannot determine liveness.
-    fn is_alive(&self) -> Result<bool, NotSupportedError>;
+    pub fn is_alive(&self) -> Result<bool, NotSupportedError> { ... }
 }
-```
 
-> **Note:** `send()` is renamed to `tell()` to align with Erlang/Akka/kameo
-> terminology. A deprecated `send()` alias can ease migration.
+impl<A: Actor> Clone for ActorRef<A> { ... }
+impl<A: Actor> Send for ActorRef<A> {}
+impl<A: Actor> Sync for ActorRef<A> {}
+```
 
 ### 4.5 ActorRuntime Trait
 
 ```rust
 pub trait ActorRuntime: Send + Sync + 'static {
-    type Ref<M: Send + 'static>: ActorRef<M>;
     type Events: ClusterEvents;
     type Timer: TimerHandle;
 
     // ── Spawning ────────────────────────────────────────
-    fn spawn<M, H>(&self, name: &str, handler: H) -> Self::Ref<M>
-    where M: Send + 'static, H: FnMut(M) + Send + 'static;
+    /// Spawn an actor with no local dependencies (Deps = ()).
+    fn spawn<A: Actor<Deps = ()>>(&self, name: &str, args: A::Args) -> ActorRef<A>;
 
-    /// Spawn with per-actor configuration (mailbox, interceptors).
-    /// Returns `Err(NotSupported)` for config options the adapter can't honor.
-    fn spawn_with_config<M, H>(
-        &self, name: &str, config: SpawnConfig, handler: H,
-    ) -> Result<Self::Ref<M>, RuntimeError>
-    where M: Send + 'static, H: FnMut(M) + Send + 'static;
+    /// Spawn an actor with local dependencies.
+    fn spawn_with_deps<A: Actor>(
+        &self, name: &str, args: A::Args, deps: A::Deps,
+    ) -> ActorRef<A>;
+
+    /// Spawn with full configuration (mailbox, interceptors, target node).
+    fn spawn_with_config<A: Actor>(
+        &self, name: &str, args: A::Args, deps: A::Deps, config: SpawnConfig,
+    ) -> Result<ActorRef<A>, RuntimeError>;
+
+    /// Spawn a pool of N identical worker actors.
+    fn spawn_pool<A: Actor>(
+        &self, name: &str, pool_config: PoolConfig,
+        args: A::Args, deps_factory: impl Fn(usize) -> A::Deps + Send + 'static,
+    ) -> Result<PoolRef<A>, RuntimeError>
+    where A::Args: Clone;
 
     // ── Timers ──────────────────────────────────────────
-    fn send_interval<M: Clone + Send + 'static>(
-        &self, target: &Self::Ref<M>, interval: Duration, msg: M,
-    ) -> Self::Timer;
+    fn send_interval<A, M>(
+        &self, target: &ActorRef<A>, interval: Duration, msg: M,
+    ) -> Self::Timer
+    where A: Handler<M>, M: Message<Reply = ()> + Clone;
 
-    fn send_after<M: Send + 'static>(
-        &self, target: &Self::Ref<M>, delay: Duration, msg: M,
-    ) -> Self::Timer;
-
-    // ── Processing Groups ───────────────────────────────
-    fn join_group<M: Send + 'static>(
-        &self, group: &str, actor: &Self::Ref<M>,
-    ) -> Result<(), RuntimeError>;
-
-    fn leave_group<M: Send + 'static>(
-        &self, group: &str, actor: &Self::Ref<M>,
-    ) -> Result<(), RuntimeError>;
-
-    fn broadcast_group<M: Clone + Send + 'static>(
-        &self, group: &str, msg: M,
-    ) -> Result<(), RuntimeError>;
-
-    fn get_group_members<M: Send + 'static>(
-        &self, group: &str,
-    ) -> Result<Vec<Self::Ref<M>>, RuntimeError>;
+    fn send_after<A, M>(
+        &self, target: &ActorRef<A>, delay: Duration, msg: M,
+    ) -> Self::Timer
+    where A: Handler<M>, M: Message<Reply = ()>;
 
     // ── Supervision / DeathWatch ────────────────────────
-    /// Watch an actor for termination.
-    /// Returns `Err(NotSupported)` if the adapter doesn't support it.
-    fn watch<M: Send + 'static>(
-        &self, watcher: &Self::Ref<M>, target: ActorId,
+    fn watch<A: Actor>(
+        &self, watcher: &ActorRef<A>, target: ActorId,
     ) -> Result<(), RuntimeError>;
 
-    fn unwatch<M: Send + 'static>(
-        &self, watcher: &Self::Ref<M>, target: ActorId,
+    fn unwatch<A: Actor>(
+        &self, watcher: &ActorRef<A>, target: ActorId,
     ) -> Result<(), RuntimeError>;
 
     // ── Cluster ─────────────────────────────────────────
     fn cluster_events(&self) -> &Self::Events;
+    fn cluster_state(&self) -> ClusterState;
 
-    // ── Global Interceptors ─────────────────────────────
-    /// Register a global interceptor applied to all actors.
-    /// Returns `Err(NotSupported)` if the adapter doesn't support interceptors.
+    // ── Interceptors ────────────────────────────────────
     fn add_inbound_interceptor(&self, interceptor: Box<dyn InboundInterceptor>) -> Result<(), RuntimeError>;
+    fn add_outbound_interceptor(&self, interceptor: Box<dyn OutboundInterceptor>) -> Result<(), RuntimeError>;
+
+    // ── Registries ──────────────────────────────────────
+    fn register_remote_actor<A: Actor>(&self) where A::Args: Serialize + DeserializeOwned;
+    fn register_error_codec(&self, codec: Box<dyn ErasedErrorCodec>);
+    fn set_message_serializer(&self, serializer: Box<dyn MessageSerializer>);
+    fn set_dead_letter_handler(&self, handler: Box<dyn DeadLetterHandler>);
 
     // ── Capability Introspection ────────────────────────
-    /// Query which capabilities this runtime supports.
-    /// Callers can pre-flight requirements at startup rather than
-    /// discovering `NotSupported` errors mid-flight.
     fn capabilities(&self) -> RuntimeCapabilities;
+
+    // ── Metrics ─────────────────────────────────────────
+    fn runtime_metrics(&self) -> RuntimeMetrics;
 }
 
 /// Describes which optional capabilities a runtime adapter supports.
-/// Returned by `ActorRuntime::capabilities()`.
 #[derive(Debug, Clone)]
 pub struct RuntimeCapabilities {
     pub ask: bool,
@@ -852,7 +861,9 @@ pub struct RuntimeCapabilities {
     pub watch: bool,
     pub bounded_mailbox: bool,
     pub priority_mailbox: bool,
-    pub interceptors: bool,
+    pub inbound_interceptors: bool,
+    pub outbound_interceptors: bool,
+    pub remote_spawn: bool,
 }
 ```
 
@@ -894,6 +905,9 @@ Collect all per-actor settings into a config struct:
 pub struct SpawnConfig {
     pub mailbox: MailboxConfig,
     pub inbound_interceptors: Vec<Box<dyn InboundInterceptor>>,
+    /// Message comparer for priority mailboxes (§8.1).
+    /// `None` = `StrictPriorityComparer` (default).
+    pub comparer: Option<Box<dyn MessageComparer>>,
     /// Target node for the actor. `None` = spawn locally (default).
     /// `Some(node_id)` = spawn on the specified remote node.
     pub target_node: Option<NodeId>,
@@ -903,34 +917,11 @@ impl Default for SpawnConfig {
     fn default() -> Self {
         Self {
             mailbox: MailboxConfig::default(),
-            interceptors: Vec::new(),
+            inbound_interceptors: Vec::new(),
+            comparer: None,
+            target_node: None,
         }
     }
-}
-```
-
-Updated `ActorRuntime::spawn`:
-
-```rust
-pub trait ActorRuntime: Send + Sync + 'static {
-    // Simple spawn (backward-compatible)
-    fn spawn<M, H>(&self, name: &str, handler: H) -> Self::Ref<M>
-    where
-        M: Send + 'static,
-        H: FnMut(M) + Send + 'static;
-
-    // Spawn with configuration
-    fn spawn_with_config<M, H>(
-        &self,
-        name: &str,
-        config: SpawnConfig,
-        handler: H,
-    ) -> Self::Ref<M>
-    where
-        M: Send + 'static,
-        H: FnMut(M) + Send + 'static;
-
-    // ... timers, groups, cluster events ...
 }
 ```
 
@@ -1124,8 +1115,8 @@ sequenceDiagram
     participant R2 as Runtime (Node 2)
     participant A as Actor (Node 2)
 
-    S->>R: tell_envelope(Envelope { headers, body })
-    Note over R: headers contains:<br/>TraceContext (serializable)<br/>Priority (serializable)<br/>HandlerStartTime (local-only)
+    S->>R: tell(msg)
+    Note over R: outbound interceptors stamp headers<br/>TraceContext (serializable)<br/>Priority (serializable)<br/>HandlerStartTime (local-only)
 
     R->>R: headers.to_wire()
     Note over R: WireHeaders:<br/>  "dcontext.TraceContext" → [bytes]<br/>  "dactor.Priority" → [bytes]<br/>  HandlerStartTime skipped (to_bytes()=None)
@@ -1464,7 +1455,9 @@ struct LoggingInterceptor;
 
 impl InboundInterceptor for LoggingInterceptor {
     fn name(&self) -> &'static str { "logging" }
-    fn on_receive(&self, ctx: &InterceptContext<'_>, headers: &mut Headers) -> Disposition {
+    fn on_receive(
+        &self, ctx: &InterceptContext<'_>, headers: &mut Headers, _message: &dyn Any,
+    ) -> Disposition {
         let cid = headers.get::<CorrelationId>().map(|c| c.0.as_str()).unwrap_or("-");
         tracing::info!(
             actor = ctx.actor_name,
@@ -1577,24 +1570,14 @@ sending node.
 HTTP frameworks solve this with client middleware (e.g., reqwest's
 `RequestBuilder` middleware). gRPC has client interceptors. dactor introduces
 **outbound interceptors** that run on the sender side, automatically enriching
-every outgoing message's headers.
-
-This eliminates the need for `tell_envelope()` and `tell_with_priority()` as
-separate API methods — the outbound interceptor stamps headers automatically,
-keeping the caller's API clean:
+every outgoing message's headers. The caller only calls `tell(msg)` — headers
+are stamped automatically:
 
 ```rust
-// Without outbound interceptors (verbose):
-let mut env = Envelope::from(Transfer { amount: 500 });
-env.headers.insert(TraceContext::current());
-env.headers.insert(CorrelationId::new());
-env.headers.insert(Priority::High);
-actor.tell_envelope(env)?;
-
-// With outbound interceptors (clean):
+// Outbound interceptors handle header injection automatically:
 actor.tell(Transfer { amount: 500 })?;
-// ↑ outbound interceptors automatically inject TraceContext,
-//   CorrelationId, Priority, auth tokens, etc.
+// ↑ outbound interceptors inject TraceContext, CorrelationId,
+//   Priority, auth tokens, etc. — no manual envelope needed
 ```
 
 **Outbound interceptor trait:**
@@ -1708,14 +1691,8 @@ sequenceDiagram
 **Impact on `ActorRef` API:**
 
 With outbound interceptors handling header injection, the `ActorRef` API
-simplifies. The `tell_envelope()` and `tell_with_priority()` convenience
-methods remain available for explicit control, but most users never need them:
-
-| Method | When to use |
-|---|---|
-| `tell(msg)` | Normal send — outbound interceptors add headers automatically |
-| `tell_envelope(env)` | Explicit header control — bypass or supplement outbound interceptors |
-| `tell_with_priority(msg, pri)` | Shorthand for priority — equivalent to outbound interceptor setting Priority header |
+is clean — `tell(msg)` is the only send method. Outbound interceptors
+stamp headers automatically based on message type, context, and policies.
 
 ### 5.4 Dead Letter Handling
 
@@ -2444,17 +2421,17 @@ pub trait ActorRuntime: Send + Sync + 'static {
     /// Watch an actor. When it terminates, the watcher receives a
     /// `ChildTerminated` notification via its message handler.
     /// Returns `Err(NotSupported)` if the adapter doesn't support death watch.
-    fn watch<M: Send + 'static>(
+    fn watch<A: Actor>(
         &self,
-        watcher: &Self::Ref<M>,
+        watcher: &ActorRef<A>,
         target: ActorId,
     ) -> Result<(), RuntimeError>;
 
     /// Stop watching an actor.
     /// Returns `Err(NotSupported)` if the adapter doesn't support death watch.
-    fn unwatch<M: Send + 'static>(
+    fn unwatch<A: Actor>(
         &self,
-        watcher: &Self::Ref<M>,
+        watcher: &ActorRef<A>,
         target: ActorId,
     ) -> Result<(), RuntimeError>;
 }
@@ -3233,28 +3210,52 @@ in both directions:
   the original custom error type
 
 ```rust
-/// Bidirectional translator between application errors and ActorError.
+/// Object-safe, type-erased error codec for the runtime registry.
 ///
-/// Register with the runtime so that:
-/// 1. When a handler returns a custom error, the codec encodes it into
-///    ActorError.payload for wire transport
-/// 2. When a caller receives an ActorError with a known payload_type,
-///    the codec decodes it back to the original error type
-pub trait ErrorCodec: Send + Sync + 'static {
-    /// The application's custom error type.
-    type Error: Send + 'static;
-
+/// The generic `ErrorCodec<E>` trait (below) is user-facing; this
+/// erased version is what the runtime stores in its registry.
+pub trait ErasedErrorCodec: Send + Sync + 'static {
     /// Stable type name for wire identification.
-    /// Must match on both sender and receiver sides.
     fn type_name(&self) -> &'static str;
 
-    /// Encode: custom error → ActorError with payload.
-    fn encode(&self, error: Self::Error) -> ActorError;
+    /// Try to encode a type-erased error into an ActorError payload.
+    /// Returns `None` if this codec doesn't handle the given error type.
+    fn try_encode(&self, error: &dyn Any) -> Option<ActorError>;
 
-    /// Decode: extract custom error from ActorError payload.
-    /// Returns `None` if the payload_type doesn't match or can't be decoded.
-    fn decode(&self, error: &ActorError) -> Option<Self::Error>;
+    /// Try to decode an ActorError payload into a type-erased error.
+    /// Returns `None` if the payload_type doesn't match.
+    fn try_decode(&self, error: &ActorError) -> Option<Box<dyn Any + Send>>;
 }
+
+/// User-facing generic error codec. Implement this for your error type,
+/// then wrap in `TypedErrorCodec` for registration.
+pub trait ErrorCodec<E: Send + 'static>: Send + Sync + 'static {
+    fn type_name(&self) -> &'static str;
+    fn encode(&self, error: &E) -> ActorError;
+    fn decode(&self, error: &ActorError) -> Option<E>;
+}
+
+/// Wrapper that erases the generic type for registry storage.
+/// Automatically implements `ErasedErrorCodec` for any `ErrorCodec<E>`.
+pub struct TypedErrorCodec<E, C: ErrorCodec<E>> { codec: C, _phantom: PhantomData<E> }
+
+impl<E: Send + 'static, C: ErrorCodec<E>> ErasedErrorCodec for TypedErrorCodec<E, C> {
+    fn type_name(&self) -> &'static str { self.codec.type_name() }
+    fn try_encode(&self, error: &dyn Any) -> Option<ActorError> {
+        error.downcast_ref::<E>().map(|e| self.codec.encode(e))
+    }
+    fn try_decode(&self, error: &ActorError) -> Option<Box<dyn Any + Send>> {
+        self.codec.decode(error).map(|e| Box::new(e) as Box<dyn Any + Send>)
+    }
+}
+
+// Convenience: wrap a typed codec for registration
+pub fn erased<E: Send + 'static, C: ErrorCodec<E>>(codec: C) -> Box<dyn ErasedErrorCodec> {
+    Box::new(TypedErrorCodec { codec, _phantom: PhantomData })
+}
+
+// Registration:
+// runtime.register_error_codec(erased(ValidationErrorCodec));
 ```
 
 **Example: ValidationErrors codec**
@@ -3574,7 +3575,6 @@ graph TB
             SM[SpawnManager]
             CM[CancelManager]
             WM[WatchManager]
-            HM[HealthMonitor]
         end
         subgraph "Internal Registries"
             TR[TypeRegistry<br/>actor factories]
@@ -3614,7 +3614,6 @@ messaging — **no separate network transport needed**.
 | `SpawnManager` | Processes remote spawn requests | `SpawnRequest` → `ActorId` |
 | `CancelManager` | Processes remote cancellation requests | `CancelRequest` → `()` |
 | `WatchManager` | Manages watch/unwatch subscriptions, delivers `ChildTerminated` | `WatchRequest`, `UnwatchRequest`, `ChildTerminated` |
-| `HealthMonitor` | Heartbeat ping/pong with peer nodes | `Ping` → `Pong` |
 
 **Why system actors, not a separate transport:**
 
@@ -3663,7 +3662,6 @@ sequenceDiagram
     R->>SA: spawn SpawnManager
     R->>SA: spawn CancelManager
     R->>SA: spawn WatchManager
-    R->>SA: spawn HealthMonitor
 
     R->>CD: start discovery
     CD-->>R: node_joined(NodeId(2))
@@ -4790,8 +4788,6 @@ sequenceDiagram
     Note over R1: NodeDirectory stores Node 2's system actor refs
     Note over R2: NodeDirectory stores Node 1's system actor refs
 
-    R1->>R2: HealthMonitor → Ping
-    R2-->>R1: HealthMonitor → Pong
     Note over R1,R2: Nodes fully connected
 ```
 
@@ -5146,10 +5142,7 @@ impl InboundInterceptor for MessageSizeInterceptor {
 pub struct MessageSize(pub usize);
 impl HeaderValue for MessageSize { ... }
 
-// Sender sets it:
-let mut env = Envelope::from(my_large_message);
-env.headers.insert(MessageSize(serialized_bytes.len()));
-actor.tell_envelope(env)?;
+// Outbound interceptor can calculate and stamp message size automatically
 ```
 
 **Example: Slow handler alerting**
