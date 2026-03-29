@@ -51,15 +51,17 @@
 
 ## Action Items
 
-1. ✅ Fix `SpawnConfig` field name in §5.2 example: `interceptors` → `inbound_interceptors`
-2. ✅ Add `NodeId` definition in §4.4
-3. ✅ Add `ClusterEvents` / `ClusterEvent` trait/enum definition
-4. ✅ Add `TimerHandle` trait definition
-5. ✅ Unify `Outcome` enum — use §5.2 detailed version as authoritative, remove §9.1 duplicate
-6. ✅ Update Appendix A to note it's pre-decision analysis (ActorRef<M> was the old approach)
-7. ✅ Fix `ValidationErrorCodec` example to use `ErrorCodec<ValidationErrors>` + `erased()` registration
-8. ✅ Remove stale `HM` from §10.1 mermaid diagram
-9. ✅ Fix `rgb()` in §9.1 mermaid if problematic
-10. ✅ Fix §4.8 Complete Example to use `async fn on_start(&mut self, ctx: &mut ActorContext)`
-11. ✅ Remove `PriorityFunction` reference from §8.1 if stale
-12. ✅ Add `header_name_static()` or fix to `header_name(&self)` consistently
+1. ✅ Fixed: `SpawnConfig` field name in §5.2 example: `interceptors` → `inbound_interceptors`
+2. ✅ Fixed: Added `NodeId` definition in §4.4 with assignment flow and `NodeIdMapper`
+3. ✅ Fixed: Added `ClusterEvents` / `ClusterEvent` trait/enum definition in §4.5
+4. ✅ Fixed: Added `TimerHandle` trait definition in §4.5
+5. ✅ Fixed: Unified `Outcome` enum — removed §9.1 duplicate, §5.2 is authoritative
+6. ✅ Fixed: Updated Appendix A Layer 1 text — notes it was superseded by §4 decision
+7. ✅ Fixed: `ValidationErrorCodec` uses `ErrorCodec<ValidationErrors>` + `erased()` registration
+8. ✅ Fixed: Removed stale `HM` from §10.1 mermaid diagram
+9. ✅ Fixed: Removed `rgb()` from §9.1 mermaid
+10. ✅ Fixed: §4.8 Complete Example uses `async fn on_start(&mut self, ctx: &mut ActorContext)`
+11. ✅ Fixed: Removed `PriorityFunction` reference from §8.1
+12. ✅ Fixed: `header_name_static()` → `Default`-based registration in HeaderRegistry
+13. ✅ Fixed: `RuntimeCapabilities` struct → `RuntimeCapability` enum + `is_supported()`
+14. ✅ Fixed: `NodeId` assignment documented — dactor runtime assigns, adapter maps to native ID

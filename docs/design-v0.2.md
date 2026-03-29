@@ -741,6 +741,15 @@ a central coordinator.
 
 ```rust
 /// Unique identifier for a node in the cluster.
+///
+/// `NodeId` is assigned by the **dactor runtime** (not the provider) when
+/// a node starts or when a peer joins via `ClusterDiscovery`. The adapter
+/// maintains a bidirectional mapping between dactor's `NodeId` and the
+/// provider's native node identity (ractor node name, kameo `PeerId`,
+/// coerce node tag).
+///
+/// This indirection allows dactor to use a compact, serializable, uniform
+/// ID regardless of how the underlying provider identifies nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct NodeId(pub u64);
 
@@ -758,6 +767,69 @@ impl fmt::Display for ActorId {
         write!(f, "Actor({}/{})", self.node.0, self.local)
     }
 }
+```
+
+**How `NodeId` is assigned:**
+
+`NodeId` is a dactor-level abstraction. Each provider has its own native
+node identity format — dactor maps between them:
+
+| Provider | Native identity | Format | Mapping |
+|---|---|---|---|
+| **ractor** | Node name | `String` (`"node1@host"`) | Adapter maintains `HashMap<NodeId, String>` |
+| **kameo** | libp2p `PeerId` | 32-byte public key hash | Adapter maintains `HashMap<NodeId, PeerId>` |
+| **coerce** | Node tag | `String` (`"node-east-1"`) | Adapter maintains `HashMap<NodeId, String>` |
+
+**Assignment flow:**
+
+```mermaid
+sequenceDiagram
+    participant CD as ClusterDiscovery
+    participant R as dactor Runtime
+    participant A as Adapter
+
+    Note over R: Local node starts
+    R->>R: assign self NodeId(1)<br/>(from config or auto-generated)
+    R->>A: register_local_node(NodeId(1))
+    A->>A: map NodeId(1) ↔ native identity<br/>(e.g., "node1@host")
+
+    CD-->>R: node_joined(addr)
+    R->>R: assign NodeId(2) for new peer
+    R->>A: adapter.connect(NodeId(2), addr)
+    A->>A: establish connection → learn native identity
+    A->>A: map NodeId(2) ↔ peer's native identity
+```
+
+**Who assigns which:**
+
+| Value | Assigned by | When |
+|---|---|---|
+| Local `NodeId` | Application config or runtime auto-gen | At startup |
+| Peer `NodeId` | dactor runtime | When `ClusterDiscovery` reports `node_joined` |
+| Native identity (ractor name, PeerId) | Provider | At adapter initialization |
+| Mapping between NodeId ↔ native | Adapter | During `connect()` handshake |
+
+**The adapter's `NodeIdMapper`:**
+
+```rust
+/// Maintained by each adapter to translate between dactor's NodeId
+/// and the provider's native node identity.
+pub(crate) struct NodeIdMapper {
+    to_native: HashMap<NodeId, NativeNodeId>,
+    from_native: HashMap<NativeNodeId, NodeId>,
+}
+
+/// Provider-specific node identity — each adapter defines its own.
+/// Examples:
+///   ractor: type NativeNodeId = String;      // "node1@host"
+///   kameo:  type NativeNodeId = PeerId;       // libp2p peer ID
+///   coerce: type NativeNodeId = String;       // "node-east-1"
+```
+
+When the adapter needs to send a message to `NodeId(2)`, it looks up the
+native identity in its `NodeIdMapper` and uses the provider's send API.
+When the provider receives a message from a native peer, the adapter
+looks up the corresponding `NodeId` to route it into dactor's system.
 
 /// A reference to a running actor of type `A`.
 ///
@@ -6202,6 +6274,8 @@ struct DatabaseWorker {
 
 #[dactor::lifecycle]
 impl DatabaseWorker {
+    // Note: #[dactor::lifecycle] generates the async Actor trait impl.
+    // The user writes simpler sync signatures; the macro wraps them.
     fn on_start(&mut self) {
         self.conn = Some(DbConnection::connect("postgres://..."));
     }
@@ -6766,9 +6840,10 @@ architecture** can support all patterns:
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**Layer 1 (core):** `ActorRef<M>` stays message-typed. This is what adapter
-crates implement. It is simple, does not leak actor types into the reference,
-and works for both tell and ask.
+**Layer 1 (core):** This analysis originally proposed `ActorRef<M>` (message-typed)
+as the core layer, but the final decision (§4) adopted **`ActorRef<A>` (actor-typed)**
+instead — see §4.4 for the authoritative design. The layered approach described
+below was superseded.
 
 **Layer 2 (sugar):** Optional actor definition helpers that compile down to
 Layer 1. These can be provided as:
