@@ -4165,7 +4165,7 @@ top of the provider crate (ractor, kameo, coerce), not on dactor's
 abstraction layer. They use the provider's native node identity and
 messaging, which means:
 
-- They **don't depend on `NodeId(u64)`** — they use the provider's native
+- They **don't depend on dactor's `NodeId`** — they use the provider's native
   identity (ractor node name, kameo PeerId, coerce node tag)
 - They **don't go through dactor's interceptor pipeline** — they use the
   provider's raw `tell()`/`ask()` directly
@@ -4245,7 +4245,7 @@ sequenceDiagram
     R->>A: adapter.connect(addr)
     Note over A: provider handles native node join
     A-->>R: connected, NodeId from provider identity
-    R->>R: store NodeId(2) mapping in NodeDirectory
+    R->>R: store NodeId(node-2) mapping in NodeDirectory
 
     R-->>App: Runtime ready
     App->>R: runtime.spawn("my-actor", args, deps)
@@ -4626,7 +4626,7 @@ let actor = runtime.spawn("counter", Counter { count: 0 });
 ```rust
 // Spawns on node 3
 let config = SpawnConfig {
-    target_node: Some(NodeId(3)),
+    target_node: Some(NodeId("node-3".into())),
     ..Default::default()
 };
 let actor = runtime.spawn_with_config("counter", Counter { count: 0 }, config)?;
@@ -5289,13 +5289,13 @@ sequenceDiagram
 
     D->>K: watch for pod changes
     K-->>D: pod "node-3" started
-    D->>R: emitter.node_joined(NodeId(3), addr)
-    R->>A: ClusterEvent::NodeJoined(NodeId(3))
+    D->>R: emitter.node_joined(NodeId(node-3), addr)
+    R->>A: ClusterEvent::NodeJoined(NodeId(node-3))
     Note over A: actors can now send messages to Node 3
 
     K-->>D: pod "node-2" terminated
-    D->>R: emitter.node_left(NodeId(2), Failed)
-    R->>A: ClusterEvent::NodeLeft(NodeId(2))
+    D->>R: emitter.node_left(NodeId(node-2), Failed)
+    R->>A: ClusterEvent::NodeLeft(NodeId(node-2))
     Note over A: actors handle node departure
 ```
 
@@ -5378,15 +5378,15 @@ sequenceDiagram
 
     alt Discovery detects leave
         CD-->>R: node_left(addr)
-        R->>A: adapter.disconnect(NodeId(2))
+        R->>A: adapter.disconnect(NodeId(node-2))
         A->>P: provider.native_disconnect()
     else Provider detects failure
         P-->>A: node unreachable (native event)
-        A-->>R: on_node_unreachable(NodeId(2))
+        A-->>R: on_node_unreachable(NodeId(node-2))
     end
 
-    R->>R: remove NodeId(2) from NodeDirectory
-    R->>App: ClusterEvent::NodeLeft(NodeId(2))
+    R->>R: remove NodeId(node-2) from NodeDirectory
+    R->>App: ClusterEvent::NodeLeft(NodeId(node-2))
 ```
 
 ### 10.3 Node Health Monitoring
@@ -5443,9 +5443,9 @@ sequenceDiagram
 
     P->>P: heartbeat ping/pong fails for Node 2
     P->>A: node 2 unreachable (provider-native event)
-    A->>R: on_node_unreachable callback → NodeId(2)
+    A->>R: on_node_unreachable callback → NodeId(node-2)
     R->>R: remove Node 2 from NodeDirectory
-    R->>App: ClusterEvent::NodeLeft(NodeId(2))
+    R->>App: ClusterEvent::NodeLeft(NodeId(node-2))
     R->>App: ChildTerminated for watched actors on Node 2
 ```
 
@@ -5538,10 +5538,10 @@ for peer in &state.peers {
 
 // Check if a specific node is reachable before spawning on it
 let node3_ok = state.peers.iter()
-    .any(|p| p.node_id == NodeId(3) && p.status == PeerStatus::Connected);
+    .any(|p| p.node_id == NodeId("node-3".into()) && p.status == PeerStatus::Connected);
 if node3_ok {
     runtime.spawn_with_config("worker", args, deps,
-        SpawnConfig { target_node: Some(NodeId(3)), ..Default::default() })?;
+        SpawnConfig { target_node: Some(NodeId("node-3".into())), ..Default::default() })?;
 }
 
 // Get count of healthy nodes for scaling decisions
@@ -6154,14 +6154,14 @@ use dactor::{ActorRuntime, ActorRef, ClusterEvents, ClusterEvent, NodeId};
 async fn test_cluster_state_sync() {
     // Create a 3-node cluster with reliable links
     let cluster = MockCluster::builder()
-        .add_node(NodeId(1))
-        .add_node(NodeId(2))
-        .add_node(NodeId(3))
+        .add_node(NodeId("node-1".into()))
+        .add_node(NodeId("node-2".into()))
+        .add_node(NodeId("node-3".into()))
         .default_link(LinkConfig::reliable())
         .build();
 
-    let node1 = cluster.node(NodeId(1));
-    let node2 = cluster.node(NodeId(2));
+    let node1 = cluster.node(NodeId("node-1".into()));
+    let node2 = cluster.node(NodeId("node-2".into()));
 
     // Spawn actors on different nodes
     let actor_a = node1.runtime().spawn("a", |msg: MyMessage| { /* ... */ });
@@ -6171,28 +6171,28 @@ async fn test_cluster_state_sync() {
     actor_b.tell(MyMessage { data: 42 }).unwrap();
 
     // Simulate a network partition
-    cluster.partition(NodeId(1), NodeId(2));
+    cluster.partition(NodeId("node-1".into()), NodeId("node-2".into()));
     // actor_b.tell(...) would now fail or be dropped
 
     // Heal the partition
-    cluster.heal(NodeId(1), NodeId(2));
+    cluster.heal(NodeId("node-1".into()), NodeId("node-2".into()));
 
     // Simulate node failure
-    cluster.emit_event(NodeId(2), ClusterEvent::NodeLeft(NodeId(1)));
+    cluster.emit_event(NodeId(node-2), ClusterEvent::NodeLeft(NodeId(node-1)));
 }
 
 #[tokio::test]
 async fn test_serialization_roundtrip() {
     let cluster = MockCluster::builder()
-        .add_node(NodeId(1))
-        .add_node(NodeId(2))
+        .add_node(NodeId("node-1".into()))
+        .add_node(NodeId("node-2".into()))
         .default_link(LinkConfig::reliable())
         .build();
 
     // This would panic at runtime if MyMessage doesn't correctly
     // implement Serialize/Deserialize — catching it in unit tests
     // rather than in production.
-    let actor = cluster.node(NodeId(2)).runtime().spawn("echo", |msg: MyMessage| {
+    let actor = cluster.node(NodeId("node-2".into())).runtime().spawn("echo", |msg: MyMessage| {
         assert_eq!(msg.data, 42); // deserialized correctly?
     });
 
@@ -6563,9 +6563,9 @@ use dactor_test_harness::{TestCluster, TestCommand, TestResponse};
 async fn test_cross_node_transfer() {
     // Launch 3 real processes
     let cluster = TestCluster::builder()
-        .node(NodeId(1), "target/debug/test-node", &["1"])
-        .node(NodeId(2), "target/debug/test-node", &["2"])
-        .node(NodeId(3), "target/debug/test-node", &["3"])
+        .node(NodeId("node-1".into()), "target/debug/test-node", &["1"])
+        .node(NodeId("node-2".into()), "target/debug/test-node", &["2"])
+        .node(NodeId("node-3".into()), "target/debug/test-node", &["3"])
         .build()
         .await;
 
@@ -6573,18 +6573,18 @@ async fn test_cross_node_transfer() {
     cluster.wait_until_connected(3, Duration::from_secs(10)).await;
 
     // Spawn accounts on different nodes via control protocol
-    let alice_id = cluster.send(NodeId(1), TestCommand::Custom {
+    let alice_id = cluster.send(NodeId("node-1".into()), TestCommand::Custom {
         command_type: "create_account".into(),
         payload: bincode::serialize(&CreateAccountArgs { name: "alice", balance: 1000 }).unwrap(),
     }).await.unwrap();
 
-    let bob_id = cluster.send(NodeId(2), TestCommand::Custom {
+    let bob_id = cluster.send(NodeId("node-2".into()), TestCommand::Custom {
         command_type: "create_account".into(),
         payload: bincode::serialize(&CreateAccountArgs { name: "bob", balance: 500 }).unwrap(),
     }).await.unwrap();
 
     // Cross-node transfer: alice (Node 1) → bob (Node 2)
-    let result = cluster.send(NodeId(1), TestCommand::Ask {
+    let result = cluster.send(NodeId("node-1".into()), TestCommand::Ask {
         target: alice_id,
         message_type: "Transfer".into(),
         body_bytes: bincode::serialize(&Transfer { to: bob_id, amount: 200 }).unwrap(),
@@ -6593,7 +6593,7 @@ async fn test_cross_node_transfer() {
     assert!(matches!(result, TestResponse::AskReply { .. }));
 
     // Verify balances on both nodes
-    let alice_balance = cluster.send(NodeId(1), TestCommand::Custom {
+    let alice_balance = cluster.send(NodeId("node-1".into()), TestCommand::Custom {
         command_type: "get_balance".into(),
         payload: bincode::serialize(&alice_id).unwrap(),
     }).await;
@@ -6611,17 +6611,17 @@ The same test case runs against any adapter — just change the binary:
 ```rust
 // Test with ractor
 TestCluster::builder()
-    .node(NodeId(1), "target/debug/test-node-ractor", &["1"])
+    .node(NodeId("node-1".into()), "target/debug/test-node-ractor", &["1"])
     // ...
 
 // Same test with kameo
 TestCluster::builder()
-    .node(NodeId(1), "target/debug/test-node-kameo", &["1"])
+    .node(NodeId("node-1".into()), "target/debug/test-node-kameo", &["1"])
     // ...
 
 // Same test with coerce
 TestCluster::builder()
-    .node(NodeId(1), "target/debug/test-node-coerce", &["1"])
+    .node(NodeId("node-1".into()), "target/debug/test-node-coerce", &["1"])
     // ...
 ```
 
