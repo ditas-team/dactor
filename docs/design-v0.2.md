@@ -5829,6 +5829,247 @@ pub async fn run_all<R: ActorRuntime>(runtime: &R) {
 **Error mapping tables** — each adapter documents how it maps the underlying
 library's errors to dactor's `ErrorCode`:
 
+### 14.4 Integration Test Harness (`dactor-test-harness`)
+
+**Problem:** The mock cluster (§14.2) tests cluster behavior in a single
+process with simulated networking. But real distributed bugs often only
+appear with **real processes, real networking, and real concurrency**. Each
+adapter needs multi-process integration tests, but writing these from
+scratch for every adapter is tedious and inconsistent.
+
+**Design:** `dactor-test-harness` is a standalone crate that provides:
+
+1. **A host application** — a generic dactor node process that can be
+   launched multiple times to form a real cluster
+2. **A control protocol** — a standardized way for test scripts to send
+   commands to each node (spawn actors, send messages, inject faults)
+3. **System commands** — built-in commands that control the actor runtime
+   (shutdown, inspect state, trigger cluster events)
+4. **Application commands** — custom commands defined by the application
+   for domain-specific test scenarios
+
+```mermaid
+graph TB
+    subgraph "Test Process (cargo test)"
+        TC[Test Case]
+        TC -->|control protocol| N1
+        TC -->|control protocol| N2
+        TC -->|control protocol| N3
+    end
+    subgraph "Node 1 (separate process)"
+        N1[TestNode<br/>+ dactor runtime<br/>+ adapter]
+    end
+    subgraph "Node 2 (separate process)"
+        N2[TestNode<br/>+ dactor runtime<br/>+ adapter]
+    end
+    subgraph "Node 3 (separate process)"
+        N3[TestNode<br/>+ dactor runtime<br/>+ adapter]
+    end
+    N1 <-->|"adapter networking<br/>(real TCP/libp2p/gRPC)"| N2
+    N2 <-->|"adapter networking"| N3
+    N1 <-->|"adapter networking"| N3
+```
+
+**Control protocol:**
+
+The test process communicates with each node over a lightweight TCP channel
+(separate from the adapter's actor transport) using a simple command/response
+protocol:
+
+```rust
+/// Command sent from the test process to a test node.
+#[derive(Serialize, Deserialize)]
+pub enum TestCommand {
+    // ── System commands (built-in) ──────────────────
+    /// Spawn an actor on this node.
+    Spawn {
+        actor_type: String,
+        actor_name: String,
+        args_bytes: Vec<u8>,
+    },
+    /// Send a message to an actor (tell).
+    Tell {
+        target: ActorId,
+        message_type: String,
+        body_bytes: Vec<u8>,
+    },
+    /// Send a message and await reply (ask).
+    Ask {
+        target: ActorId,
+        message_type: String,
+        body_bytes: Vec<u8>,
+    },
+    /// Get the runtime metrics snapshot.
+    GetRuntimeMetrics,
+    /// Get the cluster state.
+    GetClusterState,
+    /// Gracefully shut down this node.
+    Shutdown,
+    /// Query a specific actor's mailbox depth.
+    InspectMailbox { actor_id: ActorId },
+
+    // ── Application commands (custom) ───────────────
+    /// Application-defined command. The harness deserializes and
+    /// dispatches to a registered `TestCommandHandler`.
+    Custom {
+        command_type: String,
+        payload: Vec<u8>,
+    },
+}
+
+/// Response from a test node back to the test process.
+#[derive(Serialize, Deserialize)]
+pub enum TestResponse {
+    Ok,
+    ActorSpawned { actor_id: ActorId },
+    AskReply { body_bytes: Vec<u8> },
+    Metrics(RuntimeMetrics),
+    ClusterState(ClusterState),
+    MailboxDepth { queued: usize },
+    Error(ActorError),
+    CustomResponse { payload: Vec<u8> },
+}
+```
+
+**Application-defined commands:**
+
+Applications register custom command handlers so their integration tests
+can issue domain-specific commands:
+
+```rust
+/// Trait for handling application-specific test commands.
+pub trait TestCommandHandler: Send + Sync + 'static {
+    fn handle_command(
+        &self,
+        command_type: &str,
+        payload: &[u8],
+        runtime: &dyn ActorRuntime,
+    ) -> Result<Vec<u8>, ActorError>;
+}
+
+// Example: banking application defines custom test commands
+struct BankTestHandler;
+
+impl TestCommandHandler for BankTestHandler {
+    fn handle_command(
+        &self, cmd_type: &str, payload: &[u8], runtime: &dyn ActorRuntime,
+    ) -> Result<Vec<u8>, ActorError> {
+        match cmd_type {
+            "create_account" => {
+                let args: CreateAccountArgs = bincode::deserialize(payload)?;
+                let actor_id = /* spawn account actor */;
+                Ok(bincode::serialize(&actor_id)?)
+            }
+            "get_balance" => {
+                let account_id: ActorId = bincode::deserialize(payload)?;
+                let balance = /* ask actor */;
+                Ok(bincode::serialize(&balance)?)
+            }
+            _ => Err(ActorError::new(ErrorCode::Unimplemented, "unknown command")),
+        }
+    }
+}
+```
+
+**Test node setup:**
+
+```rust
+// In the test node's main.rs (a standalone binary):
+use dactor_test_harness::{TestNode, TestNodeConfig};
+
+#[tokio::main]
+async fn main() {
+    let config = TestNodeConfig {
+        node_id: NodeId(std::env::args().nth(1).unwrap().parse().unwrap()),
+        control_port: 9100,  // test process connects here
+        adapter: Box::new(RactorRuntime::new()),
+        command_handler: Some(Box::new(BankTestHandler)),
+    };
+
+    TestNode::run(config).await;
+}
+```
+
+**Writing integration tests:**
+
+```rust
+use dactor_test_harness::{TestCluster, TestCommand, TestResponse};
+
+#[tokio::test]
+async fn test_cross_node_transfer() {
+    // Launch 3 real processes
+    let cluster = TestCluster::builder()
+        .node(NodeId(1), "target/debug/test-node", &["1"])
+        .node(NodeId(2), "target/debug/test-node", &["2"])
+        .node(NodeId(3), "target/debug/test-node", &["3"])
+        .build()
+        .await;
+
+    // Wait for cluster to form
+    cluster.wait_until_connected(3, Duration::from_secs(10)).await;
+
+    // Spawn accounts on different nodes via control protocol
+    let alice_id = cluster.send(NodeId(1), TestCommand::Custom {
+        command_type: "create_account".into(),
+        payload: bincode::serialize(&CreateAccountArgs { name: "alice", balance: 1000 }).unwrap(),
+    }).await.unwrap();
+
+    let bob_id = cluster.send(NodeId(2), TestCommand::Custom {
+        command_type: "create_account".into(),
+        payload: bincode::serialize(&CreateAccountArgs { name: "bob", balance: 500 }).unwrap(),
+    }).await.unwrap();
+
+    // Cross-node transfer: alice (Node 1) → bob (Node 2)
+    let result = cluster.send(NodeId(1), TestCommand::Ask {
+        target: alice_id,
+        message_type: "Transfer".into(),
+        body_bytes: bincode::serialize(&Transfer { to: bob_id, amount: 200 }).unwrap(),
+    }).await;
+
+    assert!(matches!(result, TestResponse::AskReply { .. }));
+
+    // Verify balances on both nodes
+    let alice_balance = cluster.send(NodeId(1), TestCommand::Custom {
+        command_type: "get_balance".into(),
+        payload: bincode::serialize(&alice_id).unwrap(),
+    }).await;
+    // ... assert balance == 800
+
+    // Clean shutdown
+    cluster.shutdown().await;
+}
+```
+
+**Consistency across adapters:**
+
+The same test case runs against any adapter — just change the binary:
+
+```rust
+// Test with ractor
+TestCluster::builder()
+    .node(NodeId(1), "target/debug/test-node-ractor", &["1"])
+    // ...
+
+// Same test with kameo
+TestCluster::builder()
+    .node(NodeId(1), "target/debug/test-node-kameo", &["1"])
+    // ...
+
+// Same test with coerce
+TestCluster::builder()
+    .node(NodeId(1), "target/debug/test-node-coerce", &["1"])
+    // ...
+```
+
+**Testing hierarchy:**
+
+| Layer | Crate | What it tests | Real networking? |
+|---|---|---|---|
+| Unit tests | `dactor::test_support` (§14.1) | Single actor logic | ❌ In-memory |
+| Mock cluster | `dactor-mock` (§14.2) | Cluster behavior with fault injection | ❌ Simulated |
+| Conformance | `dactor::test_support::conformance` (§14.3) | Adapter trait compliance | ❌ Single-process |
+| **Integration** | **`dactor-test-harness` (§14.4)** | **Real multi-process cluster** | **✅ Real TCP/libp2p/gRPC** |
+
 ---
 
 ## 15. Developer Experience
