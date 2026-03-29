@@ -7423,22 +7423,22 @@ trait-actor = []                 # Handler<M> trait-based definitions
 
 These features exist in the provider but cannot be accessed through dactor:
 
-| Provider | Lost Feature | Why |
-|---|---|---|
-| **ractor** | Fine-grained `SupervisionEvent` typing | Coarsened into dactor's `ErrorAction` |
-| **ractor** | Direct enum pattern matching on messages | Hidden behind `Handler<M>` dispatch |
-| **ractor** | `ActorStatus` control from handler | Not modeled in dactor |
-| **kameo** | `Actor::next()` custom event loop | dactor assumes message-driven loop |
-| **kameo** | `spawn_in_thread` (dedicated blocking thread) | No dactor equivalent |
-| **kameo** | `DelegatedReply`, `ForwardedReply` patterns | Not modeled in dactor ask |
-| **kameo** | libp2p `NetworkBehaviour` composition | dactor exposes only high-level cluster API |
-| **coerce** | `ActorTags` for metrics grouping | No dactor tag concept |
-| **coerce** | Persistence (journaling, snapshots, recovery) | Not modeled in dactor |
-| **coerce** | `Sharding` (cluster-wide actor distribution) | dactor pools are in-node only |
-| **coerce** | Protobuf-native remote message format | dactor wraps but can't replace |
-| **actix** | `Arbiter` thread affinity control | Not modeled in dactor |
-| **actix** | `SyncArbiter` (dedicated thread pool for sync actors) | Partially mapped to pools |
-| **actix** | `Context::notify_later` (self-messages) | No dactor self-message concept |
+| Provider | Lost Feature | Description | Why |
+|---|---|---|---|
+| **ractor** | Fine-grained `SupervisionEvent` typing | Rich enum of supervision events (spawn, terminate, panic, start fail) with typed payloads for granular error-handling logic | Coarsened into dactor's `ErrorAction` |
+| **ractor** | Direct enum pattern matching on messages | All messages for an actor defined as a single enum, enabling exhaustive `match` in one handler function | Hidden behind `Handler<M>` dispatch |
+| **ractor** | `ActorStatus` control from handler | Handler can return status signals (e.g., stop self, drain mailbox) to the runtime as part of message processing | Not modeled in dactor |
+| **kameo** | `Actor::next()` custom event loop | Actor overrides its receive loop to multiplex across custom futures, timers, and channels beyond standard messages | dactor assumes message-driven loop |
+| **kameo** | `spawn_in_thread` (dedicated blocking thread) | Spawns an actor on its own OS thread for CPU-heavy or blocking work, bypassing the async executor | No dactor equivalent |
+| **kameo** | `DelegatedReply`, `ForwardedReply` patterns | Defers or forwards the reply responsibility to another actor or a later async operation, decoupling request from response | Not modeled in dactor ask |
+| **kameo** | libp2p `NetworkBehaviour` composition | Composes custom libp2p network behaviours (protocols, transports, discovery) into the actor system's networking stack | dactor exposes only high-level cluster API |
+| **coerce** | `ActorTags` for metrics grouping | Assigns string tags to actors for grouping in metrics dashboards (e.g., by role, tenant, subsystem) | No dactor tag concept |
+| **coerce** | Persistence (journaling, snapshots, recovery) | Event-sourced journal + periodic snapshots with automatic recovery on actor restart; built into the actor lifecycle | Not modeled in dactor |
+| **coerce** | `Sharding` (cluster-wide actor distribution) | Distributes actors across cluster nodes by shard key with automatic rebalancing and location-transparent messaging | dactor pools are in-node only |
+| **coerce** | Protobuf-native remote message format | Remote messages use protobuf as the native wire format, enabling cross-language interop without extra encoding layers | dactor wraps but can't replace |
+| **actix** | `Arbiter` thread affinity control | Pins actors to specific OS threads or thread groups, controlling executor affinity for latency-sensitive workloads | Not modeled in dactor |
+| **actix** | `SyncArbiter` (dedicated thread pool for sync actors) | Runs synchronous (blocking) actor handlers on a dedicated thread pool, isolated from the async executor | Partially mapped to pools |
+| **actix** | `Context::notify_later` (self-messages) | Schedules a message to be delivered to the actor itself after a delay, enabling timer-driven self-transitions | No dactor self-message concept |
 
 ### B.4 Recommendations
 
