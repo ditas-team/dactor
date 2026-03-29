@@ -1652,6 +1652,105 @@ let config = SpawnConfig {
 runtime.spawn_with_config("bank", args, deps, config)?;
 ```
 
+**Interceptor lifecycle and statefulness:**
+
+Interceptors are **long-lived, shared, and stateful**. They are created
+once and live for the lifetime of the runtime (global) or the actor
+(per-actor). Multiple actors and messages pass through the same interceptor
+instance concurrently.
+
+| Aspect | Design |
+|---|---|
+| **Lifetime** | Same as the runtime (global) or the actor (per-actor) |
+| **Sharing** | Global interceptors are shared across all actors on the node. Per-actor interceptors are shared across all messages to that actor. |
+| **Concurrency** | Multiple actor tasks may call `on_receive` concurrently (for global interceptors). `Send + Sync` is required. |
+| **Statefulness** | ✅ Yes — interceptors can hold internal state |
+
+**How to hold state safely:**
+
+Since interceptors are `Send + Sync + 'static`, internal state must use
+thread-safe types:
+
+```rust
+/// Stateful interceptor — counts messages and enforces rate limits.
+struct RateLimiter {
+    /// Thread-safe counter per actor.
+    counts: DashMap<ActorId, AtomicU64>,
+    /// Max messages per second per actor.
+    max_rate: u64,
+    /// When this interceptor was created.
+    created_at: Instant,
+}
+
+impl InboundInterceptor for RateLimiter {
+    fn name(&self) -> &'static str { "rate-limiter" }
+
+    fn on_receive(
+        &self, ctx: &InterceptContext<'_>, _headers: &mut Headers, _msg: &dyn Any,
+    ) -> Disposition {
+        let count = self.counts
+            .entry(ctx.actor_id.clone())
+            .or_insert(AtomicU64::new(0));
+        let current = count.fetch_add(1, Ordering::Relaxed);
+        if current > self.max_rate {
+            return Disposition::Reject("rate limit exceeded".into());
+        }
+        Disposition::Continue
+    }
+}
+```
+
+**Recommended state patterns:**
+
+| State type | Thread-safe wrapper | Use case |
+|---|---|---|
+| Counters | `AtomicU64` | Rate limiting, message counting |
+| Per-actor maps | `DashMap<ActorId, V>` | Circuit breaker state per actor |
+| Shared config | `Arc<Config>` (immutable) | Policy configuration |
+| Mutable config | `ArcSwap<Config>` | Hot-reloadable config |
+| Metrics sinks | `Arc<MetricsStore>` | Aggregated metrics |
+| Time tracking | `AtomicI64` (epoch ms) | Sliding window rate limits |
+
+**Lifecycle hooks:** Interceptors do **not** have lifecycle callbacks
+(no `on_start`, `on_stop`). They are plain trait objects — initialize
+state in the constructor, clean up via `Drop`. If an interceptor needs
+async initialization (e.g., connect to a metrics backend), do it before
+registering:
+
+```rust
+// Initialize before registering
+let metrics_backend = MetricsBackend::connect("http://prometheus:9090").await;
+let interceptor = MetricsInterceptor::new(metrics_backend);
+runtime.add_inbound_interceptor(Box::new(interceptor))?;
+```
+
+**Removal:** Global interceptors cannot be removed after registration
+(the runtime holds `Vec<Box<dyn InboundInterceptor>>`). Per-actor
+interceptors live as long as the actor — they are dropped when the
+actor stops. If dynamic interceptor management is needed, use a wrapper
+that checks an `AtomicBool` to enable/disable itself:
+
+```rust
+struct ToggleableInterceptor {
+    inner: Box<dyn InboundInterceptor>,
+    enabled: Arc<AtomicBool>,
+}
+
+impl InboundInterceptor for ToggleableInterceptor {
+    fn name(&self) -> &'static str { self.inner.name() }
+
+    fn on_receive(
+        &self, ctx: &InterceptContext<'_>, headers: &mut Headers, msg: &dyn Any,
+    ) -> Disposition {
+        if self.enabled.load(Ordering::Relaxed) {
+            self.inner.on_receive(ctx, headers, msg)
+        } else {
+            Disposition::Continue
+        }
+    }
+}
+```
+
 ### 5.3 Outbound Interceptor (Sender-Side)
 
 **Rationale:** The interceptor pipeline in §5.2 runs on the **receiver side**
