@@ -290,7 +290,7 @@ impl V2TestRuntime {
                             Disposition::Delay(d) => {
                                 total_delay += d;
                             }
-                            Disposition::Drop | Disposition::Reject(_) => {
+                            Disposition::Drop | Disposition::Reject(_) | Disposition::Retry(_) => {
                                 should_deliver = false;
                                 break;
                             }

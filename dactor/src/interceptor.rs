@@ -43,6 +43,18 @@ pub enum Disposition {
     Drop,
     /// Reject the message with a reason.
     Reject(String),
+    /// Tell the caller to retry sending the message after the specified duration.
+    /// Unlike `Delay` (which holds the message in the pipeline), `Retry` returns
+    /// immediately to the caller with `Err(RuntimeError::RetryAfter { .. })`,
+    /// letting the caller decide whether and when to resend.
+    ///
+    /// **Inbound:** The message is NOT delivered. The caller receives the retry
+    /// hint and can resend after the suggested delay.
+    ///
+    /// **Outbound:** The message is NOT sent. Same caller-visible behavior.
+    ///
+    /// Use cases: circuit breakers, load shedding, backpressure signaling.
+    Retry(Duration),
 }
 
 /// Outcome reported to interceptors after handler completion.
