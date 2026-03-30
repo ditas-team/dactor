@@ -9,7 +9,7 @@
 | Milestone | PRs | Status |
 |-----------|-----|--------|
 | v0.2.0-alpha.1 — Core API + Test Harness | PR 1–3 | ✅ Complete |
-| v0.2.0-alpha.2 — Communication (tell/ask) | PR 4–6 | 🔲 Not started |
+| v0.2.0-alpha.2 — Communication (tell/ask) | PR 4–6 | 🟡 In progress (1/3) |
 | v0.2.0-alpha.3 — Messaging & Mailbox | PR 7–11 | 🔲 Not started |
 | v0.2.0-beta.1 — Streaming & Cancellation | PR 12–15 | 🔲 Not started |
 | v0.2.0-beta.2 — Error Model & Persistence | PR 16–18 | 🔲 Not started |
@@ -24,7 +24,7 @@
 | 1 | Module reorganization & cleanup | impl/pr-01-module-reorg | ✅ PR #3 | 46/46 pass | Green-to-green refactor |
 | 2 | Actor trait & ActorId | impl/pr-02-actor-trait | ✅ PR #4 | 56/56 pass | 10 new tests |
 | 3 | **Integration test harness (gRPC)** | impl/pr-03-test-harness | ✅ PR #5 | 61/61 pass | gRPC control protocol, fault injection, events |
-| 4 | Message, Handler, ActorRef\<A\> | | 🔲 Not started | | |
+| 4 | Message, Handler, ActorRef\<A\> | impl/pr-04-message-handler | ✅ PR #6 | 62/62 pass | 6 new tests |
 | 5 | Tell (fire-and-forget) | | 🔲 Not started | | |
 | 6 | Ask (request-reply) | | 🔲 Not started | | |
 | 7 | Envelope, Headers, RuntimeHeaders | | 🔲 Not started | | |
@@ -64,3 +64,4 @@
 | 2026-03-30 | PR 1 | Module reorganization: split traits/runtime.rs, feature-gate test_support, NodeId(String), serde optional |
 | 2026-03-30 | PR 2 | Actor trait, ActorId, ErrorAction, ActorContext, SpawnConfig, ActorError stub |
 | 2026-03-30 | PR 3 | dactor-test-harness crate: gRPC control protocol, TestNode, TestCluster, FaultInjector, EventStream |
+| 2026-03-30 | PR 4 | Message trait, Handler<M> async trait, TypedActorRef<A> trait |
