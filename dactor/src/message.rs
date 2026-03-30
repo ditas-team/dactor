@@ -1,7 +1,8 @@
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+
+use uuid::Uuid;
 
 /// Defines a message type and its expected reply.
 ///
@@ -73,15 +74,15 @@ impl std::fmt::Debug for Headers {
     }
 }
 
-/// Unique identifier for a message, auto-assigned by the runtime.
+/// Globally unique identifier for a message, auto-assigned by the runtime.
+/// Uses UUID v4 for uniqueness across nodes without coordination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MessageId(pub u64);
+pub struct MessageId(pub Uuid);
 
 impl MessageId {
-    /// Generate a new unique MessageId. Thread-safe, monotonically increasing.
+    /// Generate a new globally unique MessageId (UUID v4).
     pub fn next() -> Self {
-        static COUNTER: AtomicU64 = AtomicU64::new(1);
-        Self(COUNTER.fetch_add(1, Ordering::Relaxed))
+        Self(Uuid::new_v4())
     }
 }
 
@@ -282,8 +283,10 @@ mod tests {
 
     #[test]
     fn test_message_id_display() {
-        let id = MessageId(42);
-        assert_eq!(format!("{}", id), "msg-42");
+        let id = MessageId::next();
+        let display = format!("{}", id);
+        assert!(display.starts_with("msg-"));
+        assert!(display.len() > 10); // UUID is 36 chars
     }
 
     #[test]

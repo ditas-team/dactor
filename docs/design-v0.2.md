@@ -2335,8 +2335,8 @@ pub struct RuntimeHeaders {
 }
 
 /// Unique identifier for a message, auto-assigned by the runtime.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct MessageId(pub u64);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct MessageId(pub Uuid);
 ```
 
 **Runtime headers vs user headers — two separate objects:**
@@ -2357,15 +2357,15 @@ sequenceDiagram
     participant A as Actor
     participant II as Inbound Interceptor
 
-    S->>OI: on_send(runtime_headers={id:42}, headers, msg)
+    S->>OI: on_send(runtime_headers={id:a1b2c3}, headers, msg)
     OI->>A: deliver
-    A->>II: on_receive(runtime_headers={id:42}, headers, msg)
+    A->>II: on_receive(runtime_headers={id:a1b2c3}, headers, msg)
     II->>A: handler runs
-    A-->>II: on_complete(runtime_headers={id:42}, headers, reply)
-    A-->>OI: on_reply(runtime_headers={id:42}, headers, reply)
+    A-->>II: on_complete(runtime_headers={id:a1b2c3}, headers, reply)
+    A-->>OI: on_reply(runtime_headers={id:a1b2c3}, headers, reply)
     OI-->>S: reply
 
-    Note over OI: Same MessageId(42) in on_send AND on_reply<br/>→ correlation without stashing in headers
+    Note over OI: Same MessageId(a1b2c3) in on_send AND on_reply<br/>→ correlation without stashing in headers
 ```
 
 **Header flow — request headers travel with the reply:**
