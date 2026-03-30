@@ -11,9 +11,10 @@ keywords = ["actor", "distributed", "ractor", "framework", "runtime"]
 categories = ["concurrency", "network-programming"]
 
 [dependencies]
-dactor = { version = "0.1.0", path = "../dactor" }
+dactor = { version = "0.2.0", path = "../dactor", features = ["serde"] }
 ractor = "0.15"
 tokio = { version = "1", features = ["sync", "rt", "time", "macros"] }
 
 [dev-dependencies]
+dactor = { version = "0.2.0", path = "../dactor", features = ["serde", "test-support"] }
 tokio = { version = "1", features = ["full", "test-util"] }

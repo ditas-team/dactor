@@ -21,19 +21,34 @@
 //! - [`dactor-ractor`](https://crates.io/crates/dactor-ractor) — ractor adapter
 //! - [`dactor-kameo`](https://crates.io/crates/dactor-kameo) — kameo adapter
 
-// ── Traits ───────────────────────────────────────────────────────
-pub use traits::runtime::{
-    ActorRef, ActorRuntime, ActorSendError, ClusterError, ClusterEvent,
-    ClusterEvents, GroupError, SubscriptionId, TimerHandle,
-};
-pub use traits::clock::{Clock, SystemClock, TestClock};
+pub mod actor;
+pub mod errors;
+pub mod cluster;
+pub mod timer;
+pub mod clock;
+pub mod node;
 
-// ── Types ────────────────────────────────────────────────────────
-pub use types::node::NodeId;
-
-// ── Test support ─────────────────────────────────────────────────
+#[cfg(feature = "test-support")]
 pub mod test_support;
 
-// ── Internal modules ─────────────────────────────────────────────
-mod traits;
-mod types;
+/// Convenience re-exports of the most commonly used types.
+pub mod prelude {
+    pub use crate::actor::*;
+    pub use crate::errors::*;
+    pub use crate::cluster::*;
+    pub use crate::timer::*;
+    pub use crate::clock::*;
+    pub use crate::node::*;
+}
+
+// Backward-compatible re-exports at crate root
+pub use actor::{ActorRef, ActorRuntime};
+pub use errors::{ActorSendError, ClusterError, GroupError};
+pub use cluster::{ClusterEvent, ClusterEvents, SubscriptionId};
+pub use timer::TimerHandle;
+pub use clock::{Clock, SystemClock};
+pub use node::NodeId;
+
+// Backward-compatible re-export of TestClock (feature-gated)
+#[cfg(feature = "test-support")]
+pub use test_support::test_clock::TestClock;

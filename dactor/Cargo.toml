@@ -1,6 +1,6 @@
 [package]
 name = "dactor"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "An abstract framework for distributed actors in Rust"
 license = "MIT"
@@ -11,9 +11,18 @@ keywords = ["actor", "distributed", "framework", "async", "runtime"]
 categories = ["concurrency", "network-programming"]
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-tokio = { version = "1", features = ["time", "sync", "rt", "macros"] }
+tokio = { version = "1", features = ["time", "sync", "rt"] }
 tracing = "0.1"
+
+[dependencies.serde]
+version = "1"
+features = ["derive"]
+optional = true
+
+[features]
+default = []
+serde = ["dep:serde"]
+test-support = ["tokio/test-util"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

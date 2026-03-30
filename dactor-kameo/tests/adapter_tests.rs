@@ -132,11 +132,11 @@ async fn adapt_03_cluster_events_node_joined() {
         .unwrap();
 
     rt.cluster_events_handle()
-        .emit(ClusterEvent::NodeJoined(NodeId(5)));
+        .emit(ClusterEvent::NodeJoined(NodeId("5".into())));
 
     let events = joined.lock().unwrap();
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0], NodeId(5));
+    assert_eq!(events[0], NodeId("5".into()));
 }
 
 #[tokio::test]
@@ -153,12 +153,12 @@ async fn adapt_03_cluster_events_unsubscribe() {
         .unwrap();
 
     rt.cluster_events_handle()
-        .emit(ClusterEvent::NodeJoined(NodeId(1)));
+        .emit(ClusterEvent::NodeJoined(NodeId("1".into())));
     assert_eq!(count.load(Ordering::SeqCst), 1);
 
     rt.cluster_events().unsubscribe(sub_id).unwrap();
     rt.cluster_events_handle()
-        .emit(ClusterEvent::NodeJoined(NodeId(2)));
+        .emit(ClusterEvent::NodeJoined(NodeId("2".into())));
     assert_eq!(count.load(Ordering::SeqCst), 1, "unsubscribed callback should not fire");
 }
 
@@ -319,7 +319,7 @@ async fn kameo_07_send_after_cancel_before_fire() {
 #[test]
 fn kameo_11_reexports_core_types() {
     // Verify that the dactor crate is re-exported and types are accessible
-    let _ = dactor_kameo::dactor::NodeId(1);
+    let _ = dactor_kameo::dactor::NodeId("1".into());
 
     // Verify adapter types are exported
     let _rt = dactor_kameo::KameoRuntime::new();
@@ -355,11 +355,11 @@ async fn cluster_events_node_left() {
         .unwrap();
 
     rt.cluster_events_handle()
-        .emit(ClusterEvent::NodeLeft(NodeId(99)));
+        .emit(ClusterEvent::NodeLeft(NodeId("99".into())));
 
     let events = left.lock().unwrap();
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0], NodeId(99));
+    assert_eq!(events[0], NodeId("99".into()));
 }
 
 // ---------------------------------------------------------------------------
@@ -388,7 +388,7 @@ async fn cluster_events_multiple_subscribers() {
         .unwrap();
 
     rt.cluster_events_handle()
-        .emit(ClusterEvent::NodeJoined(NodeId(1)));
+        .emit(ClusterEvent::NodeJoined(NodeId("1".into())));
 
     assert_eq!(c1.load(Ordering::SeqCst), 1);
     assert_eq!(c2.load(Ordering::SeqCst), 1);

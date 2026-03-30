@@ -3,10 +3,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::traits::runtime::{
-    ActorRef, ActorRuntime, ActorSendError, ClusterError, ClusterEvent,
-    ClusterEvents, GroupError, SubscriptionId, TimerHandle,
-};
+use crate::actor::{ActorRef, ActorRuntime};
+use crate::cluster::{ClusterEvent, ClusterEvents, SubscriptionId};
+use crate::errors::{ActorSendError, ClusterError, GroupError};
+use crate::timer::TimerHandle;
 
 // ---------------------------------------------------------------------------
 // TestActorRef
