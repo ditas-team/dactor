@@ -42,12 +42,15 @@ pub mod prelude {
 }
 
 // Backward-compatible re-exports at crate root
+pub use async_trait::async_trait;
 pub use actor::{ActorRef, ActorRuntime};
+pub use actor::{Actor, ActorContext, ActorError, SpawnConfig};
 pub use errors::{ActorSendError, ClusterError, GroupError};
+pub use errors::ErrorAction;
 pub use cluster::{ClusterEvent, ClusterEvents, SubscriptionId};
 pub use timer::TimerHandle;
 pub use clock::{Clock, SystemClock};
-pub use node::NodeId;
+pub use node::{NodeId, ActorId};
 
 // Backward-compatible re-export of TestClock (feature-gated)
 #[cfg(feature = "test-support")]

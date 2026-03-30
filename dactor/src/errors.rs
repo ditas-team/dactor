@@ -35,3 +35,12 @@ impl fmt::Display for ClusterError {
 }
 
 impl std::error::Error for ClusterError {}
+
+/// What the runtime should do after a handler error or panic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorAction {
+    Resume,
+    Restart,
+    Stop,
+    Escalate,
+}

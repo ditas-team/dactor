@@ -8,7 +8,7 @@
 
 | Milestone | PRs | Status |
 |-----------|-----|--------|
-| v0.2.0-alpha.1 — Core API + Test Harness | PR 1–3 | 🟡 In progress (1/3) |
+| v0.2.0-alpha.1 — Core API + Test Harness | PR 1–3 | 🟡 In progress (2/3) |
 | v0.2.0-alpha.2 — Communication (tell/ask) | PR 4–6 | 🔲 Not started |
 | v0.2.0-alpha.3 — Messaging & Mailbox | PR 7–11 | 🔲 Not started |
 | v0.2.0-beta.1 — Streaming & Cancellation | PR 12–15 | 🔲 Not started |
@@ -22,7 +22,7 @@
 | PR | Title | Branch | Status | Tests | Notes |
 |----|-------|--------|--------|-------|-------|
 | 1 | Module reorganization & cleanup | impl/pr-01-module-reorg | ✅ PR #3 | 46/46 pass | Green-to-green refactor |
-| 2 | Actor trait & ActorId | | 🔲 Not started | | |
+| 2 | Actor trait & ActorId | impl/pr-02-actor-trait | ✅ PR #4 | 56/56 pass | 10 new tests |
 | 3 | **Integration test harness (gRPC)** | | 🔲 Not started | | Prerequisite for e2e tests |
 | 4 | Message, Handler, ActorRef\<A\> | | 🔲 Not started | | |
 | 5 | Tell (fire-and-forget) | | 🔲 Not started | | |
@@ -62,3 +62,4 @@
 | Date | PR | Change |
 |------|-----|--------|
 | 2026-03-30 | PR 1 | Module reorganization: split traits/runtime.rs, feature-gate test_support, NodeId(String), serde optional |
+| 2026-03-30 | PR 2 | Actor trait, ActorId, ErrorAction, ActorContext, SpawnConfig, ActorError stub |
