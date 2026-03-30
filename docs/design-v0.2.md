@@ -953,7 +953,7 @@ pub struct ActorContext {
     pub actor_id: ActorId,
     /// The name the actor was spawned with.
     pub actor_name: String,
-    /// How the message was sent (Tell, Ask, Stream).
+    /// How the message was sent (Tell, Ask, Stream, Feed).
     pub send_mode: SendMode,
 }
 
@@ -1066,7 +1066,7 @@ async fn main() {
 
 ---
 
-dactor supports three communication patterns, all as methods on `ActorRef<A>`:
+dactor supports four communication patterns, all as methods on `ActorRef<A>`:
 
 ```mermaid
 sequenceDiagram
@@ -1081,12 +1081,20 @@ sequenceDiagram
     C->>A: ask(msg)
     A-->>C: M::Reply
 
-    Note over C,A: 3. Stream (request-stream)
+    Note over C,A: 3. Stream (server-streaming)
     C->>A: stream(msg, buffer)
     A-->>C: item 1
     A-->>C: item 2
     A-->>C: item N
     A-->>C: (stream ends)
+
+    Note over C,A: 4. Feed (client-streaming)
+    C->>A: feed(msg, input_stream)
+    C->>A: item 1
+    C->>A: item 2
+    C->>A: item N
+    C->>A: (stream ends)
+    A-->>C: final reply
 ```
 
 ### 4.9 Tell (Fire-and-Forget)
@@ -1391,7 +1399,9 @@ complete matrix (mirroring gRPC's four RPC types):
 | `stream()` | single message | stream of replies | Server streaming |
 | `feed()` | stream of items | optional single reply | Client streaming |
 
-All four are methods on `ActorRef<A>`, providing a unified API.
+All four are methods on `ActorRef<A>`, providing a unified API. The `feed()`
+pattern is detailed in §4.12; batching for both `stream()` and `feed()` is
+covered in §4.11.1.
 
 **Dependencies:** The core crate adds `futures-core` (for the `Stream` trait)
 and `tokio-stream` (for `ReceiverStream`) as dependencies, both lightweight
@@ -1782,7 +1792,7 @@ yield points via `tokio::select!` against a `CancellationToken` provided
 through `ActorContext`. The handler is never *interrupted* mid-computation
 — it cooperatively checks for cancellation.
 
-#### 4.12.1 Local Cancellation
+#### 4.13.1 Local Cancellation
 
 For local `ask()` / `stream()`, the caller's `CancellationToken` is passed
 directly to the runtime, which makes it available via `ctx.cancelled()`:
@@ -1813,7 +1823,7 @@ impl Handler<ExpensiveQuery> for Worker {
 }
 ```
 
-#### 4.12.2 Remote Cancellation
+#### 4.13.2 Remote Cancellation
 
 `CancellationToken` is an in-process primitive — it **cannot be serialized**.
 For remote calls, the runtime's local `CancelManager` system actor sends a
@@ -1887,7 +1897,7 @@ impl Handler<CancelRequest> for CancelManager {
 }
 ```
 
-#### 4.12.3 How the Runtime Delivers Cancellation
+#### 4.13.3 How the Runtime Delivers Cancellation
 
 The cancellation signal does **not** enter the actor's mailbox. Instead,
 the runtime manages it out-of-band:
@@ -1922,7 +1932,7 @@ handler against `local_token.cancelled()`. This means:
 - **Handlers that don't opt in** still get cancelled at the outer `select!`
   after the handler returns — the reply is discarded if the token has fired
 
-#### 4.12.4 Thread Safety Guarantees
+#### 4.13.4 Thread Safety Guarantees
 
 1. **No thread interruption** — the actor's single task is never interrupted.
    Cancellation is cooperative: it triggers at `.await` points via `select!`.
@@ -1945,17 +1955,17 @@ handler against `local_token.cancelled()`. This means:
    | CPU-bound, no `.await` | Cannot cancel until handler returns |
    | Stream handler (sends many items) | Fast — `tx.send().await` checks each item |
 
-#### 4.12.5 Cancellation Outcomes
+#### 4.13.5 Cancellation Outcomes
 
-| Scenario | `ask()` result | `stream()` result |
-|---|---|---|
-| Token cancelled before handler starts | `Err(Cancelled)` | `Err(Cancelled)` — stream never opens |
-| Token cancelled during handler | `Err(Cancelled)` | Stream closes, `StreamSender` returns `ConsumerDropped` |
-| Handler finishes before cancel arrives | `Ok(reply)` — cancel is a no-op | Stream items delivered, then ends normally |
-| No cancellation token (`None`) | Runs to completion | Runs to completion |
-| Handler cooperatively checks `ctx.cancelled()` | Returns `Err(Cancelled)` with partial results | Stops sending items, drops `StreamSender` |
+| Scenario | `ask()` result | `stream()` result | `feed()` result |
+|---|---|---|---|
+| Token cancelled before handler starts | `Err(Cancelled)` | `Err(Cancelled)` — stream never opens | `Err(Cancelled)` — input stream not drained |
+| Token cancelled during handler | `Err(Cancelled)` | Stream closes, `StreamSender` returns `ConsumerDropped` | Drain task stops, `StreamReceiver` yields `None`, handler can finalize early |
+| Handler finishes before cancel arrives | `Ok(reply)` — cancel is a no-op | Stream items delivered, then ends normally | `Ok(reply)` — cancel is a no-op |
+| No cancellation token (`None`) | Runs to completion | Runs to completion | Runs to completion |
+| Handler cooperatively checks `ctx.cancelled()` | Returns `Err(Cancelled)` with partial results | Stops sending items, drops `StreamSender` | Stops consuming, returns partial result or `Err(Cancelled)` |
 
-#### 4.12.6 `ErrorCode::Cancelled`
+#### 4.13.6 `ErrorCode::Cancelled`
 
 ```rust
 #[non_exhaustive]
@@ -1968,7 +1978,7 @@ pub enum ErrorCode {
 }
 ```
 
-#### 4.12.7 `ActorContext.cancelled()`
+#### 4.13.7 `ActorContext.cancelled()`
 
 ```rust
 impl ActorContext {
@@ -1981,7 +1991,7 @@ impl ActorContext {
 }
 ```
 
-#### 4.12.8 Helper: `cancel_after()`
+#### 4.13.8 Helper: `cancel_after()`
 
 ```rust
 /// Create a CancellationToken that auto-cancels after the given duration.
@@ -2635,7 +2645,7 @@ pub struct InboundContext<'a> {
     /// The Rust type name of the message (e.g., `"my_crate::Increment"`).
     /// Obtained via `std::any::type_name::<M>()` at dispatch time.
     pub message_type: &'static str,
-    /// Whether this is a `tell` (fire-and-forget) or `ask` (request-reply).
+    /// How the message was sent: `Tell`, `Ask`, `Stream`, or `Feed`.
     pub send_mode: SendMode,
     /// Whether this message arrived from a remote node (cross-network).
     pub remote: bool,
@@ -2686,6 +2696,17 @@ pub enum SendMode {
 /// ```
 /// `on_complete` is called exactly **once** at the end of the stream,
 /// not per item. For per-item observation, use `on_stream_item`.
+///
+/// ### `Feed` (client-streaming)
+/// ```text
+/// on_receive(initial FeedMessage) → handler starts consuming StreamReceiver
+///                                 → on_complete(outcome=Replied)         if handler returns Ok
+///                                 → on_complete(outcome=HandlerError)    if handler fails
+///                                 → on_complete(outcome=StreamCancelled) if cancel token fires
+/// ```
+/// **Note:** Individual stream items fed into the actor are **not**
+/// intercepted (same as `stream()` — only the initial `FeedMessage`
+/// triggers `on_receive`). The final reply is visible in `on_complete`.
 pub trait InboundInterceptor: Send + Sync + 'static {
     /// Human-readable name for this interceptor (e.g., "auth-check",
     /// "rate-limiter", "circuit-breaker"). Included in `Rejected` errors
@@ -2706,7 +2727,7 @@ pub trait InboundInterceptor: Send + Sync + 'static {
         Disposition::Continue
     }
 
-    /// Called after the actor's handler finishes (for Tell/Ask) or
+    /// Called after the actor's handler finishes (for Tell/Ask/Feed) or
     /// after the stream ends (for Stream). Called exactly once per
     /// message, regardless of send mode.
     fn on_complete(
@@ -2745,7 +2766,7 @@ pub enum Outcome {
     },
 
     /// The handler panicked or returned an error.
-    /// Carries the full structured `ActorError` (see §9.1).
+    /// Carries the full structured `ActorError` (see §7.1).
     HandlerError {
         error: ActorError,
     },
@@ -5218,7 +5239,7 @@ where
 ```rust
 /// Trait for serializing and deserializing messages for wire transport.
 ///
-/// The runtime uses this for all remote communication: tell, ask, stream,
+/// The runtime uses this for all remote communication: tell, ask, stream, feed,
 /// remote spawn (actor Args), error payloads, and headers.
 ///
 /// Applications can register a custom serializer to use a format that
@@ -5293,6 +5314,9 @@ runtime.set_message_serializer(Box::new(MyCustomSerializer));
 | Remote `tell()` / `ask()` message body | ✅ |
 | Remote `ask()` reply | ✅ |
 | `stream()` items | ✅ |
+| `feed()` initial request | ✅ |
+| `feed()` streamed items | ✅ |
+| `feed()` final reply | ✅ |
 | Remote spawn `Args` | ✅ |
 | `ActorError` (including `ErrorPayload`) | ✅ |
 | `WireHeaders` (header values via `HeaderValue::to_bytes`) | ❌ — headers serialize themselves |
@@ -5487,9 +5511,9 @@ graph LR
 **The send path in detail:**
 
 ```rust
-// Inside the runtime's cross-node send path:
+// Inside the runtime's cross-node send path (tell example):
 fn send_remote<M: RemoteMessage>(
-    &self, target: ActorId, msg: M, headers: Headers,
+    &self, target: ActorId, msg: M, headers: Headers, send_mode: SendMode,
 ) -> Result<(), RuntimeError> {
     // 1. Run outbound interceptors (stamp headers)
     let mut headers = headers;
@@ -5507,7 +5531,7 @@ fn send_remote<M: RemoteMessage>(
     let envelope = WireEnvelope {
         target,
         message_type: std::any::type_name::<M>().to_string(),
-        send_mode: SendMode::Tell,
+        send_mode,
         headers: wire_headers,
         body,
         request_id: None,
@@ -5870,7 +5894,7 @@ impl<A: Actor> Deserialize for ActorRef<A> {
 - The receiving node must be able to reach the target node's network
   (they must be in the same cluster or have network connectivity).
 - If the target actor has stopped by the time the remote call arrives,
-  the caller gets `Err(ActorNotFound)` (see §10.4).
+  the caller gets `Err(ActorNotFound)` (see §9.5).
 - `ActorRef` deserialization requires a runtime context — it cannot happen
   in pure `serde` without access to the adapter's routing layer. In
   practice, the adapter provides a custom deserializer or the ref is
@@ -6072,7 +6096,7 @@ supervision decision).
 
 | Send mode | Behavior | Error |
 |---|---|---|
-| `tell()` | Returns `Err(RuntimeError::Send(...))`. The message is forwarded to the dead letter handler (§5.3). | `ActorSendError("actor stopped")` |
+| `tell()` | Returns `Err(RuntimeError::Send(...))`. The message is forwarded to the dead letter handler (§5.4). | `ActorSendError("actor stopped")` |
 | `ask()` | Returns `Err(RuntimeError::Actor(ActorError { code: ActorNotFound, ... }))`. | Caller gets a structured error with the actor ID. |
 | `stream()` | Returns `Err(RuntimeError::Actor(ActorError { code: ActorNotFound, ... }))`. | Same as `ask()`. |
 
@@ -7811,6 +7835,7 @@ For each feature and each adapter, there are exactly three possibilities:
 | `tell()` | ✅ Library | ✅ Library | ✅ Library | ractor `cast()` / kameo `tell().try_send()` / coerce `notify()` |
 | `ask()` | ✅ Library | ✅ Library | ✅ Library | ractor `call()` / kameo `ask()` / coerce `send()` |
 | `stream()` | ⚙️ Adapter | ⚙️ Adapter | ⚙️ Adapter | No library has streaming; adapter creates `mpsc` channel shim |
+| `feed()` | ⚙️ Adapter | ⚙️ Adapter | ⚙️ Adapter | No library has client-streaming; adapter creates `mpsc` channel shim |
 | `ActorRef::id()` | ✅ Library | ✅ Library | ✅ Library | Each library provides actor identity |
 | `ActorRef::is_alive()` | ✅ Library | ✅ Library | ✅ Library | Check actor cell / ref validity |
 | Lifecycle hooks | ✅ Library | ✅ Library | ✅ Library | ractor `pre_start`/`post_stop` / kameo `on_start`/`on_stop` / coerce lifecycle events |
@@ -7844,6 +7869,7 @@ For each feature and each adapter, there are exactly three possibilities:
 | `tell()` | ✅ Library | `ractor::ActorRef::cast()` |
 | `ask()` | ✅ Library | `ractor::ActorRef::call()` |
 | `stream()` | ⚙️ Adapter | ractor has no streaming; adapter creates `mpsc` channel, passes `StreamSender` to actor, returns `ReceiverStream` |
+| `feed()` | ⚙️ Adapter | ractor has no client-streaming; adapter creates `mpsc` channel, drains caller's stream into actor's `StreamReceiver` |
 | `ActorRef::id()` | ✅ Library | `ractor::ActorRef::get_id()` → `ActorId` |
 | `ActorRef::is_alive()` | ✅ Library | Check ractor actor cell liveness |
 | Lifecycle hooks | ✅ Library | ractor `pre_start` / `post_stop` callbacks |
@@ -7867,6 +7893,7 @@ For each feature and each adapter, there are exactly three possibilities:
 | `tell()` | ✅ Library | `kameo::ActorRef::tell().try_send()` |
 | `ask()` | ✅ Library | `kameo::ActorRef::ask()` |
 | `stream()` | ⚙️ Adapter | kameo has no streaming; adapter creates `mpsc` channel, passes `StreamSender` to actor, returns `ReceiverStream` |
+| `feed()` | ⚙️ Adapter | kameo has no client-streaming; adapter creates `mpsc` channel, drains caller's stream into actor's `StreamReceiver` |
 | `ActorRef::id()` | ✅ Library | `kameo::actor::ActorId` → `ActorId` |
 | `ActorRef::is_alive()` | ✅ Library | Check kameo actor ref validity |
 | Lifecycle hooks | ✅ Library | kameo `on_start` / `on_stop` hooks |
@@ -7890,6 +7917,7 @@ For each feature and each adapter, there are exactly three possibilities:
 | `tell()` | ✅ Library | `coerce::ActorRef::notify()` |
 | `ask()` | ✅ Library | `coerce::ActorRef::send()` — returns `Result` with reply |
 | `stream()` | ⚙️ Adapter | coerce has no streaming; adapter creates `mpsc` channel, passes `StreamSender` to actor, returns `ReceiverStream` |
+| `feed()` | ⚙️ Adapter | coerce has no client-streaming; adapter creates `mpsc` channel, drains caller's stream into actor's `StreamReceiver` |
 | `ActorRef::id()` | ✅ Library | coerce actors have identity via `ActorId` |
 | `ActorRef::is_alive()` | ✅ Library | coerce `ActorRef` tracks actor liveness (local and remote) |
 | Lifecycle hooks | ✅ Library | coerce `Actor` trait has lifecycle events |
