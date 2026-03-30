@@ -46,9 +46,9 @@ pub mod prelude {
 pub use async_trait::async_trait;
 pub use actor::{ActorRef, ActorRuntime};
 pub use actor::{Actor, ActorContext, ActorError, SpawnConfig};
-pub use actor::{Handler, TypedActorRef};
+pub use actor::{AskReply, Handler, TypedActorRef};
 pub use message::Message;
-pub use errors::{ActorSendError, ClusterError, GroupError};
+pub use errors::{ActorSendError, ClusterError, GroupError, RuntimeError};
 pub use errors::ErrorAction;
 pub use cluster::{ClusterEvent, ClusterEvents, SubscriptionId};
 pub use timer::TimerHandle;

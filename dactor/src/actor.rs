@@ -1,10 +1,14 @@
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use tokio::sync::oneshot;
 
 use crate::cluster::ClusterEvents;
-use crate::errors::{ActorSendError, ErrorAction, GroupError};
+use crate::errors::{ActorSendError, ErrorAction, GroupError, RuntimeError};
 use crate::message::Message;
 use crate::node::ActorId;
 use crate::timer::TimerHandle;
@@ -169,6 +173,34 @@ pub trait Handler<M: Message>: Actor {
     async fn handle(&mut self, msg: M, ctx: &mut ActorContext) -> M::Reply;
 }
 
+/// A future that resolves to the reply from an `ask()` call.
+///
+/// Wraps a `oneshot::Receiver` and implements `Future` so that callers can
+/// `.await` the reply directly: `let count = actor.ask(GetCount)?.await?;`
+pub struct AskReply<R> {
+    rx: oneshot::Receiver<R>,
+}
+
+impl<R> AskReply<R> {
+    pub fn new(rx: oneshot::Receiver<R>) -> Self {
+        Self { rx }
+    }
+}
+
+impl<R> Future for AskReply<R> {
+    type Output = Result<R, RuntimeError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match Pin::new(&mut self.rx).poll(cx) {
+            Poll::Ready(Ok(reply)) => Poll::Ready(Ok(reply)),
+            Poll::Ready(Err(_)) => Poll::Ready(Err(RuntimeError::ActorNotFound(
+                "reply channel closed — actor may have stopped, panicked, or the request was cancelled".into(),
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
 /// A reference to a running actor of type `A` (v0.2 API).
 ///
 /// Unlike v0.1 `ActorRef<M>` which is typed to the message,
@@ -190,6 +222,15 @@ pub trait TypedActorRef<A: Actor>: Clone + Send + Sync + 'static {
     where
         A: Handler<M>,
         M: Message<Reply = ()>;
+
+    /// Request-reply: send a message and await the reply.
+    ///
+    /// Returns an [`AskReply`] future that resolves to the handler's reply.
+    /// Usage: `let reply = actor.ask(msg)?.await?;`
+    fn ask<M>(&self, msg: M) -> Result<AskReply<M::Reply>, ActorSendError>
+    where
+        A: Handler<M>,
+        M: Message;
 }
 
 /// Configuration for spawning an actor. All fields have defaults

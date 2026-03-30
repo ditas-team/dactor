@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use futures::FutureExt;
 use tokio::sync::mpsc;
 
-use crate::actor::{Actor, ActorContext, Handler, TypedActorRef};
+use crate::actor::{Actor, ActorContext, AskReply, Handler, TypedActorRef};
 use crate::errors::ActorSendError;
 use crate::message::Message;
 use crate::node::{ActorId, NodeId};
@@ -39,6 +39,26 @@ where
 {
     async fn dispatch(self: Box<Self>, actor: &mut A, ctx: &mut ActorContext) {
         actor.handle(self.msg, ctx).await;
+    }
+}
+
+/// Ask envelope: carries the message and a oneshot sender for the reply.
+struct AskDispatch<M: Message> {
+    msg: M,
+    reply_tx: tokio::sync::oneshot::Sender<M::Reply>,
+}
+
+#[async_trait]
+impl<A, M> Dispatch<A> for AskDispatch<M>
+where
+    A: Handler<M>,
+    M: Message,
+{
+    async fn dispatch(self: Box<Self>, actor: &mut A, ctx: &mut ActorContext) {
+        let reply = actor.handle(self.msg, ctx).await;
+        if self.reply_tx.send(reply).is_err() {
+            tracing::debug!("ask reply dropped — caller may have timed out or been cancelled");
+        }
     }
 }
 
@@ -89,6 +109,22 @@ impl<A: Actor> TypedActorRef<A> for V2ActorRef<A> {
         self.sender
             .send(dispatch)
             .map_err(|_| ActorSendError("actor stopped".into()))
+    }
+
+    fn ask<M>(&self, msg: M) -> Result<AskReply<M::Reply>, ActorSendError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let dispatch: BoxedDispatch<A> = Box::new(AskDispatch {
+            msg,
+            reply_tx: tx,
+        });
+        self.sender
+            .send(dispatch)
+            .map_err(|_| ActorSendError("actor stopped".into()))?;
+        Ok(AskReply::new(rx))
     }
 }
 
@@ -211,6 +247,32 @@ mod tests {
     impl Handler<Increment> for Counter {
         async fn handle(&mut self, msg: Increment, _ctx: &mut ActorContext) {
             self.count += msg.0;
+        }
+    }
+
+    struct GetCount;
+    impl Message for GetCount {
+        type Reply = u64;
+    }
+
+    #[async_trait]
+    impl Handler<GetCount> for Counter {
+        async fn handle(&mut self, _msg: GetCount, _ctx: &mut ActorContext) -> u64 {
+            self.count
+        }
+    }
+
+    struct Reset;
+    impl Message for Reset {
+        type Reply = u64;
+    }
+
+    #[async_trait]
+    impl Handler<Reset> for Counter {
+        async fn handle(&mut self, _msg: Reset, _ctx: &mut ActorContext) -> u64 {
+            let old = self.count;
+            self.count = 0;
+            old
         }
     }
 
@@ -371,5 +433,82 @@ mod tests {
 
         assert_ne!(a.id(), b.id());
         assert!(a.id().local < b.id().local);
+    }
+
+    // -- Ask tests ----------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_ask_get_count() {
+        let runtime = V2TestRuntime::new();
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 42 });
+
+        let count = counter.ask(GetCount).unwrap().await.unwrap();
+        assert_eq!(count, 42);
+    }
+
+    #[tokio::test]
+    async fn test_ask_after_tell() {
+        let runtime = V2TestRuntime::new();
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+
+        counter.tell(Increment(10)).unwrap();
+        counter.tell(Increment(20)).unwrap();
+
+        let count = counter.ask(GetCount).unwrap().await.unwrap();
+        assert_eq!(count, 30);
+    }
+
+    #[tokio::test]
+    async fn test_ask_reset_returns_old_value() {
+        let runtime = V2TestRuntime::new();
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 100 });
+
+        let old = counter.ask(Reset).unwrap().await.unwrap();
+        assert_eq!(old, 100);
+
+        let count = counter.ask(GetCount).unwrap().await.unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_asks() {
+        let runtime = V2TestRuntime::new();
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+
+        counter.tell(Increment(100)).unwrap();
+
+        // Ensure the tell is processed before asking
+        let _ = counter.ask(GetCount).unwrap().await.unwrap();
+
+        let ref1 = counter.clone();
+        let ref2 = counter.clone();
+
+        let (r1, r2) = tokio::join!(
+            async { ref1.ask(GetCount).unwrap().await.unwrap() },
+            async { ref2.ask(GetCount).unwrap().await.unwrap() },
+        );
+
+        assert_eq!(r1, 100);
+        assert_eq!(r2, 100);
+    }
+
+    #[tokio::test]
+    async fn test_interleaved_tell_ask() {
+        let runtime = V2TestRuntime::new();
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+
+        counter.tell(Increment(5)).unwrap();
+        let c1 = counter.ask(GetCount).unwrap().await.unwrap();
+        assert_eq!(c1, 5);
+
+        counter.tell(Increment(3)).unwrap();
+        let c2 = counter.ask(GetCount).unwrap().await.unwrap();
+        assert_eq!(c2, 8);
+
+        let old = counter.ask(Reset).unwrap().await.unwrap();
+        assert_eq!(old, 8);
+
+        let c3 = counter.ask(GetCount).unwrap().await.unwrap();
+        assert_eq!(c3, 0);
     }
 }

@@ -44,3 +44,40 @@ pub enum ErrorAction {
     Stop,
     Escalate,
 }
+
+/// Unified error returned by runtime operations (ask, stream, feed, etc.)
+#[derive(Debug)]
+pub enum RuntimeError {
+    /// Message delivery failed (actor stopped, mailbox full, etc.)
+    Send(ActorSendError),
+    /// The target actor was not found or has stopped.
+    ActorNotFound(String),
+    /// The operation timed out.
+    Timeout,
+    /// The operation was rejected by an interceptor.
+    Rejected { interceptor: String, reason: String },
+    /// A handler-level error occurred.
+    Actor(crate::actor::ActorError),
+}
+
+impl fmt::Display for RuntimeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Send(e) => write!(f, "send error: {}", e),
+            Self::ActorNotFound(id) => write!(f, "actor not found: {}", id),
+            Self::Timeout => write!(f, "operation timed out"),
+            Self::Rejected { interceptor, reason } => {
+                write!(f, "rejected by '{}': {}", interceptor, reason)
+            }
+            Self::Actor(e) => write!(f, "actor error: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for RuntimeError {}
+
+impl From<ActorSendError> for RuntimeError {
+    fn from(e: ActorSendError) -> Self {
+        Self::Send(e)
+    }
+}
