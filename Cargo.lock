@@ -141,6 +141,7 @@ name = "dactor"
 version = "0.2.0"
 dependencies = [
  "async-trait",
+ "futures",
  "serde",
  "tokio",
  "tracing",

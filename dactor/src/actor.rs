@@ -174,8 +174,6 @@ pub trait Handler<M: Message>: Actor {
 /// Unlike v0.1 `ActorRef<M>` which is typed to the message,
 /// `TypedActorRef<A>` is typed to the actor struct. This enables
 /// sending any message type `M` where `A: Handler<M>`.
-///
-/// Note: `tell()` and `ask()` will be added in later PRs.
 pub trait TypedActorRef<A: Actor>: Clone + Send + Sync + 'static {
     /// The actor's unique identity.
     fn id(&self) -> ActorId;
@@ -185,6 +183,13 @@ pub trait TypedActorRef<A: Actor>: Clone + Send + Sync + 'static {
 
     /// Check if the actor is still alive.
     fn is_alive(&self) -> bool;
+
+    /// Fire-and-forget: deliver a message to the actor.
+    /// The message must have `Reply = ()` (no reply expected).
+    fn tell<M>(&self, msg: M) -> Result<(), ActorSendError>
+    where
+        A: Handler<M>,
+        M: Message<Reply = ()>;
 }
 
 /// Configuration for spawning an actor. All fields have defaults

@@ -58,3 +58,7 @@ pub use node::{NodeId, ActorId};
 // Backward-compatible re-export of TestClock (feature-gated)
 #[cfg(feature = "test-support")]
 pub use test_support::test_clock::TestClock;
+
+// V2 test runtime re-exports (feature-gated)
+#[cfg(feature = "test-support")]
+pub use test_support::v2_test_runtime::{V2TestRuntime, V2ActorRef};
