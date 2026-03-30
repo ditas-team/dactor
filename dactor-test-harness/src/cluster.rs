@@ -154,6 +154,7 @@ impl Drop for TestCluster {
     fn drop(&mut self) {
         for (_, handle) in self.nodes.iter_mut() {
             let _ = handle.process.kill();
+            let _ = handle.process.wait(); // reap to avoid zombies and port reuse races
         }
     }
 }
@@ -171,6 +172,7 @@ impl TestClusterBuilder {
     }
 
     /// Build and launch all nodes. Waits for each node to become reachable.
+    /// Panics if any node fails to start or connect within the retry window.
     pub async fn build(self) -> TestCluster {
         let mut nodes = HashMap::new();
 
@@ -179,8 +181,8 @@ impl TestClusterBuilder {
                 .args(&args)
                 .env("DACTOR_NODE_ID", &node_id)
                 .env("DACTOR_CONTROL_PORT", port.to_string())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .spawn()
                 .unwrap_or_else(|e| {
                     panic!(
@@ -192,7 +194,7 @@ impl TestClusterBuilder {
             // Connect gRPC client with retry
             let addr = format!("http://127.0.0.1:{}", port);
             let mut client = None;
-            for _ in 0..30 {
+            for _ in 0..50 {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 match TestNodeServiceClient::connect(addr.clone()).await {
                     Ok(c) => {
@@ -201,6 +203,13 @@ impl TestClusterBuilder {
                     }
                     Err(_) => continue,
                 }
+            }
+
+            if client.is_none() {
+                panic!(
+                    "Failed to connect to test node '{}' at {} after 5s of retries",
+                    node_id, addr
+                );
             }
 
             nodes.insert(

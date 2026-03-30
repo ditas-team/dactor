@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Notify};
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
 
@@ -28,7 +28,8 @@ pub struct TestNode {
     start_time: Instant,
     fault_injector: Arc<FaultInjector>,
     event_tx: broadcast::Sender<NodeEvent>,
-    shutdown: Arc<AtomicBool>,
+    shutdown_flag: Arc<AtomicBool>,
+    shutdown_notify: Arc<Notify>,
     actor_count: Arc<AtomicU32>,
 }
 
@@ -40,7 +41,8 @@ impl TestNode {
             start_time: Instant::now(),
             fault_injector: Arc::new(FaultInjector::new()),
             event_tx,
-            shutdown: Arc::new(AtomicBool::new(false)),
+            shutdown_flag: Arc::new(AtomicBool::new(false)),
+            shutdown_notify: Arc::new(Notify::new()),
             actor_count: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -48,6 +50,7 @@ impl TestNode {
     pub async fn run(self) -> Result<(), Box<dyn std::error::Error>> {
         let addr = format!("0.0.0.0:{}", self.config.control_port).parse()?;
         let node_id = self.config.node_id.clone();
+        let shutdown_notify = self.shutdown_notify.clone();
 
         let svc = TestNodeServiceServer::new(self);
 
@@ -55,7 +58,9 @@ impl TestNode {
 
         tonic::transport::Server::builder()
             .add_service(svc)
-            .serve(addr)
+            .serve_with_shutdown(addr, async move {
+                shutdown_notify.notified().await;
+            })
             .await?;
 
         Ok(())
@@ -96,10 +101,16 @@ impl TestNodeService for TestNode {
 
     async fn shutdown(
         &self,
-        _request: Request<ShutdownRequest>,
+        request: Request<ShutdownRequest>,
     ) -> Result<Response<Empty>, Status> {
-        self.shutdown.store(true, Ordering::SeqCst);
-        self.emit_event("node_shutdown", "{}");
+        let req = request.into_inner();
+        self.shutdown_flag.store(true, Ordering::SeqCst);
+        self.emit_event("node_shutdown", &serde_json::json!({
+            "graceful": req.graceful,
+            "timeout_ms": req.timeout_ms,
+        }).to_string());
+        // Signal the server to shut down gracefully
+        self.shutdown_notify.notify_one();
         Ok(Response::new(Empty {}))
     }
 
@@ -132,11 +143,16 @@ impl TestNodeService for TestNode {
 
     async fn subscribe_events(
         &self,
-        _request: Request<EventFilter>,
+        request: Request<EventFilter>,
     ) -> Result<Response<Self::SubscribeEventsStream>, Status> {
+        let filter = request.into_inner();
+        let event_types = filter.event_types;
         let rx = self.event_tx.subscribe();
         let stream = tokio_stream::wrappers::BroadcastStream::new(rx)
             .filter_map(|result| result.ok())
+            .filter(move |event| {
+                event_types.is_empty() || event_types.contains(&event.event_type)
+            })
             .map(|event| Ok(event));
         Ok(Response::new(Box::pin(stream)))
     }
