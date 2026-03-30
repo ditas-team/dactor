@@ -8,30 +8,31 @@
 
 ---
 
-## PR Overview (~20 PRs)
+## PR Overview (~21 PRs)
 
 | PR | Title | Scope | Tests |
 |----|-------|-------|-------|
 | 1 | Module reorganization & cleanup | Structure | Existing tests pass |
 | 2 | Actor trait & ActorId | Core type | Unit + adapter |
-| 3 | Message, Handler, ActorRef<A> | Core API | Unit + adapter |
-| 4 | Tell (fire-and-forget) | Communication | Unit + adapter + conformance |
-| 5 | Ask (request-reply) | Communication | Unit + adapter + conformance |
-| 6 | Envelope, Headers, RuntimeHeaders | Messaging | Unit |
-| 7 | Interceptor pipeline (Inbound) | Cross-cutting | Unit + adapter |
-| 8 | Interceptor pipeline (Outbound) | Cross-cutting | Unit + adapter |
-| 9 | Lifecycle hooks & ErrorAction | Lifecycle | Unit + adapter |
-| 10 | MailboxConfig & OverflowStrategy | Mailbox | Unit + adapter |
-| 11 | Supervision & DeathWatch | Lifecycle | Unit + adapter |
-| 12 | Stream (server-streaming) | Communication | Unit + adapter + conformance |
-| 13 | Feed (client-streaming) | Communication | Unit + adapter + conformance |
-| 14 | Cancellation (CancellationToken) | Communication | Unit + adapter |
-| 15 | Error model (ActorError, ErrorCodec) | Errors | Unit |
-| 16 | Persistence (EventSourced + DurableState) | Lifecycle | Unit + adapter |
-| 17 | Dead letters, Disposition::Delay, throttle | Mailbox | Unit + adapter |
-| 18 | Observability (MetricsInterceptor) | Cross-cutting | Unit + integration |
-| 19 | Testing infrastructure (conformance suite, MockCluster) | Testing | Meta-tests |
-| 20 | Remote actors & cluster stubs | Remote | Unit + integration |
+| 3 | **Integration test harness (gRPC control)** | **Testing infra** | **Harness self-test** |
+| 4 | Message, Handler, ActorRef\<A\> | Core API | Unit + adapter |
+| 5 | Tell (fire-and-forget) | Communication | Unit + adapter + e2e |
+| 6 | Ask (request-reply) | Communication | Unit + adapter + e2e |
+| 7 | Envelope, Headers, RuntimeHeaders | Messaging | Unit |
+| 8 | Interceptor pipeline (Inbound) | Cross-cutting | Unit + adapter |
+| 9 | Interceptor pipeline (Outbound) | Cross-cutting | Unit + adapter |
+| 10 | Lifecycle hooks & ErrorAction | Lifecycle | Unit + adapter + e2e |
+| 11 | MailboxConfig & OverflowStrategy | Mailbox | Unit + adapter |
+| 12 | Supervision & DeathWatch | Lifecycle | Unit + adapter + e2e |
+| 13 | Stream (server-streaming) | Communication | Unit + adapter + e2e |
+| 14 | Feed (client-streaming) | Communication | Unit + adapter + e2e |
+| 15 | Cancellation (CancellationToken) | Communication | Unit + adapter |
+| 16 | Error model (ActorError, ErrorCodec) | Errors | Unit |
+| 17 | Persistence (EventSourced + DurableState) | Lifecycle | Unit + adapter |
+| 18 | Dead letters, Disposition::Delay, throttle | Mailbox | Unit + adapter |
+| 19 | Observability (MetricsInterceptor) | Cross-cutting | Unit + e2e |
+| 20 | Conformance suite & MockCluster | Testing | Meta-tests |
+| 21 | Remote actors & cluster stubs | Remote | Unit + e2e |
 
 ---
 
@@ -77,7 +78,48 @@
 
 ---
 
-### PR 3: Message, Handler, ActorRef<A>
+### PR 3: Integration Test Harness (gRPC Control Protocol)
+
+**Goal:** Build `dactor-test-harness` crate early so e2e tests can be written
+alongside every subsequent PR. This is the testing backbone for the entire project.
+
+**Changes:**
+- New `dactor-test-harness` workspace crate
+- `test.proto`: gRPC service definition for `TestNode` (§12.4.2)
+- `TestNode`: gRPC server that wraps a dactor runtime + adapter
+- `TestCluster`: Test-side builder that spawns child processes and connects gRPC clients
+- `FaultInjector`: Middleware for transport-level fault injection (§12.4.3)
+- `EventStream`: Server-streaming gRPC for real-time event subscription (§12.4.4)
+- `TestCommandHandler` trait for application-specific commands (§12.4.7)
+- Test node binaries: `test-node-ractor`, `test-node-kameo`
+- Dependencies: `tonic` (gRPC), `prost` (protobuf), `tokio`
+
+**gRPC Control Protocol (core commands):**
+- Actor operations: `Spawn`, `Tell`, `Ask`
+- Inspection: `GetRuntimeMetrics`, `GetClusterState`, `ListActors`, `InspectMailbox`
+- Fault injection: `KillActor`, `PanicActor`, `SuspendActor`, `ResumeActor`,
+  `PartitionFrom`, `HealPartition`, `InjectLatency`, `DropNextMessages`, `CorruptNextMessage`
+- Node lifecycle: `Shutdown`, `Restart`, `Freeze`, `Unfreeze`
+- Events: `SubscribeEvents` (server-streaming)
+- Custom: `CustomCommand` for app-specific extensions
+
+**Tests (harness self-test):**
+- Test: Launch 2 test nodes, verify gRPC connectivity
+- Test: `Spawn` via control protocol, verify `ActorSpawned` response
+- Test: `Tell` + `Ask` round-trip through control protocol
+- Test: `Shutdown` gracefully terminates child process
+- Test: `KillActor` → event stream emits `actor_stopped`
+- Test: `PartitionFrom` → cross-node `Ask` fails; `HealPartition` → works again
+- Test: `SubscribeEvents` receives lifecycle events in real-time
+- Test: Same test against ractor and kameo node binaries (adapter portability)
+
+**Why PR 3 (early):** The harness provides e2e testing capability for ALL subsequent
+PRs. Once the harness is up, every new feature (tell, ask, stream, feed, supervision,
+persistence) gets an e2e test alongside its unit and adapter tests.
+
+---
+
+### PR 4: Message, Handler, ActorRef<A>
 
 **Goal:** Define `Message` trait, `Handler<M>` trait, and actor-typed `ActorRef<A>`.
 
@@ -97,7 +139,7 @@
 
 ---
 
-### PR 4: Tell (Fire-and-Forget)
+### PR 5: Tell (Fire-and-Forget)
 
 **Goal:** Implement `tell()` on `ActorRef<A>`.
 
@@ -115,7 +157,7 @@
 
 ---
 
-### PR 5: Ask (Request-Reply)
+### PR 6: Ask (Request-Reply)
 
 **Goal:** Implement `ask()` on `ActorRef<A>` with timeout and `CancellationToken`.
 
@@ -135,7 +177,7 @@
 
 ---
 
-### PR 6: Envelope, Headers, RuntimeHeaders
+### PR 7: Envelope, Headers, RuntimeHeaders
 
 **Goal:** Internal message wrapping with headers.
 
@@ -156,7 +198,7 @@
 
 ---
 
-### PR 7: Inbound Interceptor Pipeline
+### PR 8: Inbound Interceptor Pipeline
 
 **Goal:** Implement `InboundInterceptor` trait and runtime pipeline.
 
@@ -182,7 +224,7 @@
 
 ---
 
-### PR 8: Outbound Interceptor Pipeline
+### PR 9: Outbound Interceptor Pipeline
 
 **Goal:** Implement `OutboundInterceptor` trait on the sender side.
 
@@ -202,7 +244,7 @@
 
 ---
 
-### PR 9: Lifecycle Hooks & ErrorAction
+### PR 10: Lifecycle Hooks & ErrorAction
 
 **Goal:** Actor lifecycle with error handling strategies.
 
@@ -224,7 +266,7 @@
 
 ---
 
-### PR 10: MailboxConfig & OverflowStrategy
+### PR 11: MailboxConfig & OverflowStrategy
 
 **Goal:** Configurable mailbox capacity and overflow behavior.
 
@@ -247,7 +289,7 @@
 
 ---
 
-### PR 11: Supervision & DeathWatch
+### PR 12: Supervision & DeathWatch
 
 **Goal:** Supervision strategies and watch/unwatch.
 
@@ -269,7 +311,7 @@
 
 ---
 
-### PR 12: Stream (Server-Streaming)
+### PR 13: Stream (Server-Streaming)
 
 **Goal:** `stream()` method for request → multiple response items.
 
@@ -290,7 +332,7 @@
 
 ---
 
-### PR 13: Feed (Client-Streaming)
+### PR 14: Feed (Client-Streaming)
 
 **Goal:** `feed()` method for stream-of-items → actor → optional reply.
 
@@ -312,7 +354,7 @@
 
 ---
 
-### PR 14: Cancellation (CancellationToken)
+### PR 15: Cancellation (CancellationToken)
 
 **Goal:** Cooperative cancellation for ask, stream, feed.
 
@@ -334,7 +376,7 @@
 
 ---
 
-### PR 15: Error Model (ActorError, ErrorCodec)
+### PR 16: Error Model (ActorError, ErrorCodec)
 
 **Goal:** Structured, serializable error types.
 
@@ -357,7 +399,7 @@
 
 ---
 
-### PR 16: Persistence (EventSourced + DurableState)
+### PR 17: Persistence (EventSourced + DurableState)
 
 **Goal:** Actor state persistence with recovery.
 
@@ -382,7 +424,7 @@
 
 ---
 
-### PR 17: Dead Letters, Disposition::Delay, Throttle
+### PR 18: Dead Letters, Disposition::Delay, Throttle
 
 **Goal:** Dead letter handling, delay-based throttling.
 
@@ -404,7 +446,7 @@
 
 ---
 
-### PR 18: Observability (MetricsInterceptor)
+### PR 19: Observability (MetricsInterceptor)
 
 **Goal:** Built-in metrics collection via interceptor.
 
@@ -424,7 +466,7 @@
 
 ---
 
-### PR 19: Testing Infrastructure (Conformance Suite, MockCluster)
+### PR 20: Conformance Suite & MockCluster
 
 **Goal:** Reusable test harness for adapter conformance.
 
@@ -446,7 +488,7 @@
 
 ---
 
-### PR 20: Remote Actors & Cluster Stubs
+### PR 21: Remote Actors & Cluster Stubs
 
 **Goal:** Remote actor foundation (serialization, WireEnvelope, cluster traits).
 
@@ -520,26 +562,28 @@ mailbox, supervision, cancellation, dead letters, metrics.
 ```mermaid
 graph TD
     PR1[PR 1: Module reorg] --> PR2[PR 2: Actor & ActorId]
-    PR2 --> PR3[PR 3: Message, Handler, ActorRef]
-    PR3 --> PR4[PR 4: Tell]
-    PR3 --> PR5[PR 5: Ask]
-    PR4 --> PR6[PR 6: Envelope & Headers]
-    PR5 --> PR6
-    PR6 --> PR7[PR 7: Inbound Interceptor]
-    PR6 --> PR8[PR 8: Outbound Interceptor]
-    PR3 --> PR9[PR 9: Lifecycle & ErrorAction]
-    PR3 --> PR10[PR 10: MailboxConfig]
-    PR9 --> PR11[PR 11: Supervision & DeathWatch]
-    PR5 --> PR12[PR 12: Stream]
-    PR12 --> PR13[PR 13: Feed]
-    PR5 --> PR14[PR 14: Cancellation]
-    PR5 --> PR15[PR 15: Error Model]
-    PR9 --> PR16[PR 16: Persistence]
-    PR7 --> PR17[PR 17: Dead Letters & Throttle]
-    PR8 --> PR17
-    PR7 --> PR18[PR 18: Observability]
-    PR4 & PR5 & PR12 & PR13 --> PR19[PR 19: Conformance Suite]
-    PR15 --> PR20[PR 20: Remote & Cluster]
+    PR2 --> PR3[PR 3: Test Harness gRPC]
+    PR2 --> PR4[PR 4: Message, Handler, ActorRef]
+    PR4 --> PR5[PR 5: Tell]
+    PR4 --> PR6[PR 6: Ask]
+    PR5 --> PR7[PR 7: Envelope & Headers]
+    PR6 --> PR7
+    PR7 --> PR8[PR 8: Inbound Interceptor]
+    PR7 --> PR9[PR 9: Outbound Interceptor]
+    PR4 --> PR10[PR 10: Lifecycle & ErrorAction]
+    PR4 --> PR11[PR 11: MailboxConfig]
+    PR10 --> PR12[PR 12: Supervision & DeathWatch]
+    PR6 --> PR13[PR 13: Stream]
+    PR13 --> PR14[PR 14: Feed]
+    PR6 --> PR15[PR 15: Cancellation]
+    PR6 --> PR16[PR 16: Error Model]
+    PR10 --> PR17[PR 17: Persistence]
+    PR8 --> PR18[PR 18: Dead Letters & Throttle]
+    PR9 --> PR18
+    PR8 --> PR19[PR 19: Observability]
+    PR5 & PR6 & PR13 & PR14 --> PR20[PR 20: Conformance Suite]
+    PR16 --> PR21[PR 21: Remote & Cluster]
+    PR3 -.->|"e2e tests used by"| PR5 & PR6 & PR10 & PR12 & PR13 & PR14 & PR19 & PR21
 ```
 
 ---
@@ -557,9 +601,10 @@ graph TD
 
 | PRs | Version | Milestone |
 |-----|---------|-----------|
-| 1-5 | v0.2.0-alpha.1 | Core API compiles |
-| 6-10 | v0.2.0-alpha.2 | Messaging & mailbox |
-| 11-14 | v0.2.0-beta.1 | Communication complete |
-| 15-17 | v0.2.0-beta.2 | Error model & persistence |
-| 18-20 | v0.2.0-rc.1 | Observability & remote stubs |
+| 1-3 | v0.2.0-alpha.1 | Core API + test harness |
+| 4-6 | v0.2.0-alpha.2 | Communication (tell/ask) |
+| 7-11 | v0.2.0-alpha.3 | Messaging, interceptors, mailbox |
+| 12-15 | v0.2.0-beta.1 | Streaming & cancellation complete |
+| 16-18 | v0.2.0-beta.2 | Error model, persistence, throttling |
+| 19-21 | v0.2.0-rc.1 | Observability, conformance, remote stubs |
 | — | v0.2.0 | Release |

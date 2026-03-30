@@ -7332,7 +7332,7 @@ library's errors to dactor's `ErrorCode`:
 
 ### 12.4 Integration Test Harness (`dactor-test-harness`)
 
-**Problem:** The mock cluster (§14.2) tests cluster behavior in a single
+**Problem:** The mock cluster (§12.2) tests cluster behavior in a single
 process with simulated networking. But real distributed bugs often only
 appear with **real processes, real networking, and real concurrency**. Each
 adapter needs multi-process integration tests, but writing these from
@@ -7342,97 +7342,378 @@ scratch for every adapter is tedious and inconsistent.
 
 1. **A host application** — a generic dactor node process that can be
    launched multiple times to form a real cluster
-2. **A control protocol** — a standardized way for test scripts to send
-   commands to each node (spawn actors, send messages, inject faults)
-3. **System commands** — built-in commands that control the actor runtime
-   (shutdown, inspect state, trigger cluster events)
-4. **Application commands** — custom commands defined by the application
+2. **A gRPC control protocol** — a standardized, well-known protocol for
+   test scripts to communicate with each node (spawn actors, send messages,
+   inject faults, query state)
+3. **Fault injection** — built-in commands to simulate real failure
+   scenarios (kill actors, partition networks, corrupt messages)
+4. **Event subscription** — test cases can subscribe to node events
+   (actor lifecycle, cluster membership, errors) for assertion
+5. **Application commands** — custom commands defined by the application
    for domain-specific test scenarios
+
+#### 12.4.1 Architecture
 
 ```mermaid
 graph TB
     subgraph "Test Process (cargo test)"
         TC[Test Case]
-        TC -->|control protocol| N1
-        TC -->|control protocol| N2
-        TC -->|control protocol| N3
+        TC -->|"gRPC control channel<br/>(well-known port)"| N1
+        TC -->|"gRPC control channel"| N2
+        TC -->|"gRPC control channel"| N3
     end
-    subgraph "Node 1 (separate process)"
-        N1[TestNode<br/>+ dactor runtime<br/>+ adapter]
+    subgraph "Node 1 (child process)"
+        N1[TestNode<br/>+ dactor runtime<br/>+ adapter<br/>+ gRPC control server]
     end
-    subgraph "Node 2 (separate process)"
-        N2[TestNode<br/>+ dactor runtime<br/>+ adapter]
+    subgraph "Node 2 (child process)"
+        N2[TestNode<br/>+ dactor runtime<br/>+ adapter<br/>+ gRPC control server]
     end
-    subgraph "Node 3 (separate process)"
-        N3[TestNode<br/>+ dactor runtime<br/>+ adapter]
+    subgraph "Node 3 (child process)"
+        N3[TestNode<br/>+ dactor runtime<br/>+ adapter<br/>+ gRPC control server]
     end
     N1 <-->|"adapter networking<br/>(real TCP/libp2p/gRPC)"| N2
     N2 <-->|"adapter networking"| N3
     N1 <-->|"adapter networking"| N3
 ```
 
-**Control protocol:**
+**Key principle:** The gRPC control channel is **completely separate** from
+the adapter's actor transport. Test commands travel over gRPC; actor messages
+travel over the adapter's native protocol (ractor TCP, kameo libp2p, coerce
+gRPC). This ensures tests don't interfere with the system under test.
 
-The test process communicates with each node over a lightweight TCP channel
-(separate from the adapter's actor transport) using a simple command/response
-protocol:
+#### 12.4.2 Control Protocol (gRPC)
 
-```rust
-/// Command sent from the test process to a test node.
-#[derive(Serialize, Deserialize)]
-pub enum TestCommand {
-    // ── System commands (built-in) ──────────────────
-    /// Spawn an actor on this node.
-    Spawn {
-        actor_type: String,
-        actor_name: String,
-        args_bytes: Vec<u8>,
-    },
-    /// Send a message to an actor (tell).
-    Tell {
-        target: ActorId,
-        message_type: String,
-        body_bytes: Vec<u8>,
-    },
-    /// Send a message and await reply (ask).
-    Ask {
-        target: ActorId,
-        message_type: String,
-        body_bytes: Vec<u8>,
-    },
-    /// Get the runtime metrics snapshot.
-    GetRuntimeMetrics,
-    /// Get the cluster state.
-    GetClusterState,
-    /// Gracefully shut down this node.
-    Shutdown,
-    /// Query a specific actor's mailbox depth.
-    InspectMailbox { actor_id: ActorId },
+**Why gRPC:** It is language-agnostic, schema-driven (protobuf), has
+streaming support for event subscriptions, and is widely supported in
+test tooling. The `.proto` file serves as the canonical contract between
+test code and harness nodes.
 
-    // ── Application commands (custom) ───────────────
-    /// Application-defined command. The harness deserializes and
-    /// dispatches to a registered `TestCommandHandler`.
-    Custom {
-        command_type: String,
-        payload: Vec<u8>,
-    },
+```protobuf
+syntax = "proto3";
+package dactor.test.v1;
+
+service TestNode {
+    // ── Actor Operations ───────────────────────────────
+    rpc Spawn(SpawnRequest) returns (SpawnResponse);
+    rpc Tell(TellRequest) returns (TellResponse);
+    rpc Ask(AskRequest) returns (AskResponse);
+
+    // ── Inspection ─────────────────────────────────────
+    rpc GetActorState(ActorStateRequest) returns (ActorStateResponse);
+    rpc GetRuntimeMetrics(Empty) returns (RuntimeMetricsResponse);
+    rpc GetClusterState(Empty) returns (ClusterStateResponse);
+    rpc ListActors(Empty) returns (ListActorsResponse);
+    rpc InspectMailbox(MailboxRequest) returns (MailboxResponse);
+
+    // ── Fault Injection ────────────────────────────────
+    rpc KillActor(KillActorRequest) returns (Empty);
+    rpc PanicActor(PanicActorRequest) returns (Empty);
+    rpc SuspendActor(SuspendActorRequest) returns (Empty);
+    rpc ResumeActor(ResumeActorRequest) returns (Empty);
+    rpc PartitionFrom(PartitionRequest) returns (Empty);
+    rpc HealPartition(PartitionRequest) returns (Empty);
+    rpc InjectLatency(LatencyRequest) returns (Empty);
+    rpc CorruptNextMessage(CorruptRequest) returns (Empty);
+    rpc DropNextMessages(DropRequest) returns (Empty);
+
+    // ── Node Lifecycle ─────────────────────────────────
+    rpc Shutdown(ShutdownRequest) returns (Empty);
+    rpc Restart(Empty) returns (Empty);
+    rpc Freeze(Empty) returns (Empty);
+    rpc Unfreeze(Empty) returns (Empty);
+
+    // ── Event Subscription (server-streaming) ──────────
+    rpc SubscribeEvents(EventFilter) returns (stream NodeEvent);
+
+    // ── Application Commands ───────────────────────────
+    rpc CustomCommand(CustomRequest) returns (CustomResponse);
 }
 
-/// Response from a test node back to the test process.
-#[derive(Serialize, Deserialize)]
-pub enum TestResponse {
-    Ok,
-    ActorSpawned { actor_id: ActorId },
-    AskReply { body_bytes: Vec<u8> },
-    Metrics(RuntimeMetrics),
-    ClusterState(ClusterState),
-    MailboxDepth { queued: usize },
-    Error(ActorError),
-    CustomResponse { payload: Vec<u8> },
+message SpawnRequest {
+    string actor_type = 1;
+    string actor_name = 2;
+    bytes args = 3;
+}
+
+message SpawnResponse {
+    string actor_id = 1;
+}
+
+message KillActorRequest {
+    string actor_id = 1;
+    string reason = 2;   // e.g., "simulated-crash"
+}
+
+message PanicActorRequest {
+    string actor_id = 1;
+    string panic_message = 2;
+}
+
+message SuspendActorRequest {
+    string actor_id = 1;
+    uint64 duration_ms = 2;  // 0 = indefinite until ResumeActor
+}
+
+message PartitionRequest {
+    string target_node_id = 1;  // partition from this specific node
+}
+
+message LatencyRequest {
+    string target_node_id = 1;
+    uint64 latency_ms = 2;
+    uint64 jitter_ms = 3;
+    uint64 duration_ms = 4;     // how long the latency injection lasts
+}
+
+message DropRequest {
+    string target_node_id = 1;
+    uint32 count = 2;           // number of messages to drop
+}
+
+message CorruptRequest {
+    string target_node_id = 1;
+    uint32 count = 2;           // number of messages to corrupt
+}
+
+message EventFilter {
+    repeated string event_types = 1;  // empty = all events
+}
+
+message NodeEvent {
+    string event_type = 1;   // "actor_started", "actor_stopped", "actor_panicked",
+                              // "node_joined", "node_left", "message_dropped", etc.
+    string actor_id = 2;     // optional, depends on event type
+    string detail = 3;       // JSON-encoded event payload
+    uint64 timestamp_ms = 4;
+}
+
+message ShutdownRequest {
+    bool graceful = 1;       // true = drain mailboxes, false = immediate
+    uint64 timeout_ms = 2;   // max wait for graceful shutdown
 }
 ```
 
-**Application-defined commands:**
+#### 12.4.3 Fault Injection Commands
+
+The harness provides built-in fault injection that the test node implements
+by intercepting the adapter layer:
+
+| Command | What It Does | Use Case |
+|---|---|---|
+| `KillActor` | Immediately stop an actor (ungraceful) | Test supervision restart |
+| `PanicActor` | Force actor handler to panic on next message | Test `on_error` / `ErrorAction` |
+| `SuspendActor` | Pause message processing (freeze mailbox) | Test timeout / deadlock detection |
+| `ResumeActor` | Resume a suspended actor | Recovery after freeze |
+| `PartitionFrom` | Block all messages to/from a specific node | Test split-brain, quorum loss |
+| `HealPartition` | Restore connectivity to a partitioned node | Test partition recovery |
+| `InjectLatency` | Add artificial delay to messages to a node | Test timeout handling |
+| `DropNextMessages` | Silently drop N messages to a node | Test at-most-once delivery |
+| `CorruptNextMessage` | Corrupt serialized bytes of N messages | Test deserialization error handling |
+| `Shutdown` | Gracefully or forcefully shut down the node | Test node leave/rejoin |
+| `Freeze` | Pause the entire runtime (GC pause simulation) | Test failure detector thresholds |
+| `Unfreeze` | Resume a frozen runtime | Recovery after pause |
+
+**Implementation:** The test node wraps the adapter's transport layer with
+a `FaultInjector` middleware that applies the configured faults:
+
+```rust
+/// Middleware that wraps the adapter transport to inject faults.
+struct FaultInjector {
+    /// Messages to this node are delayed by this amount.
+    latency: DashMap<NodeId, LatencyConfig>,
+    /// Messages to this node are dropped (countdown).
+    drop_count: DashMap<NodeId, AtomicU32>,
+    /// Messages to this node are corrupted (countdown).
+    corrupt_count: DashMap<NodeId, AtomicU32>,
+    /// Partitioned from these nodes (all messages dropped both ways).
+    partitions: DashSet<NodeId>,
+    /// Suspended actors (messages queued but not delivered).
+    suspended_actors: DashSet<ActorId>,
+}
+
+impl FaultInjector {
+    /// Called by the transport before sending a message.
+    async fn intercept_send(
+        &self, target_node: &NodeId, bytes: &mut Vec<u8>,
+    ) -> FaultAction {
+        if self.partitions.contains(target_node) {
+            return FaultAction::Drop;
+        }
+        if let Some(count) = self.drop_count.get(target_node) {
+            if count.fetch_sub(1, Ordering::Relaxed) > 0 {
+                return FaultAction::Drop;
+            }
+        }
+        if let Some(count) = self.corrupt_count.get(target_node) {
+            if count.fetch_sub(1, Ordering::Relaxed) > 0 {
+                // Flip random bytes
+                bytes[bytes.len() / 2] ^= 0xFF;
+            }
+        }
+        if let Some(config) = self.latency.get(target_node) {
+            let delay = config.base + random_jitter(config.jitter);
+            tokio::time::sleep(delay).await;
+        }
+        FaultAction::Continue
+    }
+}
+```
+
+#### 12.4.4 Event Subscription
+
+Tests can subscribe to a real-time stream of events from each node via
+the `SubscribeEvents` gRPC server-streaming RPC. This enables **assertion
+by observation** rather than polling:
+
+```rust
+#[tokio::test]
+async fn test_supervision_restart_on_panic() {
+    let cluster = TestCluster::builder()
+        .node("node-1", "target/debug/test-node", &["1"])
+        .build().await;
+
+    // Subscribe to actor lifecycle events
+    let mut events = cluster.subscribe_events("node-1", &["actor_stopped", "actor_started"]).await;
+
+    // Spawn a persistent actor
+    let actor_id = cluster.spawn("node-1", "Counter", "counter-1", &[]).await?;
+
+    // Inject a panic
+    cluster.panic_actor("node-1", &actor_id, "simulated crash").await?;
+
+    // Assert: actor stopped then restarted (via supervision)
+    let stopped = events.next_event(Duration::from_secs(5)).await.unwrap();
+    assert_eq!(stopped.event_type, "actor_stopped");
+    assert_eq!(stopped.actor_id, actor_id);
+
+    let restarted = events.next_event(Duration::from_secs(5)).await.unwrap();
+    assert_eq!(restarted.event_type, "actor_started");
+    // Same persistence ID, new incarnation
+}
+```
+
+#### 12.4.5 Test Node Setup
+
+```rust
+// In the test node binary (e.g., tests/harness/main.rs):
+use dactor_test_harness::{TestNode, TestNodeConfig};
+use dactor_ractor::RactorRuntime;
+
+#[tokio::main]
+async fn main() {
+    let config = TestNodeConfig::from_env(); // reads node_id, control_port, etc.
+    let runtime = RactorRuntime::new();
+
+    TestNode::builder()
+        .config(config)
+        .runtime(runtime)
+        .command_handler(BankTestHandler)  // optional app-specific commands
+        .build()
+        .run()
+        .await;
+}
+```
+
+**`TestNodeConfig`** is populated from environment variables or CLI args:
+
+```rust
+pub struct TestNodeConfig {
+    /// Unique node identity.
+    pub node_id: NodeId,
+    /// Port for the gRPC control server (test process connects here).
+    pub control_port: u16,
+    /// Ports for the adapter's actor transport (inter-node communication).
+    pub cluster_port: u16,
+    /// Seed nodes for cluster formation.
+    pub seed_nodes: Vec<String>,
+    /// Log level for the test node.
+    pub log_level: String,
+}
+```
+
+#### 12.4.6 TestCluster Builder (Test-Side API)
+
+```rust
+/// Manages a cluster of test node child processes.
+pub struct TestCluster {
+    nodes: HashMap<NodeId, TestNodeHandle>,
+}
+
+pub struct TestNodeHandle {
+    process: Child,           // std::process::Child
+    control: TestNodeClient,  // gRPC client to the node's control server
+    node_id: NodeId,
+}
+
+impl TestCluster {
+    pub fn builder() -> TestClusterBuilder { ... }
+
+    /// Wait until N nodes are connected to each other.
+    pub async fn wait_until_connected(
+        &self, expected_nodes: usize, timeout: Duration,
+    ) -> Result<(), TestError>;
+
+    // ── Convenience wrappers (delegate to gRPC) ────────
+
+    pub async fn spawn(
+        &self, node: &str, actor_type: &str, name: &str, args: &[u8],
+    ) -> Result<ActorId, TestError>;
+
+    pub async fn tell(
+        &self, node: &str, target: &ActorId, msg_type: &str, body: &[u8],
+    ) -> Result<(), TestError>;
+
+    pub async fn ask(
+        &self, node: &str, target: &ActorId, msg_type: &str, body: &[u8],
+    ) -> Result<Vec<u8>, TestError>;
+
+    // ── Fault injection convenience ────────────────────
+
+    pub async fn kill_actor(
+        &self, node: &str, actor_id: &ActorId, reason: &str,
+    ) -> Result<(), TestError>;
+
+    pub async fn panic_actor(
+        &self, node: &str, actor_id: &ActorId, message: &str,
+    ) -> Result<(), TestError>;
+
+    pub async fn partition(
+        &self, node_a: &str, node_b: &str,
+    ) -> Result<(), TestError>;
+
+    pub async fn heal_partition(
+        &self, node_a: &str, node_b: &str,
+    ) -> Result<(), TestError>;
+
+    pub async fn inject_latency(
+        &self, from_node: &str, to_node: &str,
+        latency_ms: u64, jitter_ms: u64, duration_ms: u64,
+    ) -> Result<(), TestError>;
+
+    // ── Event subscription ─────────────────────────────
+
+    pub async fn subscribe_events(
+        &self, node: &str, event_types: &[&str],
+    ) -> EventStream;
+
+    // ── Assertions ─────────────────────────────────────
+
+    /// Assert that an actor exists on a specific node.
+    pub async fn assert_actor_alive(
+        &self, node: &str, actor_id: &ActorId,
+    ) -> Result<(), TestError>;
+
+    /// Assert cluster state matches expected node count.
+    pub async fn assert_cluster_size(
+        &self, node: &str, expected: usize,
+    ) -> Result<(), TestError>;
+
+    /// Shutdown all nodes and clean up child processes.
+    pub async fn shutdown(&mut self);
+}
+```
+
+#### 12.4.7 Application Commands
 
 Applications register custom command handlers so their integration tests
 can issue domain-specific commands:
@@ -7472,104 +7753,96 @@ impl TestCommandHandler for BankTestHandler {
 }
 ```
 
-**Test node setup:**
+#### 12.4.8 End-to-End Integration Test Example
 
 ```rust
-// In the test node's main.rs (a standalone binary):
-use dactor_test_harness::{TestNode, TestNodeConfig};
-
-#[tokio::main]
-async fn main() {
-    let config = TestNodeConfig {
-        node_id: NodeId(std::env::args().nth(1).unwrap().parse().unwrap()),
-        control_port: 9100,  // test process connects here
-        adapter: Box::new(RactorRuntime::new()),
-        command_handler: Some(Box::new(BankTestHandler)),
-    };
-
-    TestNode::run(config).await;
-}
-```
-
-**Writing integration tests:**
-
-```rust
-use dactor_test_harness::{TestCluster, TestCommand, TestResponse};
+use dactor_test_harness::{TestCluster, TestError};
 
 #[tokio::test]
 async fn test_cross_node_transfer() {
-    // Launch 3 real processes
-    let cluster = TestCluster::builder()
-        .node(NodeId("node-1".into()), "target/debug/test-node", &["1"])
-        .node(NodeId("node-2".into()), "target/debug/test-node", &["2"])
-        .node(NodeId("node-3".into()), "target/debug/test-node", &["3"])
+    // Launch 3 real node processes
+    let mut cluster = TestCluster::builder()
+        .node("node-1", "target/debug/test-node-ractor", &["--port=9101"])
+        .node("node-2", "target/debug/test-node-ractor", &["--port=9102"])
+        .node("node-3", "target/debug/test-node-ractor", &["--port=9103"])
         .build()
         .await;
 
     // Wait for cluster to form
-    cluster.wait_until_connected(3, Duration::from_secs(10)).await;
+    cluster.wait_until_connected(3, Duration::from_secs(10)).await.unwrap();
 
-    // Spawn accounts on different nodes via control protocol
-    let alice_id = cluster.send(NodeId("node-1".into()), TestCommand::Custom {
-        command_type: "create_account".into(),
-        payload: bincode::serialize(&CreateAccountArgs { name: "alice", balance: 1000 }).unwrap(),
-    }).await.unwrap();
+    // Spawn accounts on different nodes
+    let alice = cluster.spawn("node-1", "BankAccount", "alice", &args_bytes).await?;
+    let bob = cluster.spawn("node-2", "BankAccount", "bob", &args_bytes).await?;
 
-    let bob_id = cluster.send(NodeId("node-2".into()), TestCommand::Custom {
-        command_type: "create_account".into(),
-        payload: bincode::serialize(&CreateAccountArgs { name: "bob", balance: 500 }).unwrap(),
-    }).await.unwrap();
-
-    // Cross-node transfer: alice (Node 1) → bob (Node 2)
-    let result = cluster.send(NodeId("node-1".into()), TestCommand::Ask {
-        target: alice_id,
-        message_type: "Transfer".into(),
-        body_bytes: bincode::serialize(&Transfer { to: bob_id, amount: 200 }).unwrap(),
-    }).await;
-
-    assert!(matches!(result, TestResponse::AskReply { .. }));
-
-    // Verify balances on both nodes
-    let alice_balance = cluster.send(NodeId("node-1".into()), TestCommand::Custom {
-        command_type: "get_balance".into(),
-        payload: bincode::serialize(&alice_id).unwrap(),
-    }).await;
-    // ... assert balance == 800
+    // Cross-node ask: alice (Node 1) → bob (Node 2)
+    let reply = cluster.ask("node-1", &alice, "Transfer",
+        &bincode::serialize(&Transfer { to: bob.clone(), amount: 200 })?).await?;
+    assert!(reply.len() > 0);
 
     // Clean shutdown
     cluster.shutdown().await;
 }
 ```
 
-**Consistency across adapters:**
-
-The same test case runs against any adapter — just change the binary:
+#### 12.4.9 Fault Injection Test Example
 
 ```rust
-// Test with ractor
-TestCluster::builder()
-    .node(NodeId("node-1".into()), "target/debug/test-node-ractor", &["1"])
-    // ...
+#[tokio::test]
+async fn test_partition_and_heal() {
+    let mut cluster = TestCluster::builder()
+        .node("node-1", "target/debug/test-node-ractor", &["--port=9101"])
+        .node("node-2", "target/debug/test-node-ractor", &["--port=9102"])
+        .build().await;
 
-// Same test with kameo
-TestCluster::builder()
-    .node(NodeId("node-1".into()), "target/debug/test-node-kameo", &["1"])
-    // ...
+    cluster.wait_until_connected(2, Duration::from_secs(10)).await.unwrap();
 
-// Same test with coerce
+    let actor = cluster.spawn("node-2", "Counter", "counter-1", &[]).await?;
+
+    // Partition node-1 from node-2
+    cluster.partition("node-1", "node-2").await?;
+
+    // Cross-node ask from node-1 should fail/timeout
+    let result = cluster.ask("node-1", &actor, "GetCount", &[]).await;
+    assert!(result.is_err());
+
+    // Heal partition
+    cluster.heal_partition("node-1", "node-2").await?;
+
+    // Now cross-node ask should work
+    let reply = cluster.ask("node-1", &actor, "GetCount", &[]).await?;
+    assert!(reply.len() > 0);
+
+    cluster.shutdown().await;
+}
+```
+
+#### 12.4.10 Adapter Portability
+
+The same test case runs against any adapter — just change the binary path:
+
+```rust
+// Test with ractor adapter
 TestCluster::builder()
-    .node(NodeId("node-1".into()), "target/debug/test-node-coerce", &["1"])
-    // ...
+    .node("node-1", "target/debug/test-node-ractor", &["--port=9101"])
+
+// Same test with kameo adapter
+TestCluster::builder()
+    .node("node-1", "target/debug/test-node-kameo", &["--port=9101"])
+
+// Same test with coerce adapter
+TestCluster::builder()
+    .node("node-1", "target/debug/test-node-coerce", &["--port=9101"])
 ```
 
 **Testing hierarchy:**
 
 | Layer | Crate | What it tests | Real networking? |
 |---|---|---|---|
-| Unit tests | `dactor::test_support` (§14.1) | Single actor logic | ❌ In-memory |
-| Mock cluster | `dactor-mock` (§14.2) | Cluster behavior with fault injection | ❌ Simulated |
-| Conformance | `dactor::test_support::conformance` (§14.3) | Adapter trait compliance | ❌ Single-process |
-| **Integration** | **`dactor-test-harness` (§14.4)** | **Real multi-process cluster** | **✅ Real TCP/libp2p/gRPC** |
+| Unit tests | `dactor::test_support` (§12.1) | Single actor logic | ❌ In-memory |
+| Mock cluster | `dactor-mock` (§12.2) | Cluster behavior with fault injection | ❌ Simulated |
+| Conformance | `dactor::test_support::conformance` (§12.3) | Adapter trait compliance | ❌ Single-process |
+| **Integration** | **`dactor-test-harness` (§12.4)** | **Real multi-process cluster** | **✅ Real TCP/libp2p/gRPC** |
 
 ---
 
