@@ -80,19 +80,29 @@
 
 ### PR 3: Integration Test Harness (gRPC Control Protocol)
 
-**Goal:** Build `dactor-test-harness` crate early so e2e tests can be written
-alongside every subsequent PR. This is the testing backbone for the entire project.
+**Goal:** Build `dactor-test-harness` as a **published crate** early so e2e tests
+can be written alongside every subsequent PR. This is the testing backbone for the
+entire project AND for application teams who build on dactor.
 
 **Changes:**
-- New `dactor-test-harness` workspace crate
-- `test.proto`: gRPC service definition for `TestNode` (§12.4.2)
+- New `dactor-test-harness` workspace crate (publishable to crates.io)
+- `proto/test_node.proto`: gRPC service definition for `TestNode` (§12.4.2)
 - `TestNode`: gRPC server that wraps a dactor runtime + adapter
 - `TestCluster`: Test-side builder that spawns child processes and connects gRPC clients
 - `FaultInjector`: Middleware for transport-level fault injection (§12.4.3)
-- `EventStream`: Server-streaming gRPC for real-time event subscription (§12.4.4)
-- `TestCommandHandler` trait for application-specific commands (§12.4.7)
-- Test node binaries: `test-node-ractor`, `test-node-kameo`
-- Dependencies: `tonic` (gRPC), `prost` (protobuf), `tokio`
+- `EventStream` + `EventMatcher`: Server-streaming gRPC for event subscription (§12.4.4)
+- `ActorRegistry`: Registry for custom actor types spawneable via control protocol
+- `ActorFactory` trait: Typed factory for spawning actors from serialized args
+- `TestCommandHandler` trait: Application-specific custom commands (§12.4.7)
+- Test node binaries: `test-node-ractor`, `test-node-kameo` (in `tests/harness/`)
+- Dependencies: `tonic` (gRPC), `prost` (protobuf), `tokio`, `dashmap`
+- `.proto` file published with crate for cross-language test scripts
+
+**Extensibility for applications:**
+- `ActorRegistry::register()` — apps register their actor types for remote spawn
+- `TestCommandHandler` — apps define domain-specific commands
+- `EventMatcher` — apps define custom assertion matchers
+- `TestNode::builder()` — apps compose their own test node binary with extensions
 
 **gRPC Control Protocol (core commands):**
 - Actor operations: `Spawn`, `Tell`, `Ask`
@@ -112,6 +122,7 @@ alongside every subsequent PR. This is the testing backbone for the entire proje
 - Test: `PartitionFrom` → cross-node `Ask` fails; `HealPartition` → works again
 - Test: `SubscribeEvents` receives lifecycle events in real-time
 - Test: Same test against ractor and kameo node binaries (adapter portability)
+- Test: Custom `ActorRegistry` + `TestCommandHandler` extensibility
 
 **Why PR 3 (early):** The harness provides e2e testing capability for ALL subsequent
 PRs. Once the harness is up, every new feature (tell, ask, stream, feed, supervision,

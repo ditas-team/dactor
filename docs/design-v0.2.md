@@ -7338,7 +7338,14 @@ appear with **real processes, real networking, and real concurrency**. Each
 adapter needs multi-process integration tests, but writing these from
 scratch for every adapter is tedious and inconsistent.
 
-**Design:** `dactor-test-harness` is a standalone crate that provides:
+**Additionally**, applications built on dactor need to integration-test
+their own business logic across real cluster nodes — not just the framework.
+The harness must be **published as a separate crate** and **extensible**
+so application teams can define custom test operations, spawn their own
+actor types, and assert domain-specific invariants without forking the harness.
+
+**Design:** `dactor-test-harness` is a **published crate** (`crates.io`)
+that provides:
 
 1. **A host application** — a generic dactor node process that can be
    launched multiple times to form a real cluster
@@ -7713,43 +7720,207 @@ impl TestCluster {
 }
 ```
 
-#### 12.4.7 Application Commands
+#### 12.4.7 Application Extensibility
 
-Applications register custom command handlers so their integration tests
-can issue domain-specific commands:
+The harness is designed to be **extensible by application teams**. When an
+application depends on `dactor-test-harness`, it can register custom actors,
+commands, and assertions that plug into the same gRPC control protocol and
+`TestCluster` API.
+
+**Extension points:**
+
+```mermaid
+graph LR
+    subgraph "dactor-test-harness (published crate)"
+        TC[TestCluster]
+        TN[TestNode]
+        FI[FaultInjector]
+        GP[gRPC Protocol]
+    end
+    subgraph "Application test code"
+        AH["TestCommandHandler<br/>(custom commands)"]
+        AR["ActorRegistry<br/>(custom actor types)"]
+        AE["EventMatcher<br/>(custom assertions)"]
+        AB["TestNode binary<br/>(wraps harness)"]
+    end
+    AH -->|"registers into"| TN
+    AR -->|"registers into"| TN
+    AE -->|"used with"| TC
+    AB -->|"embeds"| TN
+```
+
+**Extension 1: Custom commands via `TestCommandHandler`**
+
+Applications register domain-specific handlers for the `CustomCommand` gRPC
+RPC. The harness dispatches to the handler by `command_type`:
 
 ```rust
 /// Trait for handling application-specific test commands.
+/// Implement this in your application's test code and register
+/// it with `TestNode::builder().command_handler(...)`.
+#[async_trait]
 pub trait TestCommandHandler: Send + Sync + 'static {
-    fn handle_command(
+    /// Handle a custom command. The runtime is provided for actor operations.
+    async fn handle_command(
         &self,
         command_type: &str,
         payload: &[u8],
         runtime: &dyn ActorRuntime,
     ) -> Result<Vec<u8>, ActorError>;
+
+    /// List supported command types (for discoverability / validation).
+    fn supported_commands(&self) -> Vec<&'static str> {
+        vec![]
+    }
+}
+```
+
+**Extension 2: Custom actor types via `ActorRegistry`**
+
+The `Spawn` gRPC command uses `actor_type` as a string key. The harness
+provides a registry where applications register their actor types so they
+can be spawned remotely via the control protocol:
+
+```rust
+/// Registry mapping actor type names to spawn functions.
+/// Applications register their actor types at test node startup.
+pub struct ActorRegistry {
+    factories: HashMap<String, Box<dyn ActorFactory>>,
 }
 
-// Example: banking application defines custom test commands
-struct BankTestHandler;
+/// Factory trait for spawning actors from serialized args.
+#[async_trait]
+pub trait ActorFactory: Send + Sync + 'static {
+    async fn spawn(
+        &self,
+        name: &str,
+        args: &[u8],
+        runtime: &dyn ActorRuntime,
+    ) -> Result<ActorId, ActorError>;
+}
 
-impl TestCommandHandler for BankTestHandler {
-    fn handle_command(
-        &self, cmd_type: &str, payload: &[u8], runtime: &dyn ActorRuntime,
-    ) -> Result<Vec<u8>, ActorError> {
-        match cmd_type {
-            "create_account" => {
-                let args: CreateAccountArgs = bincode::deserialize(payload)?;
-                let actor_id = /* spawn account actor */;
-                Ok(bincode::serialize(&actor_id)?)
-            }
-            "get_balance" => {
-                let account_id: ActorId = bincode::deserialize(payload)?;
-                let balance = /* ask actor */;
-                Ok(bincode::serialize(&balance)?)
-            }
-            _ => Err(ActorError::new(ErrorCode::Unimplemented, "unknown command")),
-        }
+impl ActorRegistry {
+    pub fn new() -> Self { Self { factories: HashMap::new() } }
+
+    /// Register a typed actor factory.
+    pub fn register<A: Actor>(&mut self, type_name: &str, factory: impl ActorFactory)
+    {
+        self.factories.insert(type_name.to_string(), Box::new(factory));
     }
+}
+
+// Application registers its actors:
+let mut registry = ActorRegistry::new();
+registry.register("BankAccount", BankAccountFactory);
+registry.register("TransferSaga", TransferSagaFactory);
+registry.register("AuditLogger", AuditLoggerFactory);
+```
+
+**Extension 3: Custom event matchers for assertions**
+
+Applications define domain-specific event matchers used with the
+`EventStream` from `subscribe_events()`:
+
+```rust
+/// Trait for matching application-specific events in the event stream.
+pub trait EventMatcher: Send + 'static {
+    /// Returns true if this event matches the expected condition.
+    fn matches(&self, event: &NodeEvent) -> bool;
+
+    /// Human-readable description (for assertion error messages).
+    fn description(&self) -> String;
+}
+
+// Application defines domain matchers:
+struct AccountCreated { expected_name: String }
+
+impl EventMatcher for AccountCreated {
+    fn matches(&self, event: &NodeEvent) -> bool {
+        event.event_type == "actor_started"
+            && event.detail.contains(&self.expected_name)
+    }
+    fn description(&self) -> String {
+        format!("account '{}' created", self.expected_name)
+    }
+}
+
+// Used in tests:
+let mut events = cluster.subscribe_events("node-1", &[]).await;
+events.expect(AccountCreated { expected_name: "alice".into() },
+    Duration::from_secs(5)).await?;
+```
+
+**Extension 4: Composing the test node binary**
+
+Applications build their own test node binary that embeds the harness
+and registers their extensions:
+
+```rust
+// my-app/tests/harness/main.rs
+use dactor_test_harness::{TestNode, TestNodeConfig, ActorRegistry};
+use dactor_ractor::RactorRuntime;
+
+#[tokio::main]
+async fn main() {
+    let config = TestNodeConfig::from_env();
+
+    // Register application-specific actors
+    let mut registry = ActorRegistry::new();
+    registry.register("BankAccount", BankAccountFactory);
+    registry.register("TransferSaga", TransferSagaFactory);
+
+    TestNode::builder()
+        .config(config)
+        .runtime(RactorRuntime::new())
+        .actor_registry(registry)
+        .command_handler(BankTestHandler)
+        .build()
+        .run()
+        .await;
+}
+```
+
+**Example: Full application integration test**
+
+```rust
+// my-app/tests/integration/transfer_test.rs
+use dactor_test_harness::TestCluster;
+
+#[tokio::test]
+async fn test_transfer_survives_node_crash() {
+    let mut cluster = TestCluster::builder()
+        .node("node-1", "target/debug/bank-test-node", &["--port=9101"])
+        .node("node-2", "target/debug/bank-test-node", &["--port=9102"])
+        .build().await;
+
+    cluster.wait_until_connected(2, Duration::from_secs(10)).await.unwrap();
+
+    // Use custom commands defined by BankTestHandler
+    let alice = cluster.custom("node-1", "create_account",
+        &serialize(&CreateAccount { name: "alice", balance: 1000 })?).await?;
+
+    let bob = cluster.custom("node-2", "create_account",
+        &serialize(&CreateAccount { name: "bob", balance: 500 })?).await?;
+
+    // Transfer across nodes
+    cluster.ask("node-1", &alice, "Transfer",
+        &serialize(&Transfer { to: bob.clone(), amount: 200 })?).await?;
+
+    // Kill node-2, restart it, verify bob's balance recovered
+    cluster.send_command("node-2", TestCommand::Shutdown {
+        graceful: false, timeout_ms: 0
+    }).await?;
+
+    // Restart node-2
+    cluster.restart_node("node-2").await?;
+    cluster.wait_until_connected(2, Duration::from_secs(10)).await?;
+
+    // Bob's balance should be recovered from persistence
+    let balance = cluster.custom("node-2", "get_balance",
+        &serialize(&bob)?).await?;
+    assert_eq!(deserialize::<i64>(&balance)?, 700);
+
+    cluster.shutdown().await;
 }
 ```
 
@@ -7843,6 +8014,80 @@ TestCluster::builder()
 | Mock cluster | `dactor-mock` (§12.2) | Cluster behavior with fault injection | ❌ Simulated |
 | Conformance | `dactor::test_support::conformance` (§12.3) | Adapter trait compliance | ❌ Single-process |
 | **Integration** | **`dactor-test-harness` (§12.4)** | **Real multi-process cluster** | **✅ Real TCP/libp2p/gRPC** |
+
+#### 12.4.11 Crate Publishing & Workspace
+
+`dactor-test-harness` is a **published crate** on crates.io, intended to be
+used as a `dev-dependency` by both dactor adapter crates and application
+projects:
+
+```toml
+# Application's Cargo.toml
+[dev-dependencies]
+dactor-test-harness = "0.2"
+```
+
+**Workspace layout:**
+
+```
+dactor/                          # workspace root
+├── dactor/                      # core framework (published)
+├── dactor-ractor/               # ractor adapter (published)
+├── dactor-kameo/                # kameo adapter (published)
+├── dactor-mock/                 # mock cluster (published)
+├── dactor-test-harness/         # integration test harness (published)
+│   ├── Cargo.toml
+│   ├── proto/
+│   │   └── test_node.proto      # gRPC service definition
+│   ├── src/
+│   │   ├── lib.rs               # TestCluster, TestNodeConfig, ActorRegistry, etc.
+│   │   ├── protocol.rs          # generated gRPC client/server stubs
+│   │   ├── cluster.rs           # TestCluster builder + node management
+│   │   ├── fault.rs             # FaultInjector middleware
+│   │   ├── events.rs            # EventStream + EventMatcher
+│   │   └── node.rs              # TestNode server implementation
+│   └── build.rs                 # prost/tonic code generation
+├── dactor-throttle/             # throttle interceptors (published)
+└── tests/
+    └── harness/                 # test node binaries (not published)
+        ├── test-node-ractor/
+        │   └── main.rs
+        └── test-node-kameo/
+            └── main.rs
+```
+
+**Dependencies:**
+
+```toml
+# dactor-test-harness/Cargo.toml
+[package]
+name = "dactor-test-harness"
+version = "0.2.0"
+description = "Multi-process integration test harness for dactor actor framework"
+
+[dependencies]
+dactor = { version = "0.2", path = "../dactor" }
+tonic = "0.13"          # gRPC server + client
+prost = "0.13"          # protobuf serialization
+tokio = { version = "1", features = ["process", "sync", "rt", "time", "net"] }
+dashmap = "6"           # concurrent fault state
+tracing = "0.1"
+
+[build-dependencies]
+tonic-build = "0.13"    # .proto → Rust codegen
+```
+
+**Key design decisions:**
+
+1. **The `.proto` file is published with the crate** — application teams can
+   use it to generate clients in other languages if needed (e.g., Python
+   test scripts driving Rust nodes)
+2. **`TestNode` is a library, not a binary** — applications compose their
+   own test node binary by embedding `TestNode` with their extensions
+3. **`TestCluster` manages child processes** — it spawns, monitors, and
+   cleans up test node processes automatically (including on test panic)
+4. **Version compatibility** — the harness version tracks the dactor core
+   version to ensure protocol compatibility
 
 ---
 
