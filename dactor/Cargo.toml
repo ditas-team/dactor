@@ -15,6 +15,7 @@ async-trait = "0.1"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 tokio = { version = "1", features = ["time", "sync", "rt"] }
 tracing = "0.1"
+uuid = { version = "1.23.0", features = ["v4"] }
 
 [dependencies.serde]
 version = "1"

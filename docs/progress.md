@@ -10,7 +10,7 @@
 |-----------|-----|--------|
 | v0.2.0-alpha.1 — Core API + Test Harness | PR 1–3 | ✅ Complete |
 | v0.2.0-alpha.2 — Communication (tell/ask) | PR 4–6 | ✅ Complete |
-| v0.2.0-alpha.3 — Messaging & Mailbox | PR 7–11 | 🔲 Not started |
+| v0.2.0-alpha.3 — Messaging & Mailbox | PR 7–11 | 🟡 In progress (1/5) |
 | v0.2.0-beta.1 — Streaming & Cancellation | PR 12–15 | 🔲 Not started |
 | v0.2.0-beta.2 — Error Model & Persistence | PR 16–18 | 🔲 Not started |
 | v0.2.0-rc.1 — Observability & Remote | PR 19–21 | 🔲 Not started |
@@ -27,7 +27,7 @@
 | 4 | Message, Handler, ActorRef\<A\> | impl/pr-04-message-handler | ✅ PR #6 | 62/62 pass | 6 new tests |
 | 5 | Tell (fire-and-forget) | impl/pr-05-tell | ✅ PR #7 | 69/69 pass | 7 new tests, v0.2 API functional |
 | 6 | Ask (request-reply) | impl/pr-06-ask | ✅ PR #8 | 74/74 pass | 5 new tests |
-| 7 | Envelope, Headers, RuntimeHeaders | | 🔲 Not started | | |
+| 7 | Envelope, Headers, RuntimeHeaders | impl/pr-07-envelope-headers | ✅ PR #9 | 89/89 pass | 16 new tests |
 | 8 | Interceptor pipeline (Inbound) | | 🔲 Not started | | |
 | 9 | Interceptor pipeline (Outbound) | | 🔲 Not started | | |
 | 10 | Lifecycle hooks & ErrorAction | | 🔲 Not started | | |
@@ -67,3 +67,4 @@
 | 2026-03-30 | PR 4 | Message trait, Handler<M> async trait, TypedActorRef<A> trait |
 | 2026-03-30 | PR 5 | tell() on TypedActorRef, V2TestRuntime, type-erased Dispatch, 7 e2e tests |
 | 2026-03-30 | PR 6 | ask() on TypedActorRef, AskReply future, RuntimeError enum, AskDispatch |
+| 2026-03-30 | PR 7 | HeaderValue trait, Headers, MessageId, RuntimeHeaders, Envelope, Priority |

@@ -48,6 +48,7 @@ pub use actor::{ActorRef, ActorRuntime};
 pub use actor::{Actor, ActorContext, ActorError, SpawnConfig};
 pub use actor::{AskReply, Handler, TypedActorRef};
 pub use message::Message;
+pub use message::{Headers, HeaderValue, RuntimeHeaders, MessageId, Envelope, Priority};
 pub use errors::{ActorSendError, ClusterError, GroupError, RuntimeError};
 pub use errors::ErrorAction;
 pub use cluster::{ClusterEvent, ClusterEvents, SubscriptionId};
