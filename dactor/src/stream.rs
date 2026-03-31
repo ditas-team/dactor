@@ -46,8 +46,10 @@ impl<T: Send + 'static> StreamSender<T> {
 
     /// Check if the consumer has dropped the receiving stream.
     ///
-    /// Useful for early exit in long-running stream handlers to avoid
-    /// producing items that nobody will consume.
+    /// **Note:** This is a point-in-time check — the consumer could drop
+    /// between this call and a subsequent `send()`. Prefer checking the
+    /// `send()` result for reliable termination detection. Use `is_closed()`
+    /// only as a hint for early exit in long-running handlers.
     pub fn is_closed(&self) -> bool {
         self.inner.is_closed()
     }

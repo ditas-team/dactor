@@ -460,6 +460,8 @@ impl<A: Actor> TypedActorRef<A> for V2ActorRef<A> {
         A: StreamHandler<M>,
         M: Message,
     {
+        let buffer = buffer.max(1); // ensure at least 1 capacity
+
         // Run outbound interceptors on the caller's task
         let runtime_headers = RuntimeHeaders::new();
         let mut headers = Headers::new();
@@ -476,17 +478,13 @@ impl<A: Actor> TypedActorRef<A> for V2ActorRef<A> {
                 Disposition::Continue => {}
                 Disposition::Delay(_) => {}
                 Disposition::Drop => {
-                    // Return an immediately-empty stream
-                    let (_tx, rx) = tokio::sync::mpsc::channel::<M::Reply>(1);
-                    return Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)));
+                    return Err(ActorSendError("stream dropped by outbound interceptor".into()));
                 }
-                Disposition::Reject(_) => {
-                    let (_tx, rx) = tokio::sync::mpsc::channel::<M::Reply>(1);
-                    return Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)));
+                Disposition::Reject(reason) => {
+                    return Err(ActorSendError(format!("stream rejected: {}", reason)));
                 }
                 Disposition::Retry(_) => {
-                    let (_tx, rx) = tokio::sync::mpsc::channel::<M::Reply>(1);
-                    return Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)));
+                    return Err(ActorSendError("stream retry requested by interceptor".into()));
                 }
             }
         }
