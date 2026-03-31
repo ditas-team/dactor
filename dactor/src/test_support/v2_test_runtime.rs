@@ -1553,10 +1553,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_outbound_drop_tell_silently_drops() {
-        use std::sync::Mutex;
-
-        let log = Arc::new(Mutex::new(Vec::<String>::new()));
-
         struct DropOut;
 
         impl OutboundInterceptor for DropOut {
