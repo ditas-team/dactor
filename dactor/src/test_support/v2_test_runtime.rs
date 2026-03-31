@@ -5,8 +5,9 @@
 //! via an unbounded channel.
 
 use std::any::Any;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -22,6 +23,7 @@ use crate::interceptor::{
 use crate::mailbox::{MailboxConfig, OverflowStrategy};
 use crate::message::{Headers, Message, RuntimeHeaders};
 use crate::node::{ActorId, NodeId};
+use crate::supervision::ChildTerminated;
 
 // ---------------------------------------------------------------------------
 // Type-erased dispatch via async trait
@@ -416,6 +418,17 @@ impl<A: Actor> TypedActorRef<A> for V2ActorRef<A> {
 }
 
 // ---------------------------------------------------------------------------
+// Watch registry (DeathWatch)
+// ---------------------------------------------------------------------------
+
+/// A type-erased entry in the watch registry.
+struct WatchEntry {
+    watcher_id: ActorId,
+    /// Closure that delivers a [`ChildTerminated`] to the watcher actor.
+    notify: Box<dyn Fn(ChildTerminated) + Send + Sync>,
+}
+
+// ---------------------------------------------------------------------------
 // V2TestRuntime
 // ---------------------------------------------------------------------------
 
@@ -424,6 +437,8 @@ pub struct V2TestRuntime {
     node_id: NodeId,
     next_local: AtomicU64,
     outbound_interceptors: Arc<Vec<Box<dyn OutboundInterceptor>>>,
+    /// Watch registry — maps watched actor ID to list of watcher entries.
+    watchers: Arc<Mutex<HashMap<ActorId, Vec<WatchEntry>>>>,
 }
 
 impl V2TestRuntime {
@@ -432,6 +447,7 @@ impl V2TestRuntime {
             node_id: NodeId("test-node".into()),
             next_local: AtomicU64::new(1),
             outbound_interceptors: Arc::new(Vec::new()),
+            watchers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -473,6 +489,41 @@ impl V2TestRuntime {
         A: Actor<Deps = ()> + 'static,
     {
         self.spawn_internal(name, args, (), options.interceptors, options.mailbox)
+    }
+
+    /// Register actor `watcher` to be notified when `target` terminates.
+    ///
+    /// The watcher must implement `Handler<ChildTerminated>`. When the target
+    /// actor stops (gracefully or due to panic), the runtime will deliver a
+    /// [`ChildTerminated`] message to the watcher.
+    pub fn watch<W>(&self, watcher: &V2ActorRef<W>, target_id: ActorId)
+    where
+        W: Actor + Handler<ChildTerminated> + 'static,
+    {
+        let watcher_id = watcher.id();
+        let watcher_sender = watcher.sender.clone();
+
+        let entry = WatchEntry {
+            watcher_id,
+            notify: Box::new(move |msg: ChildTerminated| {
+                let dispatch: BoxedDispatch<W> = Box::new(TypedDispatch { msg });
+                let _ = watcher_sender.send(Some(dispatch));
+            }),
+        };
+
+        let mut watchers = self.watchers.lock().unwrap();
+        watchers.entry(target_id).or_default().push(entry);
+    }
+
+    /// Unregister `watcher_id` from notifications about `target_id`.
+    pub fn unwatch(&self, watcher_id: &ActorId, target_id: &ActorId) {
+        let mut watchers = self.watchers.lock().unwrap();
+        if let Some(entries) = watchers.get_mut(target_id) {
+            entries.retain(|e| &e.watcher_id != watcher_id);
+            if entries.is_empty() {
+                watchers.remove(target_id);
+            }
+        }
     }
 
     fn spawn_internal<A>(
@@ -517,6 +568,7 @@ impl V2TestRuntime {
 
         let id_task = actor_id.clone();
         let name_task = actor_name.clone();
+        let watchers_ref = self.watchers.clone();
 
         tokio::spawn(async move {
             let mut actor = A::create(args, deps);
@@ -528,6 +580,8 @@ impl V2TestRuntime {
             };
 
             actor.on_start(&mut ctx).await;
+
+            let mut stop_reason: Option<String> = None;
 
             while let Some(msg) = rx.recv().await {
                 let dispatch = match msg {
@@ -638,6 +692,7 @@ impl V2TestRuntime {
                             }
                             ErrorAction::Stop | ErrorAction::Escalate => {
                                 tracing::error!("handler panicked in actor {}, stopping", ctx.actor_name);
+                                stop_reason = Some("handler panicked".into());
                                 break;
                             }
                             ErrorAction::Restart => {
@@ -659,6 +714,26 @@ impl V2TestRuntime {
             ctx.send_mode = None;
             ctx.headers = Headers::new();
             actor.on_stop().await;
+
+            // Notify all watchers that this actor has terminated.
+            // Clone entries and release lock before calling notify closures
+            // to avoid holding the mutex during potentially blocking sends.
+            let actor_id = ctx.actor_id.clone();
+            let actor_name = ctx.actor_name.clone();
+            let entries = {
+                let mut watchers = watchers_ref.lock().unwrap();
+                watchers.remove(&actor_id).unwrap_or_default()
+            };
+            if !entries.is_empty() {
+                let notification = ChildTerminated {
+                    child_id: actor_id,
+                    child_name: actor_name,
+                    reason: stop_reason,
+                };
+                for entry in &entries {
+                    (entry.notify)(notification.clone());
+                }
+            }
         });
 
         V2ActorRef {
@@ -2273,5 +2348,154 @@ mod tests {
         // Should succeed — silently dropped
         let result = actor.tell(SlowMsg);
         assert!(result.is_ok(), "DropNewest should silently succeed");
+    }
+
+    // -- Supervision / DeathWatch tests -------------------------------------
+
+    use crate::supervision::ChildTerminated;
+
+    struct Watcher {
+        events: Arc<Mutex<Vec<ChildTerminated>>>,
+    }
+
+    impl Actor for Watcher {
+        type Args = Arc<Mutex<Vec<ChildTerminated>>>;
+        type Deps = ();
+        fn create(args: Arc<Mutex<Vec<ChildTerminated>>>, _: ()) -> Self {
+            Watcher { events: args }
+        }
+    }
+
+    #[async_trait]
+    impl Handler<ChildTerminated> for Watcher {
+        async fn handle(&mut self, msg: ChildTerminated, _ctx: &mut ActorContext) {
+            self.events.lock().unwrap().push(msg);
+        }
+    }
+
+    struct WatcherPing;
+    impl Message for WatcherPing { type Reply = (); }
+
+    #[async_trait]
+    impl Handler<WatcherPing> for Watcher {
+        async fn handle(&mut self, _: WatcherPing, _: &mut ActorContext) {}
+    }
+
+    struct Worker;
+    impl Actor for Worker {
+        type Args = ();
+        type Deps = ();
+        fn create(_: (), _: ()) -> Self { Worker }
+    }
+
+    struct WorkerMsg;
+    impl Message for WorkerMsg { type Reply = (); }
+
+    #[async_trait]
+    impl Handler<WorkerMsg> for Worker {
+        async fn handle(&mut self, _: WorkerMsg, _: &mut ActorContext) {}
+    }
+
+    #[tokio::test]
+    async fn test_watch_receives_child_terminated() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let runtime = V2TestRuntime::new();
+        let watcher = runtime.spawn::<Watcher>("watcher", events.clone());
+        let worker = runtime.spawn::<Worker>("worker", ());
+
+        let worker_id = worker.id();
+        runtime.watch(&watcher, worker_id.clone());
+
+        // Stop the worker
+        worker.stop();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let evts = events.lock().unwrap();
+        assert_eq!(evts.len(), 1);
+        assert_eq!(evts[0].child_id, worker_id);
+        assert_eq!(evts[0].child_name, "worker");
+        assert!(evts[0].reason.is_none(), "graceful stop should have no reason");
+    }
+
+    #[tokio::test]
+    async fn test_unwatch_stops_notifications() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let runtime = V2TestRuntime::new();
+        let watcher = runtime.spawn::<Watcher>("watcher", events.clone());
+        let worker = runtime.spawn::<Worker>("worker", ());
+
+        let worker_id = worker.id();
+        let watcher_id = watcher.id();
+        runtime.watch(&watcher, worker_id.clone());
+
+        // Unwatch before stopping
+        runtime.unwatch(&watcher_id, &worker_id);
+
+        worker.stop();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let evts = events.lock().unwrap();
+        assert!(evts.is_empty(), "unwatch should prevent notification");
+    }
+
+    #[tokio::test]
+    async fn test_watch_panic_includes_reason() {
+        struct PanicWorker;
+        impl Actor for PanicWorker {
+            type Args = ();
+            type Deps = ();
+            fn create(_: (), _: ()) -> Self { PanicWorker }
+        }
+
+        struct PanicMsg;
+        impl Message for PanicMsg { type Reply = (); }
+
+        #[async_trait]
+        impl Handler<PanicMsg> for PanicWorker {
+            async fn handle(&mut self, _: PanicMsg, _: &mut ActorContext) {
+                panic!("boom");
+            }
+        }
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let runtime = V2TestRuntime::new();
+        let watcher = runtime.spawn::<Watcher>("watcher", events.clone());
+        let worker = runtime.spawn::<PanicWorker>("panic-worker", ());
+
+        let worker_id = worker.id();
+        runtime.watch(&watcher, worker_id.clone());
+
+        // Send a message that causes a panic (default on_error returns Stop)
+        worker.tell(PanicMsg).unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let evts = events.lock().unwrap();
+        assert_eq!(evts.len(), 1);
+        assert_eq!(evts[0].child_id, worker_id);
+        assert_eq!(evts[0].reason, Some("handler panicked".into()));
+    }
+
+    #[tokio::test]
+    async fn test_watch_multiple_watchers() {
+        let events1 = Arc::new(Mutex::new(Vec::new()));
+        let events2 = Arc::new(Mutex::new(Vec::new()));
+        let runtime = V2TestRuntime::new();
+        let watcher1 = runtime.spawn::<Watcher>("watcher1", events1.clone());
+        let watcher2 = runtime.spawn::<Watcher>("watcher2", events2.clone());
+        let worker = runtime.spawn::<Worker>("worker", ());
+
+        let worker_id = worker.id();
+        runtime.watch(&watcher1, worker_id.clone());
+        runtime.watch(&watcher2, worker_id.clone());
+
+        worker.stop();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let evts1 = events1.lock().unwrap();
+        let evts2 = events2.lock().unwrap();
+        assert_eq!(evts1.len(), 1, "watcher1 should receive notification");
+        assert_eq!(evts2.len(), 1, "watcher2 should receive notification");
+        assert_eq!(evts1[0].child_id, worker_id);
+        assert_eq!(evts2[0].child_id, worker_id);
     }
 }
