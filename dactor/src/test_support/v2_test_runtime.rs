@@ -212,7 +212,7 @@ impl<A: Actor> TypedActorRef<A> for V2ActorRef<A> {
     }
 
     fn is_alive(&self) -> bool {
-        self.alive.load(Ordering::Relaxed) && !self.sender.is_closed()
+        self.alive.load(Ordering::Acquire) && !self.sender.is_closed()
     }
 
     fn stop(&self) {
@@ -464,6 +464,9 @@ impl V2TestRuntime {
                     tokio::time::sleep(total_delay).await;
                 }
 
+                // Copy interceptor-populated headers to ActorContext so handler can access them
+                ctx.headers = headers;
+
                 // Dispatch the message
                 let result =
                     std::panic::AssertUnwindSafe(dispatch.dispatch(&mut actor, &mut ctx))
@@ -488,7 +491,7 @@ impl V2TestRuntime {
                         };
 
                         for interceptor in &interceptors {
-                            interceptor.on_complete(&ictx, &runtime_headers, &headers, &outcome);
+                            interceptor.on_complete(&ictx, &runtime_headers, &ctx.headers, &outcome);
                         }
 
                         // Send reply to caller AFTER interceptors have seen it
@@ -502,7 +505,7 @@ impl V2TestRuntime {
                             error,
                         };
                         for interceptor in &interceptors {
-                            interceptor.on_complete(&ictx, &runtime_headers, &headers, &outcome);
+                            interceptor.on_complete(&ictx, &runtime_headers, &ctx.headers, &outcome);
                         }
 
                         match action {

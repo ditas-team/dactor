@@ -129,6 +129,11 @@ impl fmt::Display for ActorError {
 impl std::error::Error for ActorError {}
 
 /// Context passed to actor lifecycle hooks and handlers.
+///
+/// **Note:** `ActorContext` is not `Clone` because `Headers` contains type-erased
+/// header values (`Box<dyn HeaderValue>`) which are not cloneable. This is an
+/// intentional v0.2 API change — handlers receive `&mut ActorContext` and should
+/// extract needed values rather than cloning the context.
 #[derive(Debug)]
 pub struct ActorContext {
     pub actor_id: ActorId,
