@@ -51,6 +51,7 @@ pub use async_trait::async_trait;
 pub use actor::{ActorRef, ActorRuntime};
 pub use actor::{Actor, ActorContext, ActorError, SpawnConfig};
 pub use actor::{AskReply, Handler, StreamHandler, TypedActorRef};
+pub use actor::{FeedMessage, FeedHandler};
 pub use message::Message;
 pub use message::{Headers, HeaderValue, RuntimeHeaders, MessageId, Envelope, Priority};
 pub use errors::{ActorSendError, ClusterError, GroupError, RuntimeError};
@@ -64,6 +65,7 @@ pub use interceptor::{InboundInterceptor, InboundContext, Disposition, Outcome, 
 pub use interceptor::{OutboundInterceptor, OutboundContext};
 pub use mailbox::{MailboxConfig, OverflowStrategy};
 pub use stream::{BoxStream, StreamSendError, StreamSender};
+pub use stream::StreamReceiver;
 
 // Backward-compatible re-export of TestClock (feature-gated)
 #[cfg(feature = "test-support")]

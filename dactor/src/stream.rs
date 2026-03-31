@@ -77,3 +77,29 @@ impl std::fmt::Display for StreamSendError {
 }
 
 impl std::error::Error for StreamSendError {}
+
+/// A receiver handle given to the actor's [`FeedHandler`](crate::actor::FeedHandler).
+///
+/// The caller pushes items from a `BoxStream` into the channel; the actor
+/// consumes them through this receiver. Can be used directly with `recv()`
+/// or converted into a `BoxStream` via `into_stream()`.
+pub struct StreamReceiver<T: Send + 'static> {
+    inner: tokio::sync::mpsc::Receiver<T>,
+}
+
+impl<T: Send + 'static> StreamReceiver<T> {
+    /// Create a new StreamReceiver wrapping a tokio mpsc receiver.
+    pub(crate) fn new(inner: tokio::sync::mpsc::Receiver<T>) -> Self {
+        Self { inner }
+    }
+
+    /// Receive the next item, or `None` when the sender is closed.
+    pub async fn recv(&mut self) -> Option<T> {
+        self.inner.recv().await
+    }
+
+    /// Convert into a `BoxStream` for use with `StreamExt` combinators.
+    pub fn into_stream(self) -> BoxStream<T> {
+        Box::pin(tokio_stream::wrappers::ReceiverStream::new(self.inner))
+    }
+}

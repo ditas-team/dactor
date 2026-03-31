@@ -13,7 +13,7 @@ use crate::interceptor::SendMode;
 use crate::mailbox::MailboxConfig;
 use crate::message::{Headers, Message};
 use crate::node::ActorId;
-use crate::stream::{BoxStream, StreamSender};
+use crate::stream::{BoxStream, StreamReceiver, StreamSender};
 use crate::timer::TimerHandle;
 
 /// A handle to a running actor that can receive messages of type `M`.
@@ -209,6 +209,34 @@ pub trait StreamHandler<M: Message>: Actor {
     );
 }
 
+/// A message type used with feed (client-streaming) delivery.
+///
+/// Unlike regular `Message`, a `FeedMessage` carries an associated `Item`
+/// type that the caller streams to the actor, plus a `Reply` returned
+/// when the actor has consumed the entire stream.
+pub trait FeedMessage: Send + 'static {
+    /// The type of items the caller streams to the actor.
+    type Item: Send + 'static;
+    /// The reply returned after the actor consumes all items.
+    type Reply: Send + 'static;
+}
+
+/// Implemented by actors that handle client-streaming (feed) requests.
+///
+/// The handler receives the initial message and a [`StreamReceiver`] from
+/// which it pulls caller-provided items. When the stream ends, the handler
+/// returns a final reply.
+#[async_trait]
+pub trait FeedHandler<M: FeedMessage>: Actor {
+    /// Handle a feed request. Pull items from `receiver` and return a reply.
+    async fn handle_feed(
+        &mut self,
+        msg: M,
+        receiver: StreamReceiver<M::Item>,
+        ctx: &mut ActorContext,
+    ) -> M::Reply;
+}
+
 /// A future that resolves to the reply from an `ask()` call.
 ///
 /// Wraps a `oneshot::Receiver` and implements `Future` so that callers can
@@ -285,6 +313,23 @@ pub trait TypedActorRef<A: Actor>: Clone + Send + Sync + 'static {
     where
         A: StreamHandler<M>,
         M: Message;
+
+    /// Client-streaming (feed): send a request with an async stream of items.
+    ///
+    /// The caller provides items via `input`. The actor consumes them via
+    /// [`StreamReceiver`] and returns a single reply when the stream ends.
+    /// `buffer` controls the internal channel capacity (backpressure).
+    ///
+    /// Returns an [`AskReply`] future: `let reply = actor.feed(msg, stream, 8)?.await?;`
+    fn feed<M>(
+        &self,
+        msg: M,
+        input: BoxStream<M::Item>,
+        buffer: usize,
+    ) -> Result<AskReply<M::Reply>, ActorSendError>
+    where
+        A: FeedHandler<M>,
+        M: FeedMessage;
 }
 
 /// Configuration for spawning an actor. All fields have defaults

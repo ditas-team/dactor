@@ -13,7 +13,7 @@ categories = ["concurrency", "network-programming"]
 [dependencies]
 async-trait = "0.1"
 futures = { version = "0.3", default-features = false, features = ["std"] }
-tokio = { version = "1", features = ["time", "sync", "rt"] }
+tokio = { version = "1", features = ["time", "sync", "rt", "rt-multi-thread", "macros"] }
 tracing = "0.1"
 tokio-stream = "0.1"
 uuid = { version = "1.23.0", features = ["v4"] }
@@ -30,3 +30,23 @@ test-support = ["tokio/test-util"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
+
+[[example]]
+name = "basic_counter"
+required-features = ["test-support"]
+
+[[example]]
+name = "streaming"
+required-features = ["test-support"]
+
+[[example]]
+name = "interceptors"
+required-features = ["test-support"]
+
+[[example]]
+name = "supervision"
+required-features = ["test-support"]
+
+[[example]]
+name = "bounded_mailbox"
+required-features = ["test-support"]
