@@ -616,16 +616,29 @@ impl<A: Actor> TypedActorRef<A> for V2ActorRef<A> {
         let dispatch: BoxedDispatch<A> = Box::new(FeedDispatch { msg, receiver, reply_tx });
         self.sender.send(Some(dispatch))?;
 
-        // Spawn a drain task: pulls items from the input BoxStream and pushes to item_tx
+        // Spawn a drain task: pulls items from the input BoxStream and pushes to item_tx.
+        // The task terminates naturally when either:
+        // - The input stream is exhausted (all items consumed)
+        // - The actor drops the StreamReceiver (item_tx.send returns Err)
+        // Panics in the input stream are caught to avoid leaving the actor hanging.
+        // Note: Full cancellation support (CancellationToken) added in PR 15.
         tokio::spawn(async move {
-            use futures::StreamExt;
+            use futures::{FutureExt, StreamExt};
             let mut input = input;
-            while let Some(item) = input.next().await {
-                if item_tx.send(item).await.is_err() {
-                    break; // actor dropped the receiver
+            let result = std::panic::AssertUnwindSafe(async {
+                while let Some(item) = input.next().await {
+                    if item_tx.send(item).await.is_err() {
+                        break; // actor dropped the receiver
+                    }
                 }
+            })
+            .catch_unwind()
+            .await;
+
+            if result.is_err() {
+                tracing::error!("feed drain task panicked — input stream dropped");
             }
-            // item_tx drops here, closing the channel
+            // item_tx drops here, closing the channel → actor's recv() returns None
         });
 
         Ok(AskReply::new(reply_rx))
