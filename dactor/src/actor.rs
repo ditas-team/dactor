@@ -178,11 +178,11 @@ pub trait Handler<M: Message>: Actor {
 /// Wraps a `oneshot::Receiver` and implements `Future` so that callers can
 /// `.await` the reply directly: `let count = actor.ask(GetCount)?.await?;`
 pub struct AskReply<R> {
-    rx: oneshot::Receiver<R>,
+    rx: oneshot::Receiver<Result<R, RuntimeError>>,
 }
 
 impl<R> AskReply<R> {
-    pub fn new(rx: oneshot::Receiver<R>) -> Self {
+    pub fn new(rx: oneshot::Receiver<Result<R, RuntimeError>>) -> Self {
         Self { rx }
     }
 }
@@ -192,7 +192,8 @@ impl<R> Future for AskReply<R> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match Pin::new(&mut self.rx).poll(cx) {
-            Poll::Ready(Ok(reply)) => Poll::Ready(Ok(reply)),
+            Poll::Ready(Ok(Ok(reply))) => Poll::Ready(Ok(reply)),
+            Poll::Ready(Ok(Err(error))) => Poll::Ready(Err(error)),
             Poll::Ready(Err(_)) => Poll::Ready(Err(RuntimeError::ActorNotFound(
                 "reply channel closed — actor may have stopped, panicked, or the request was cancelled".into(),
             ))),

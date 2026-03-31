@@ -24,6 +24,7 @@
 pub mod actor;
 pub mod errors;
 pub mod cluster;
+pub mod interceptor;
 pub mod message;
 pub mod timer;
 pub mod clock;
@@ -55,6 +56,7 @@ pub use cluster::{ClusterEvent, ClusterEvents, SubscriptionId};
 pub use timer::TimerHandle;
 pub use clock::{Clock, SystemClock};
 pub use node::{NodeId, ActorId};
+pub use interceptor::{InboundInterceptor, InboundContext, Disposition, Outcome, SendMode};
 
 // Backward-compatible re-export of TestClock (feature-gated)
 #[cfg(feature = "test-support")]
@@ -62,4 +64,4 @@ pub use test_support::test_clock::TestClock;
 
 // V2 test runtime re-exports (feature-gated)
 #[cfg(feature = "test-support")]
-pub use test_support::v2_test_runtime::{V2TestRuntime, V2ActorRef};
+pub use test_support::v2_test_runtime::{V2TestRuntime, V2ActorRef, SpawnOptions};

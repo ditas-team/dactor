@@ -1,4 +1,5 @@
 use std::fmt;
+use std::time::Duration;
 
 /// Error returned by `ActorRef::send()`.
 #[derive(Debug, Clone)]
@@ -56,6 +57,9 @@ pub enum RuntimeError {
     Timeout,
     /// The operation was rejected by an interceptor.
     Rejected { interceptor: String, reason: String },
+    /// An interceptor suggests the caller retry after the given duration.
+    /// The message was NOT delivered.
+    RetryAfter { interceptor: String, retry_after: Duration },
     /// A handler-level error occurred.
     Actor(crate::actor::ActorError),
 }
@@ -68,6 +72,9 @@ impl fmt::Display for RuntimeError {
             Self::Timeout => write!(f, "operation timed out"),
             Self::Rejected { interceptor, reason } => {
                 write!(f, "rejected by '{}': {}", interceptor, reason)
+            }
+            Self::RetryAfter { interceptor, retry_after } => {
+                write!(f, "retry after {:?} (suggested by '{}')", retry_after, interceptor)
             }
             Self::Actor(e) => write!(f, "actor error: {}", e),
         }

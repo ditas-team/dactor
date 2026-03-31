@@ -2590,10 +2590,23 @@ pub enum Disposition {
     /// - `stream()` / `feed()`: sender receives `Err(RuntimeError::Rejected { .. })`
     ///   before any stream items flow
     Reject(String),
+    /// Tell the caller to retry after the suggested duration. Unlike `Delay`
+    /// (which holds the message in the pipeline), `Retry` returns immediately
+    /// to the caller with `Err(RuntimeError::RetryAfter { .. })`, letting the
+    /// caller decide whether and when to resend. The message is NOT delivered.
+    ///
+    /// Use cases: circuit breakers, load shedding, backpressure signaling
+    /// where the caller should back off rather than queue up.
+    ///
+    /// Semantics per send mode:
+    /// - `tell()`: behaves like `Drop` (fire-and-forget has no error path)
+    /// - `ask()`: sender receives `Err(RuntimeError::RetryAfter { interceptor, retry_after })`
+    /// - `stream()` / `feed()`: same as `ask()`
+    Retry(Duration),
 }
 ```
 
-**How the runtime constructs the `Rejected` error:**
+**How the runtime handles `Rejected` and `Retry` errors:**
 
 ```rust
 // Inside the runtime's interceptor pipeline execution:
@@ -2607,11 +2620,15 @@ for interceptor in &interceptors {
         }
         Disposition::Drop => return drop_message(),
         Disposition::Reject(reason) => {
-            // Runtime attaches the interceptor's name — the interceptor
-            // itself only provides the reason.
             return Err(RuntimeError::Rejected {
-                interceptor: interceptor.name(),  // ← from Interceptor::name()
+                interceptor: interceptor.name(),
                 reason,
+            });
+        }
+        Disposition::Retry(retry_after) => {
+            return Err(RuntimeError::RetryAfter {
+                interceptor: interceptor.name(),
+                retry_after,
             });
         }
     }
