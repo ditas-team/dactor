@@ -52,6 +52,10 @@ trait Dispatch<A: Actor>: Send {
     /// For tell, silently drops (fire-and-forget has no error path).
     fn reject(self: Box<Self>, disposition: Disposition, interceptor_name: &str);
 
+    /// Cancel this dispatch — sends RuntimeError::Cancelled to the caller.
+    /// For tell, silently drops.
+    fn cancel(self: Box<Self>);
+
     /// The cancellation token for this dispatch (None for tell).
     fn cancel_token(&self) -> Option<CancellationToken>;
 }
@@ -106,6 +110,10 @@ where
 
     fn reject(self: Box<Self>, _disposition: Disposition, _interceptor_name: &str) {
         // tell: silently drop (fire-and-forget has no error path)
+    }
+
+    fn cancel(self: Box<Self>) {
+        // tell: silently drop
     }
 
     fn cancel_token(&self) -> Option<CancellationToken> {
@@ -170,6 +178,10 @@ where
         let _ = self.reply_tx.send(Err(error));
     }
 
+    fn cancel(self: Box<Self>) {
+        let _ = self.reply_tx.send(Err(RuntimeError::Cancelled));
+    }
+
     fn cancel_token(&self) -> Option<CancellationToken> {
         self.cancel.clone()
     }
@@ -206,6 +218,10 @@ where
     }
 
     fn reject(self: Box<Self>, _disposition: Disposition, _interceptor_name: &str) {
+        // Dropping self.sender closes the stream on the caller side
+    }
+
+    fn cancel(self: Box<Self>) {
         // Dropping self.sender closes the stream on the caller side
     }
 
@@ -270,6 +286,10 @@ where
             _ => return,
         };
         let _ = self.reply_tx.send(Err(error));
+    }
+
+    fn cancel(self: Box<Self>) {
+        let _ = self.reply_tx.send(Err(RuntimeError::Cancelled));
     }
 
     fn cancel_token(&self) -> Option<CancellationToken> {
@@ -927,10 +947,8 @@ impl V2TestRuntime {
                 // Check if already cancelled before dispatching
                 if let Some(ref token) = cancel_token {
                     if token.is_cancelled() {
-                        // Already cancelled — send Cancelled error to caller
-                        // We need a way to send the error. Use reject with a special handling.
-                        // For ask/feed: the reply_tx is inside dispatch. Drop dispatch to close oneshot.
-                        drop(dispatch);
+                        // Send RuntimeError::Cancelled to the caller
+                        dispatch.cancel();
                         ctx.cancellation_token = None;
                         continue;
                     }
@@ -3179,8 +3197,9 @@ mod tests {
         let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
 
         let result = counter.ask(GetCount, Some(token)).unwrap().await;
-        // Should be Err because cancelled before handler ran
+        // Should be Err(Cancelled) because cancelled before handler ran
         assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), RuntimeError::Cancelled));
     }
 
     #[tokio::test]
@@ -3209,7 +3228,7 @@ mod tests {
         let actor = runtime.spawn::<SlowActor>("slow", ());
         let token = cancel_after(Duration::from_millis(50));
         let result = actor.ask(SlowMsg, Some(token)).unwrap().await;
-        assert!(result.is_err()); // should be cancelled after 50ms
+        assert!(result.is_err()); // cancelled during handler execution
     }
 
     #[tokio::test]
