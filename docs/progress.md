@@ -10,7 +10,7 @@
 |-----------|-----|--------|
 | v0.2.0-alpha.1 — Core API + Test Harness | PR 1–3 | ✅ Complete |
 | v0.2.0-alpha.2 — Communication (tell/ask) | PR 4–6 | ✅ Complete |
-| v0.2.0-alpha.3 — Messaging & Mailbox | PR 7–11 | 🟡 In progress (3/5) |
+| v0.2.0-alpha.3 — Messaging & Mailbox | PR 7–11 | 🟡 In progress (4/5) |
 | v0.2.0-beta.1 — Streaming & Cancellation | PR 12–15 | 🔲 Not started |
 | v0.2.0-beta.2 — Error Model & Persistence | PR 16–18 | 🔲 Not started |
 | v0.2.0-rc.1 — Observability & Remote | PR 19–21 | 🔲 Not started |
@@ -30,7 +30,7 @@
 | 7 | Envelope, Headers, RuntimeHeaders | impl/pr-07-envelope-headers | ✅ PR #9 | 89/89 pass | 16 new tests |
 | 8 | Interceptor pipeline (Inbound) | impl/pr-08-inbound-interceptor | ✅ PR #10 | 104/104 pass | 14 new tests |
 | 9 | Interceptor pipeline (Outbound) | impl/pr-09-outbound-interceptor | ✅ PR #11 | 113/113 pass | 7 new tests |
-| 10 | Lifecycle hooks & ErrorAction | | 🔲 Not started | | |
+| 10 | Lifecycle hooks & ErrorAction | impl/pr-10-lifecycle | ✅ PR #12 | 121/121 pass | 8 new tests |
 | 11 | MailboxConfig & OverflowStrategy | | 🔲 Not started | | |
 | 12 | Supervision & DeathWatch | | 🔲 Not started | | |
 | 13 | Stream (server-streaming) | | 🔲 Not started | | |
@@ -70,3 +70,4 @@
 | 2026-03-30 | PR 7 | HeaderValue trait, Headers, MessageId, RuntimeHeaders, Envelope, Priority |
 | 2026-03-30 | PR 8 | InboundInterceptor trait, Disposition, SendMode, InboundContext, Outcome, SpawnOptions |
 | 2026-03-31 | PR 9 | OutboundInterceptor trait, OutboundContext, sender-side pipeline |
+| 2026-03-31 | PR 10 | Lifecycle: stop(), on_error→ErrorAction, expanded ActorContext |
