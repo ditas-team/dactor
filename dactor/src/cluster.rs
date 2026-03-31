@@ -2,10 +2,15 @@ use crate::errors::ClusterError;
 use crate::node::NodeId;
 
 /// Events emitted by the cluster membership system.
+///
+/// Subscribe via [`ClusterEvents::subscribe`] to react to topology changes
+/// such as scaling, failover, or planned maintenance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ClusterEvent {
+    /// A new node has joined the cluster and is ready to receive messages.
     NodeJoined(NodeId),
+    /// A node has left the cluster (gracefully or due to failure).
     NodeLeft(NodeId),
 }
 

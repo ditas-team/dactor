@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use futures::FutureExt;
 use tokio::sync::mpsc;
 
-use crate::actor::{Actor, ActorContext, ActorError, AskReply, Handler, TypedActorRef};
+use crate::actor::{Actor, ActorContext, ActorError, AskReply, Handler, StreamHandler, TypedActorRef};
 use crate::errors::{ActorSendError, ErrorAction, RuntimeError};
 use crate::interceptor::{
     Disposition, InboundContext, InboundInterceptor, OutboundContext, OutboundInterceptor,
@@ -23,6 +23,7 @@ use crate::interceptor::{
 use crate::mailbox::{MailboxConfig, OverflowStrategy};
 use crate::message::{Headers, Message, RuntimeHeaders};
 use crate::node::{ActorId, NodeId};
+use crate::stream::{BoxStream, StreamSender};
 use crate::supervision::ChildTerminated;
 
 // ---------------------------------------------------------------------------
@@ -158,6 +159,40 @@ where
             _ => return,
         };
         let _ = self.reply_tx.send(Err(error));
+    }
+}
+
+/// Stream envelope: carries the message and a StreamSender for pushing items.
+struct StreamDispatch<M: Message> {
+    msg: M,
+    sender: StreamSender<M::Reply>,
+}
+
+#[async_trait]
+impl<A, M> Dispatch<A> for StreamDispatch<M>
+where
+    A: StreamHandler<M>,
+    M: Message,
+{
+    async fn dispatch(self: Box<Self>, actor: &mut A, ctx: &mut ActorContext) -> DispatchResult {
+        actor.handle_stream(self.msg, self.sender, ctx).await;
+        DispatchResult::tell() // stream completion, no single reply
+    }
+
+    fn message_any(&self) -> &dyn Any {
+        &self.msg
+    }
+
+    fn send_mode(&self) -> SendMode {
+        SendMode::Stream
+    }
+
+    fn message_type_name(&self) -> &'static str {
+        std::any::type_name::<M>()
+    }
+
+    fn reject(self: Box<Self>, _disposition: Disposition, _interceptor_name: &str) {
+        // Dropping self.sender closes the stream on the caller side
     }
 }
 
@@ -414,6 +449,53 @@ impl<A: Actor> TypedActorRef<A> for V2ActorRef<A> {
         });
         self.sender.send(Some(dispatch))?;
         Ok(AskReply::new(rx))
+    }
+
+    fn stream<M>(
+        &self,
+        msg: M,
+        buffer: usize,
+    ) -> Result<BoxStream<M::Reply>, ActorSendError>
+    where
+        A: StreamHandler<M>,
+        M: Message,
+    {
+        let buffer = buffer.max(1); // ensure at least 1 capacity
+
+        // Run outbound interceptors on the caller's task
+        let runtime_headers = RuntimeHeaders::new();
+        let mut headers = Headers::new();
+        let octx = OutboundContext {
+            target_id: self.id.clone(),
+            target_name: &self.name,
+            message_type: std::any::type_name::<M>(),
+            send_mode: SendMode::Stream,
+            remote: false,
+        };
+
+        for interceptor in self.outbound_interceptors.iter() {
+            match interceptor.on_send(&octx, &runtime_headers, &mut headers, &msg as &dyn Any) {
+                Disposition::Continue => {}
+                Disposition::Delay(_) => {}
+                Disposition::Drop => {
+                    return Err(ActorSendError("stream dropped by outbound interceptor".into()));
+                }
+                Disposition::Reject(reason) => {
+                    return Err(ActorSendError(format!("stream rejected: {}", reason)));
+                }
+                Disposition::Retry(_) => {
+                    return Err(ActorSendError("stream retry requested by interceptor".into()));
+                }
+            }
+        }
+
+        let (tx, rx) = tokio::sync::mpsc::channel(buffer);
+        let sender = StreamSender::new(tx);
+        let dispatch: BoxedDispatch<A> = Box::new(StreamDispatch { msg, sender });
+        self.sender.send(Some(dispatch))?;
+
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        Ok(Box::pin(stream))
     }
 }
 
@@ -760,8 +842,10 @@ impl Default for V2TestRuntime {
 mod tests {
     use super::*;
     use crate::actor::ActorContext;
+    use crate::actor::StreamHandler;
     use crate::message::Message;
     use crate::node::NodeId;
+    use crate::stream::StreamSender;
 
     // -- Shared test actor: Counter -----------------------------------------
 
@@ -2497,5 +2581,190 @@ mod tests {
         assert_eq!(evts2.len(), 1, "watcher2 should receive notification");
         assert_eq!(evts1[0].child_id, worker_id);
         assert_eq!(evts2[0].child_id, worker_id);
+    }
+
+    // ======================================================================
+    // Stream tests
+    // ======================================================================
+
+    struct LogServer {
+        logs: Vec<String>,
+    }
+
+    impl Actor for LogServer {
+        type Args = Vec<String>;
+        type Deps = ();
+        fn create(args: Vec<String>, _: ()) -> Self {
+            LogServer { logs: args }
+        }
+    }
+
+    struct GetLogs;
+    impl Message for GetLogs {
+        type Reply = String;
+    }
+
+    #[async_trait]
+    impl StreamHandler<GetLogs> for LogServer {
+        async fn handle_stream(
+            &mut self,
+            _msg: GetLogs,
+            sender: StreamSender<String>,
+            _ctx: &mut ActorContext,
+        ) {
+            for log in &self.logs {
+                if sender.send(log.clone()).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stream_returns_items() {
+        use tokio_stream::StreamExt;
+
+        let runtime = V2TestRuntime::new();
+        let server = runtime.spawn::<LogServer>(
+            "logs",
+            vec!["line1".into(), "line2".into(), "line3".into()],
+        );
+
+        let mut stream = server.stream(GetLogs, 16).unwrap();
+        let mut items = Vec::new();
+        while let Some(item) = stream.next().await {
+            items.push(item);
+        }
+
+        assert_eq!(items, vec!["line1", "line2", "line3"]);
+    }
+
+    #[tokio::test]
+    async fn test_stream_empty() {
+        use tokio_stream::StreamExt;
+
+        let runtime = V2TestRuntime::new();
+        let server = runtime.spawn::<LogServer>("logs", vec![]);
+
+        let mut stream = server.stream(GetLogs, 16).unwrap();
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stream_consumer_drops_early() {
+        use tokio_stream::StreamExt;
+
+        let logs: Vec<String> = (0..1000).map(|i| format!("line-{}", i)).collect();
+        let runtime = V2TestRuntime::new();
+        let server = runtime.spawn::<LogServer>("logs", logs);
+
+        let mut stream = server.stream(GetLogs, 4).unwrap();
+        let item1 = stream.next().await.unwrap();
+        let item2 = stream.next().await.unwrap();
+        assert_eq!(item1, "line-0");
+        assert_eq!(item2, "line-1");
+
+        // Drop stream — actor's sender.send() should return ConsumerDropped
+        drop(stream);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Actor should still be alive (dropping a stream doesn't kill the actor)
+        assert!(server.is_alive());
+    }
+
+    #[tokio::test]
+    async fn test_stream_items_in_order() {
+        use tokio_stream::StreamExt;
+
+        struct NumberStream;
+        impl Actor for NumberStream {
+            type Args = ();
+            type Deps = ();
+            fn create(_: (), _: ()) -> Self {
+                NumberStream
+            }
+        }
+
+        struct GetNumbers {
+            count: u64,
+        }
+        impl Message for GetNumbers {
+            type Reply = u64;
+        }
+
+        #[async_trait]
+        impl StreamHandler<GetNumbers> for NumberStream {
+            async fn handle_stream(
+                &mut self,
+                msg: GetNumbers,
+                sender: StreamSender<u64>,
+                _ctx: &mut ActorContext,
+            ) {
+                for i in 0..msg.count {
+                    if sender.send(i).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let runtime = V2TestRuntime::new();
+        let actor = runtime.spawn::<NumberStream>("numbers", ());
+
+        let stream = actor.stream(GetNumbers { count: 100 }, 16).unwrap();
+        let items: Vec<u64> = tokio_stream::StreamExt::collect(stream).await;
+
+        assert_eq!(items.len(), 100);
+        for (i, val) in items.iter().enumerate() {
+            assert_eq!(*val, i as u64);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stream_backpressure() {
+        use tokio_stream::StreamExt;
+
+        struct SlowStream;
+        impl Actor for SlowStream {
+            type Args = ();
+            type Deps = ();
+            fn create(_: (), _: ()) -> Self {
+                SlowStream
+            }
+        }
+
+        struct GetItems;
+        impl Message for GetItems {
+            type Reply = u64;
+        }
+
+        #[async_trait]
+        impl StreamHandler<GetItems> for SlowStream {
+            async fn handle_stream(
+                &mut self,
+                _: GetItems,
+                sender: StreamSender<u64>,
+                _ctx: &mut ActorContext,
+            ) {
+                for i in 0..10 {
+                    if sender.send(i).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let runtime = V2TestRuntime::new();
+        let actor = runtime.spawn::<SlowStream>("slow", ());
+        let mut stream = actor.stream(GetItems, 1).unwrap();
+
+        // Read slowly — backpressure should prevent buffer overflow
+        let mut items = Vec::new();
+        while let Some(item) = stream.next().await {
+            items.push(item);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert_eq!(items.len(), 10);
     }
 }

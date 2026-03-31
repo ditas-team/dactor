@@ -1,7 +1,10 @@
 use std::fmt;
 use std::time::Duration;
 
-/// Error returned by `ActorRef::send()`.
+/// Error returned when sending a message to an actor fails.
+///
+/// Common causes: the actor has stopped, the mailbox is full (bounded),
+/// or the mailbox channel is closed.
 #[derive(Debug, Clone)]
 pub struct ActorSendError(pub String);
 
@@ -13,7 +16,8 @@ impl fmt::Display for ActorSendError {
 
 impl std::error::Error for ActorSendError {}
 
-/// Error returned by processing group operations.
+/// Error returned by processing group operations such as join, leave,
+/// broadcast, or member enumeration.
 #[derive(Debug, Clone)]
 pub struct GroupError(pub String);
 
@@ -25,7 +29,7 @@ impl fmt::Display for GroupError {
 
 impl std::error::Error for GroupError {}
 
-/// Error returned by `ClusterEvents` operations.
+/// Error returned by cluster event subscription and unsubscription operations.
 #[derive(Debug, Clone)]
 pub struct ClusterError(pub String);
 
@@ -38,15 +42,25 @@ impl fmt::Display for ClusterError {
 impl std::error::Error for ClusterError {}
 
 /// What the runtime should do after a handler error or panic.
+///
+/// Returned by [`Actor::on_error`](crate::actor::Actor::on_error) to let
+/// the actor choose its own recovery strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorAction {
+    /// Skip the failed message and continue processing the next one.
     Resume,
+    /// Restart the actor (re-run `create` + `on_start`), then continue.
     Restart,
+    /// Stop the actor permanently.
     Stop,
+    /// Propagate the error to the actor's supervisor (parent).
     Escalate,
 }
 
-/// Unified error returned by runtime operations (ask, stream, feed, etc.)
+/// Unified error returned by runtime operations (ask, stream, feed, etc.).
+///
+/// Covers all failure modes: delivery errors, timeouts, interceptor
+/// rejections, and handler-level actor errors.
 #[derive(Debug)]
 pub enum RuntimeError {
     /// Message delivery failed (actor stopped, mailbox full, etc.)

@@ -12,16 +12,27 @@ use crate::actor::ActorError;
 use crate::message::{Headers, RuntimeHeaders};
 use crate::node::{ActorId, NodeId};
 
-/// How the message was sent.
+/// How the message was sent to the actor.
+///
+/// Interceptors and actor context use this to distinguish between
+/// fire-and-forget, request-reply, and streaming delivery modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendMode {
+    /// Fire-and-forget: no reply expected.
     Tell,
+    /// Request-reply: caller awaits a single response.
     Ask,
+    /// Streaming request: handler pushes multiple items to a `StreamSender`.
     Stream,
+    /// Batch feed: deliver pre-collected items without per-item replies.
     Feed,
 }
 
-/// Metadata about the message and its target, provided to interceptors.
+/// Metadata about an inbound message and its target actor.
+///
+/// Provided to [`InboundInterceptor::on_receive`] and
+/// [`InboundInterceptor::on_complete`] so interceptors can make
+/// context-aware decisions (e.g., rate-limit only remote messages).
 pub struct InboundContext<'a> {
     pub actor_id: ActorId,
     pub actor_name: &'a str,
@@ -31,7 +42,10 @@ pub struct InboundContext<'a> {
     pub origin_node: Option<NodeId>,
 }
 
-/// Outcome of an interceptor's pre-dispatch decision.
+/// The decision returned by an interceptor after inspecting a message.
+///
+/// Controls whether the message proceeds through the pipeline,
+/// is delayed, dropped, rejected, or bounced back with a retry hint.
 #[derive(Debug)]
 pub enum Disposition {
     /// Continue to the next interceptor / deliver the message.
@@ -57,9 +71,11 @@ pub enum Disposition {
     Retry(Duration),
 }
 
-/// Outcome reported to interceptors after handler completion.
+/// Result reported to interceptors after handler execution completes.
+///
 /// The reply (for ask) is type-erased — interceptors can downcast via
-/// `reply.downcast_ref::<ConcreteReply>()` if they know the type.
+/// `reply.downcast_ref::<ConcreteReply>()` if they know the concrete type.
+/// Use for metrics, logging, or audit trails.
 pub enum Outcome<'a> {
     /// Tell: handler returned successfully. No reply value.
     TellSuccess,
@@ -118,7 +134,10 @@ pub trait InboundInterceptor: Send + Sync + 'static {
     }
 }
 
-/// Metadata about the outbound message, provided to outbound interceptors.
+/// Metadata about an outbound message, provided to outbound interceptors.
+///
+/// Available in [`OutboundInterceptor::on_send`] and
+/// [`OutboundInterceptor::on_reply`] for sender-side decision-making.
 pub struct OutboundContext<'a> {
     /// The target actor's ID.
     pub target_id: ActorId,

@@ -13,6 +13,7 @@ use crate::interceptor::SendMode;
 use crate::mailbox::MailboxConfig;
 use crate::message::{Headers, Message};
 use crate::node::ActorId;
+use crate::stream::{BoxStream, StreamSender};
 use crate::timer::TimerHandle;
 
 /// A handle to a running actor that can receive messages of type `M`.
@@ -108,14 +109,19 @@ pub trait ActorRuntime: Send + Sync + 'static {
 // v0.2 Actor API — coexists with v0.1 ActorRef / ActorRuntime above
 // ---------------------------------------------------------------------------
 
-/// Stub error type for actor errors — will be expanded in a later PR.
+/// An error originating from within an actor's handler or lifecycle hook.
+///
+/// Carries a human-readable message describing the failure. Passed to
+/// `Actor::on_error` so the actor can decide how to recover.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ActorError {
+    /// Human-readable description of the error.
     pub message: String,
 }
 
 impl ActorError {
+    /// Create a new `ActorError` with the given message.
     pub fn new(message: impl Into<String>) -> Self {
         Self { message: message.into() }
     }
@@ -154,13 +160,16 @@ pub struct ActorContext {
 /// traits which remain for backward compatibility.
 #[async_trait]
 pub trait Actor: Send + 'static {
-    /// Serializable construction arguments.
+    /// Serializable construction arguments for creating this actor.
     type Args: Send + 'static;
 
-    /// Local dependencies — non-serializable, resolved at target node.
+    /// Non-serializable local dependencies, resolved at the target node.
     type Deps: Send + 'static;
 
-    /// Construct the actor from args and deps.
+    /// Construct the actor from serializable args and local deps.
+    ///
+    /// Called by the runtime during spawn. Perform only synchronous
+    /// initialization here; use `on_start` for async setup.
     fn create(args: Self::Args, deps: Self::Deps) -> Self where Self: Sized;
 
     /// Called after spawn, before any messages. Default: no-op.
@@ -185,6 +194,21 @@ pub trait Handler<M: Message>: Actor {
     async fn handle(&mut self, msg: M, ctx: &mut ActorContext) -> M::Reply;
 }
 
+/// Implemented by actors that handle streaming requests.
+/// The handler receives the request and a `StreamSender` to push items into.
+/// When this method returns, the stream closes on the caller side.
+#[async_trait]
+pub trait StreamHandler<M: Message>: Actor {
+    /// Handle a streaming request. Push items into `sender`.
+    /// When this method returns, the stream closes.
+    async fn handle_stream(
+        &mut self,
+        msg: M,
+        sender: StreamSender<M::Reply>,
+        ctx: &mut ActorContext,
+    );
+}
+
 /// A future that resolves to the reply from an `ask()` call.
 ///
 /// Wraps a `oneshot::Receiver` and implements `Future` so that callers can
@@ -194,6 +218,9 @@ pub struct AskReply<R> {
 }
 
 impl<R> AskReply<R> {
+    /// Wrap a oneshot receiver into an `AskReply` future.
+    ///
+    /// Typically called by the runtime, not by user code.
     pub fn new(rx: oneshot::Receiver<Result<R, RuntimeError>>) -> Self {
         Self { rx }
     }
@@ -246,6 +273,17 @@ pub trait TypedActorRef<A: Actor>: Clone + Send + Sync + 'static {
     fn ask<M>(&self, msg: M) -> Result<AskReply<M::Reply>, ActorSendError>
     where
         A: Handler<M>,
+        M: Message;
+
+    /// Request-stream: send a request and receive a stream of responses.
+    /// `buffer` controls the channel capacity (backpressure).
+    fn stream<M>(
+        &self,
+        msg: M,
+        buffer: usize,
+    ) -> Result<BoxStream<M::Reply>, ActorSendError>
+    where
+        A: StreamHandler<M>,
         M: Message;
 }
 

@@ -11,7 +11,7 @@
 | v0.2.0-alpha.1 — Core API + Test Harness | PR 1–3 | ✅ Complete |
 | v0.2.0-alpha.2 — Communication (tell/ask) | PR 4–6 | ✅ Complete |
 | v0.2.0-alpha.3 — Messaging & Mailbox | PR 7–11 | ✅ Complete |
-| v0.2.0-beta.1 — Streaming & Cancellation | PR 12–15 | 🟡 In progress (1/4) |
+| v0.2.0-beta.1 — Streaming & Cancellation | PR 12–15 | 🟡 In progress (2/4) |
 | v0.2.0-beta.2 — Error Model & Persistence | PR 16–18 | 🔲 Not started |
 | v0.2.0-rc.1 — Observability & Remote | PR 19–21 | 🔲 Not started |
 
@@ -33,7 +33,7 @@
 | 10 | Lifecycle hooks & ErrorAction | impl/pr-10-lifecycle | ✅ PR #12 | 121/121 pass | 8 new tests |
 | 11 | MailboxConfig & OverflowStrategy | impl/pr-11-mailbox | ✅ PR #13 | 126/126 pass | 5 new tests |
 | 12 | Supervision & DeathWatch | impl/pr-12-supervision | ✅ PR #14 | 130/130 pass | 4 new tests |
-| 13 | Stream (server-streaming) | | 🔲 Not started | | |
+| 13 | Stream (server-streaming) | impl/pr-13-stream | ✅ PR #15 | 135/135 pass | 5 new tests |
 | 14 | Feed (client-streaming) | | 🔲 Not started | | |
 | 15 | Cancellation (CancellationToken) | | 🔲 Not started | | |
 | 16 | Error model (ActorError, ErrorCodec) | | 🔲 Not started | | |
@@ -73,3 +73,4 @@
 | 2026-03-31 | PR 10 | Lifecycle: stop(), on_error→ErrorAction, expanded ActorContext |
 | 2026-03-31 | PR 11 | MailboxConfig (Unbounded/Bounded), OverflowStrategy, MailboxSender/Receiver |
 | 2026-03-31 | PR 12 | ChildTerminated message, watch/unwatch, type-erased watcher notifications |
+| 2026-03-31 | PR 13 | StreamHandler, StreamSender, BoxStream, stream() on TypedActorRef |

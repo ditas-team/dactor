@@ -41,6 +41,7 @@ const _: () = {
 };
 
 impl Headers {
+    /// Create an empty header collection.
     pub fn new() -> Self {
         Self { map: HashMap::new() }
     }
