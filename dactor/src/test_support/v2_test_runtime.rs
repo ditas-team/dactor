@@ -520,6 +520,9 @@ impl V2TestRuntime {
         let mut watchers = self.watchers.lock().unwrap();
         if let Some(entries) = watchers.get_mut(target_id) {
             entries.retain(|e| &e.watcher_id != watcher_id);
+            if entries.is_empty() {
+                watchers.remove(target_id);
+            }
         }
     }
 
@@ -712,17 +715,22 @@ impl V2TestRuntime {
             ctx.headers = Headers::new();
             actor.on_stop().await;
 
-            // Notify all watchers that this actor has terminated
+            // Notify all watchers that this actor has terminated.
+            // Clone entries and release lock before calling notify closures
+            // to avoid holding the mutex during potentially blocking sends.
             let actor_id = ctx.actor_id.clone();
             let actor_name = ctx.actor_name.clone();
-            let watchers = watchers_ref.lock().unwrap();
-            if let Some(entries) = watchers.get(&actor_id) {
+            let entries = {
+                let mut watchers = watchers_ref.lock().unwrap();
+                watchers.remove(&actor_id).unwrap_or_default()
+            };
+            if !entries.is_empty() {
                 let notification = ChildTerminated {
                     child_id: actor_id,
                     child_name: actor_name,
                     reason: stop_reason,
                 };
-                for entry in entries {
+                for entry in &entries {
                     (entry.notify)(notification.clone());
                 }
             }
