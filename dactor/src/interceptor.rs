@@ -156,6 +156,9 @@ pub trait OutboundInterceptor: Send + Sync + 'static {
 
     /// Called when an ask() reply is received back on the sender side.
     /// The reply is type-erased — downcast if you know the type.
+    ///
+    /// **Note:** Not yet wired in V2TestRuntime — will be connected when
+    /// the reply path flows through the outbound pipeline (future PR).
     fn on_reply(
         &self,
         ctx: &OutboundContext<'_>,

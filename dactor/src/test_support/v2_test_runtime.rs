@@ -234,10 +234,10 @@ impl<A: Actor> TypedActorRef<A> for V2ActorRef<A> {
         for interceptor in self.outbound_interceptors.iter() {
             match interceptor.on_send(&octx, &runtime_headers, &mut headers, &msg as &dyn Any) {
                 Disposition::Continue => {}
-                Disposition::Delay(_) => {
-                    // For test runtime, skip delay (would require making tell async).
-                    // The real runtime will handle this differently.
-                }
+                // NOTE: Outbound Delay is not supported in this test runtime because
+                // tell() is synchronous. The production runtime (async) will implement
+                // actual delays. Delay is silently skipped here.
+                Disposition::Delay(_) => {}
                 Disposition::Drop => return Ok(()),
                 Disposition::Reject(_) => return Ok(()),
                 Disposition::Retry(_) => return Ok(()),
@@ -269,11 +269,14 @@ impl<A: Actor> TypedActorRef<A> for V2ActorRef<A> {
         for interceptor in self.outbound_interceptors.iter() {
             match interceptor.on_send(&octx, &runtime_headers, &mut headers, &msg as &dyn Any) {
                 Disposition::Continue => {}
-                Disposition::Delay(_) => {
-                    // For test runtime, skip delay (would need async)
-                }
+                // NOTE: Outbound Delay not supported in test runtime (sync context).
+                Disposition::Delay(_) => {}
                 Disposition::Drop => {
-                    let (_tx, rx) = tokio::sync::oneshot::channel();
+                    // Send explicit error so caller gets ActorNotFound rather than hanging
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let _ = tx.send(Err(RuntimeError::ActorNotFound(
+                        "message dropped by outbound interceptor".into(),
+                    )));
                     return Ok(AskReply::new(rx));
                 }
                 Disposition::Reject(reason) => {
@@ -324,7 +327,10 @@ impl V2TestRuntime {
     }
 
     /// Add a global outbound interceptor.
-    /// Must be called before any actors are spawned.
+    ///
+    /// **Must be called before any actors are spawned.** Panics if actors
+    /// already hold references to the interceptor list (i.e., after `spawn()`).
+    /// This constraint ensures interceptor lists are immutable during actor lifetime.
     pub fn add_outbound_interceptor(&mut self, interceptor: Box<dyn OutboundInterceptor>) {
         Arc::get_mut(&mut self.outbound_interceptors)
             .expect("cannot add interceptors after actors are spawned")
