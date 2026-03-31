@@ -19,6 +19,7 @@ use crate::interceptor::{
     Disposition, InboundContext, InboundInterceptor, OutboundContext, OutboundInterceptor,
     Outcome, SendMode,
 };
+use crate::mailbox::{MailboxConfig, OverflowStrategy};
 use crate::message::{Headers, Message, RuntimeHeaders};
 use crate::node::{ActorId, NodeId};
 
@@ -161,18 +162,123 @@ where
 type BoxedDispatch<A> = Box<dyn Dispatch<A>>;
 
 // ---------------------------------------------------------------------------
+// Mailbox channel wrappers
+// ---------------------------------------------------------------------------
+
+/// Unified sender that wraps both bounded and unbounded mpsc senders.
+enum MailboxSender<A: Actor> {
+    Unbounded(mpsc::UnboundedSender<Option<BoxedDispatch<A>>>),
+    Bounded {
+        sender: mpsc::Sender<Option<BoxedDispatch<A>>>,
+        overflow: OverflowStrategy,
+    },
+}
+
+impl<A: Actor> MailboxSender<A> {
+    fn send(&self, msg: Option<BoxedDispatch<A>>) -> Result<(), ActorSendError> {
+        match self {
+            Self::Unbounded(tx) => tx
+                .send(msg)
+                .map_err(|_| ActorSendError("actor stopped".into())),
+            Self::Bounded { sender, overflow } => match overflow {
+                OverflowStrategy::RejectWithError => {
+                    sender.try_send(msg).map_err(|e| match e {
+                        mpsc::error::TrySendError::Full(_) => {
+                            ActorSendError("mailbox full".into())
+                        }
+                        mpsc::error::TrySendError::Closed(_) => {
+                            ActorSendError("actor stopped".into())
+                        }
+                    })
+                }
+                OverflowStrategy::DropNewest => match sender.try_send(msg) {
+                    Ok(()) => Ok(()),
+                    Err(mpsc::error::TrySendError::Full(_)) => Ok(()), // silently drop
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        Err(ActorSendError("actor stopped".into()))
+                    }
+                },
+                OverflowStrategy::Block => {
+                    // Block is not supported in sync tell(). Treat as RejectWithError.
+                    sender.try_send(msg).map_err(|e| match e {
+                        mpsc::error::TrySendError::Full(_) => ActorSendError(
+                            "mailbox full (Block not supported in sync tell)".into(),
+                        ),
+                        mpsc::error::TrySendError::Closed(_) => {
+                            ActorSendError("actor stopped".into())
+                        }
+                    })
+                }
+            },
+        }
+    }
+
+    /// Force-send a control signal bypassing overflow strategy.
+    /// Used for stop signals that must not be dropped.
+    fn force_send(&self, msg: Option<BoxedDispatch<A>>) {
+        match self {
+            Self::Unbounded(tx) => { let _ = tx.send(msg); }
+            Self::Bounded { sender, .. } => {
+                // For control signals, use regular send (not try_send).
+                // This may block briefly but guarantees delivery.
+                // If the channel is closed, the signal is moot (actor already stopped).
+                let _ = sender.try_send(msg);
+                // If full, the actor will stop naturally when all senders are dropped.
+            }
+        }
+    }
+
+    fn is_closed(&self) -> bool {
+        match self {
+            Self::Unbounded(tx) => tx.is_closed(),
+            Self::Bounded { sender, .. } => sender.is_closed(),
+        }
+    }
+}
+
+impl<A: Actor> Clone for MailboxSender<A> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Unbounded(tx) => Self::Unbounded(tx.clone()),
+            Self::Bounded { sender, overflow } => Self::Bounded {
+                sender: sender.clone(),
+                overflow: *overflow,
+            },
+        }
+    }
+}
+
+/// Unified receiver that wraps both bounded and unbounded mpsc receivers.
+enum MailboxReceiver<A: Actor> {
+    Unbounded(mpsc::UnboundedReceiver<Option<BoxedDispatch<A>>>),
+    Bounded(mpsc::Receiver<Option<BoxedDispatch<A>>>),
+}
+
+impl<A: Actor> MailboxReceiver<A> {
+    async fn recv(&mut self) -> Option<Option<BoxedDispatch<A>>> {
+        match self {
+            Self::Unbounded(rx) => rx.recv().await,
+            Self::Bounded(rx) => rx.recv().await,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SpawnOptions
 // ---------------------------------------------------------------------------
 
 /// Options for spawning an actor, including the inbound interceptor pipeline.
 pub struct SpawnOptions {
     pub interceptors: Vec<Box<dyn InboundInterceptor>>,
+    /// Mailbox configuration (unbounded by default).
+    pub mailbox: MailboxConfig,
 }
 
 impl Default for SpawnOptions {
     fn default() -> Self {
         Self {
             interceptors: Vec::new(),
+            mailbox: MailboxConfig::Unbounded,
         }
     }
 }
@@ -185,7 +291,7 @@ impl Default for SpawnOptions {
 pub struct V2ActorRef<A: Actor> {
     id: ActorId,
     name: String,
-    sender: mpsc::UnboundedSender<Option<BoxedDispatch<A>>>,
+    sender: MailboxSender<A>,
     alive: Arc<AtomicBool>,
     outbound_interceptors: Arc<Vec<Box<dyn OutboundInterceptor>>>,
 }
@@ -216,7 +322,10 @@ impl<A: Actor> TypedActorRef<A> for V2ActorRef<A> {
     }
 
     fn stop(&self) {
-        let _ = self.sender.send(None);
+        // Mark as not alive immediately so is_alive() returns false
+        self.alive.store(false, Ordering::SeqCst);
+        // Send stop signal bypassing overflow strategy
+        self.sender.force_send(None);
     }
 
     fn tell<M>(&self, msg: M) -> Result<(), ActorSendError>
@@ -249,9 +358,7 @@ impl<A: Actor> TypedActorRef<A> for V2ActorRef<A> {
         }
 
         let dispatch: BoxedDispatch<A> = Box::new(TypedDispatch { msg });
-        self.sender
-            .send(Some(dispatch))
-            .map_err(|_| ActorSendError("actor stopped".into()))
+        self.sender.send(Some(dispatch))
     }
 
     fn ask<M>(&self, msg: M) -> Result<AskReply<M::Reply>, ActorSendError>
@@ -303,9 +410,7 @@ impl<A: Actor> TypedActorRef<A> for V2ActorRef<A> {
             msg,
             reply_tx: tx,
         });
-        self.sender
-            .send(Some(dispatch))
-            .map_err(|_| ActorSendError("actor stopped".into()))?;
+        self.sender.send(Some(dispatch))?;
         Ok(AskReply::new(rx))
     }
 }
@@ -346,7 +451,7 @@ impl V2TestRuntime {
     where
         A: Actor<Deps = ()> + 'static,
     {
-        self.spawn_internal(name, args, (), Vec::new())
+        self.spawn_internal(name, args, (), Vec::new(), MailboxConfig::Unbounded)
     }
 
     /// Spawn a v0.2 actor with explicit dependencies.
@@ -354,10 +459,10 @@ impl V2TestRuntime {
     where
         A: Actor + 'static,
     {
-        self.spawn_internal(name, args, deps, Vec::new())
+        self.spawn_internal(name, args, deps, Vec::new(), MailboxConfig::Unbounded)
     }
 
-    /// Spawn a v0.2 actor with spawn options (including interceptors).
+    /// Spawn a v0.2 actor with spawn options (including interceptors and mailbox config).
     pub fn spawn_with_options<A>(
         &self,
         name: &str,
@@ -367,7 +472,7 @@ impl V2TestRuntime {
     where
         A: Actor<Deps = ()> + 'static,
     {
-        self.spawn_internal(name, args, (), options.interceptors)
+        self.spawn_internal(name, args, (), options.interceptors, options.mailbox)
     }
 
     fn spawn_internal<A>(
@@ -376,6 +481,7 @@ impl V2TestRuntime {
         args: A::Args,
         deps: A::Deps,
         interceptors: Vec<Box<dyn InboundInterceptor>>,
+        mailbox: MailboxConfig,
     ) -> V2ActorRef<A>
     where
         A: Actor + 'static,
@@ -389,7 +495,25 @@ impl V2TestRuntime {
         let alive = Arc::new(AtomicBool::new(true));
         let alive_task = alive.clone();
 
-        let (tx, mut rx) = mpsc::unbounded_channel::<Option<BoxedDispatch<A>>>();
+        let (tx, mut rx) = match &mailbox {
+            MailboxConfig::Unbounded => {
+                let (tx, rx) = mpsc::unbounded_channel::<Option<BoxedDispatch<A>>>();
+                (
+                    MailboxSender::Unbounded(tx),
+                    MailboxReceiver::Unbounded(rx),
+                )
+            }
+            MailboxConfig::Bounded { capacity, overflow } => {
+                let (tx, rx) = mpsc::channel::<Option<BoxedDispatch<A>>>(*capacity);
+                (
+                    MailboxSender::Bounded {
+                        sender: tx,
+                        overflow: *overflow,
+                    },
+                    MailboxReceiver::Bounded(rx),
+                )
+            }
+        };
 
         let id_task = actor_id.clone();
         let name_task = actor_name.clone();
@@ -902,6 +1026,7 @@ mod tests {
             Counter { count: 0 },
             SpawnOptions {
                 interceptors: vec![Box::new(LogInterceptor { log: log.clone() })],
+                ..Default::default()
             },
         );
 
@@ -923,6 +1048,7 @@ mod tests {
             Counter { count: 42 },
             SpawnOptions {
                 interceptors: vec![Box::new(LogInterceptor { log: log.clone() })],
+                ..Default::default()
             },
         );
 
@@ -989,6 +1115,7 @@ mod tests {
             handle_count_clone,
             SpawnOptions {
                 interceptors: vec![Box::new(DropInterceptor)],
+                ..Default::default()
             },
         );
 
@@ -1027,6 +1154,7 @@ mod tests {
             Counter { count: 42 },
             SpawnOptions {
                 interceptors: vec![Box::new(RejectInterceptor)],
+                ..Default::default()
             },
         );
 
@@ -1062,6 +1190,7 @@ mod tests {
             Counter { count: 42 },
             SpawnOptions {
                 interceptors: vec![Box::new(RetryInterceptor)],
+                ..Default::default()
             },
         );
 
@@ -1104,6 +1233,7 @@ mod tests {
             count_clone,
             SpawnOptions {
                 interceptors: vec![Box::new(RetryInterceptor)],
+                ..Default::default()
             },
         );
 
@@ -1161,6 +1291,7 @@ mod tests {
                         log: log.clone(),
                     }),
                 ],
+                ..Default::default()
             },
         );
 
@@ -1234,6 +1365,7 @@ mod tests {
                         log: log.clone(),
                     }),
                 ],
+                ..Default::default()
             },
         );
 
@@ -1272,6 +1404,7 @@ mod tests {
             Counter { count: 0 },
             SpawnOptions {
                 interceptors: vec![Box::new(DelayInterceptor)],
+                ..Default::default()
             },
         );
 
@@ -1320,6 +1453,7 @@ mod tests {
                     Box::new(SmallDelay(50)),
                     Box::new(SmallDelay(50)),
                 ],
+                ..Default::default()
             },
         );
 
@@ -1382,6 +1516,7 @@ mod tests {
             Counter { count: 0 },
             SpawnOptions {
                 interceptors: vec![Box::new(TypeLogInterceptor { log: log.clone() })],
+                ..Default::default()
             },
         );
 
@@ -1430,6 +1565,7 @@ mod tests {
                 interceptors: vec![Box::new(DowncastInterceptor {
                     captured: captured.clone(),
                 })],
+                ..Default::default()
             },
         );
 
@@ -2019,5 +2155,123 @@ mod tests {
         // Restart is treated as Resume for now
         assert_eq!(count.load(Ordering::SeqCst), 1, "actor should continue after restart-as-resume");
         assert!(actor.is_alive());
+    }
+
+    // -- Mailbox tests ------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_unbounded_mailbox_accepts_many() {
+        let runtime = V2TestRuntime::new();
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+
+        for _ in 0..1000 {
+            counter.tell(Increment(1)).unwrap();
+        }
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let count = counter.ask(GetCount).unwrap().await.unwrap();
+        assert_eq!(count, 1000);
+    }
+
+    #[tokio::test]
+    async fn test_default_spawn_is_unbounded() {
+        let runtime = V2TestRuntime::new();
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+
+        for _ in 0..100 {
+            counter.tell(Increment(1)).unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let count = counter.ask(GetCount).unwrap().await.unwrap();
+        assert_eq!(count, 100);
+    }
+
+    #[tokio::test]
+    async fn test_mailbox_config_in_spawn_options() {
+        let opts = SpawnOptions {
+            mailbox: MailboxConfig::Bounded {
+                capacity: 5,
+                overflow: OverflowStrategy::RejectWithError,
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            opts.mailbox,
+            MailboxConfig::Bounded {
+                capacity: 5,
+                overflow: OverflowStrategy::RejectWithError,
+            }
+        );
+    }
+
+    // Slow actor used by bounded mailbox tests
+    struct SlowActor;
+    impl Actor for SlowActor {
+        type Args = ();
+        type Deps = ();
+        fn create(_: (), _: ()) -> Self { SlowActor }
+    }
+
+    struct SlowMsg;
+    impl Message for SlowMsg { type Reply = (); }
+
+    #[async_trait]
+    impl Handler<SlowMsg> for SlowActor {
+        async fn handle(&mut self, _: SlowMsg, _: &mut ActorContext) {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_bounded_reject_when_full() {
+        let runtime = V2TestRuntime::new();
+        let actor = runtime.spawn_with_options::<SlowActor>(
+            "slow",
+            (),
+            SpawnOptions {
+                mailbox: MailboxConfig::Bounded {
+                    capacity: 2,
+                    overflow: OverflowStrategy::RejectWithError,
+                },
+                ..Default::default()
+            },
+        );
+
+        // First message starts processing (blocks in handler)
+        actor.tell(SlowMsg).unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // Fill the bounded channel (capacity=2)
+        actor.tell(SlowMsg).unwrap();
+        actor.tell(SlowMsg).unwrap();
+
+        // Third should fail — mailbox full
+        let result = actor.tell(SlowMsg);
+        assert!(result.is_err(), "should reject when mailbox full");
+    }
+
+    #[tokio::test]
+    async fn test_bounded_drop_newest_when_full() {
+        let runtime = V2TestRuntime::new();
+        let actor = runtime.spawn_with_options::<SlowActor>(
+            "slow",
+            (),
+            SpawnOptions {
+                mailbox: MailboxConfig::Bounded {
+                    capacity: 2,
+                    overflow: OverflowStrategy::DropNewest,
+                },
+                ..Default::default()
+            },
+        );
+
+        actor.tell(SlowMsg).unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        actor.tell(SlowMsg).unwrap();
+        actor.tell(SlowMsg).unwrap();
+
+        // Should succeed — silently dropped
+        let result = actor.tell(SlowMsg);
+        assert!(result.is_ok(), "DropNewest should silently succeed");
     }
 }

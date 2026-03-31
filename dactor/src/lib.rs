@@ -25,6 +25,7 @@ pub mod actor;
 pub mod errors;
 pub mod cluster;
 pub mod interceptor;
+pub mod mailbox;
 pub mod message;
 pub mod timer;
 pub mod clock;
@@ -58,6 +59,7 @@ pub use clock::{Clock, SystemClock};
 pub use node::{NodeId, ActorId};
 pub use interceptor::{InboundInterceptor, InboundContext, Disposition, Outcome, SendMode};
 pub use interceptor::{OutboundInterceptor, OutboundContext};
+pub use mailbox::{MailboxConfig, OverflowStrategy};
 
 // Backward-compatible re-export of TestClock (feature-gated)
 #[cfg(feature = "test-support")]

@@ -10,6 +10,7 @@ use tokio::sync::oneshot;
 use crate::cluster::ClusterEvents;
 use crate::errors::{ActorSendError, ErrorAction, GroupError, RuntimeError};
 use crate::interceptor::SendMode;
+use crate::mailbox::MailboxConfig;
 use crate::message::{Headers, Message};
 use crate::node::ActorId;
 use crate::timer::TimerHandle;
@@ -252,11 +253,9 @@ pub trait TypedActorRef<A: Actor>: Clone + Send + Sync + 'static {
 /// matching v0.1 behavior (unbounded mailbox, no interceptors, local spawn).
 #[derive(Debug, Clone, Default)]
 pub struct SpawnConfig {
-    // Will be expanded in later PRs with:
-    // - mailbox: MailboxConfig
-    // - inbound_interceptors: Vec<...>
-    // - comparer: Option<...>
-    // - target_node: Option<NodeId>
+    /// Mailbox configuration (unbounded by default).
+    pub mailbox: MailboxConfig,
+    // Future fields: inbound_interceptors, comparer, target_node
 }
 
 #[cfg(test)]
