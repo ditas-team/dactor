@@ -9,7 +9,8 @@ use tokio::sync::oneshot;
 
 use crate::cluster::ClusterEvents;
 use crate::errors::{ActorSendError, ErrorAction, GroupError, RuntimeError};
-use crate::message::Message;
+use crate::interceptor::SendMode;
+use crate::message::{Headers, Message};
 use crate::node::ActorId;
 use crate::timer::TimerHandle;
 
@@ -128,11 +129,16 @@ impl fmt::Display for ActorError {
 impl std::error::Error for ActorError {}
 
 /// Context passed to actor lifecycle hooks and handlers.
-/// Will be expanded in later PRs with headers, send_mode, etc.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ActorContext {
     pub actor_id: ActorId,
     pub actor_name: String,
+    /// How the current message was sent (Tell, Ask, Stream, Feed).
+    /// `None` during on_start/on_stop (no message being processed).
+    pub send_mode: Option<SendMode>,
+    /// Headers attached to the current message.
+    /// Empty during on_start/on_stop.
+    pub headers: Headers,
 }
 
 /// The core actor trait. Implemented by the user's actor struct.
@@ -216,6 +222,9 @@ pub trait TypedActorRef<A: Actor>: Clone + Send + Sync + 'static {
 
     /// Check if the actor is still alive.
     fn is_alive(&self) -> bool;
+
+    /// Gracefully stop the actor. Closes the mailbox and triggers on_stop.
+    fn stop(&self);
 
     /// Fire-and-forget: deliver a message to the actor.
     /// The message must have `Reply = ()` (no reply expected).
@@ -387,6 +396,8 @@ mod tests {
         let ctx = ActorContext {
             actor_id: ActorId { node: NodeId("n1".into()), local: 1 },
             actor_name: "test-actor".into(),
+            send_mode: None,
+            headers: Headers::new(),
         };
         assert_eq!(ctx.actor_name, "test-actor");
         assert_eq!(ctx.actor_id.local, 1);
@@ -399,6 +410,8 @@ mod tests {
         let mut ctx = ActorContext {
             actor_id: ActorId { node: NodeId("n1".into()), local: 1 },
             actor_name: "counter".into(),
+            send_mode: None,
+            headers: Headers::new(),
         };
         counter.on_start(&mut ctx).await;
         counter.on_stop().await;
@@ -413,6 +426,8 @@ mod tests {
         let mut ctx = ActorContext {
             actor_id: ActorId { node: NodeId("n1".into()), local: 1 },
             actor_name: "counter".into(),
+            send_mode: None,
+            headers: Headers::new(),
         };
         counter.handle(Increment(5), &mut ctx).await;
         assert_eq!(counter.count, 5);
@@ -426,6 +441,8 @@ mod tests {
         let mut ctx = ActorContext {
             actor_id: ActorId { node: NodeId("n1".into()), local: 1 },
             actor_name: "counter".into(),
+            send_mode: None,
+            headers: Headers::new(),
         };
         let count = counter.handle(GetCount, &mut ctx).await;
         assert_eq!(count, 42);
@@ -437,6 +454,8 @@ mod tests {
         let mut ctx = ActorContext {
             actor_id: ActorId { node: NodeId("n1".into()), local: 1 },
             actor_name: "counter".into(),
+            send_mode: None,
+            headers: Headers::new(),
         };
         let old = counter.handle(Reset, &mut ctx).await;
         assert_eq!(old, 100);
@@ -449,6 +468,8 @@ mod tests {
         let mut ctx = ActorContext {
             actor_id: ActorId { node: NodeId("n1".into()), local: 1 },
             actor_name: "counter".into(),
+            send_mode: None,
+            headers: Headers::new(),
         };
 
         counter.handle(Increment(10), &mut ctx).await;

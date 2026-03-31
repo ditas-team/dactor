@@ -14,7 +14,7 @@ use futures::FutureExt;
 use tokio::sync::mpsc;
 
 use crate::actor::{Actor, ActorContext, ActorError, AskReply, Handler, TypedActorRef};
-use crate::errors::{ActorSendError, RuntimeError};
+use crate::errors::{ActorSendError, ErrorAction, RuntimeError};
 use crate::interceptor::{
     Disposition, InboundContext, InboundInterceptor, OutboundContext, OutboundInterceptor,
     Outcome, SendMode,
@@ -185,7 +185,7 @@ impl Default for SpawnOptions {
 pub struct V2ActorRef<A: Actor> {
     id: ActorId,
     name: String,
-    sender: mpsc::UnboundedSender<BoxedDispatch<A>>,
+    sender: mpsc::UnboundedSender<Option<BoxedDispatch<A>>>,
     alive: Arc<AtomicBool>,
     outbound_interceptors: Arc<Vec<Box<dyn OutboundInterceptor>>>,
 }
@@ -213,6 +213,10 @@ impl<A: Actor> TypedActorRef<A> for V2ActorRef<A> {
 
     fn is_alive(&self) -> bool {
         self.alive.load(Ordering::Relaxed) && !self.sender.is_closed()
+    }
+
+    fn stop(&self) {
+        let _ = self.sender.send(None);
     }
 
     fn tell<M>(&self, msg: M) -> Result<(), ActorSendError>
@@ -246,7 +250,7 @@ impl<A: Actor> TypedActorRef<A> for V2ActorRef<A> {
 
         let dispatch: BoxedDispatch<A> = Box::new(TypedDispatch { msg });
         self.sender
-            .send(dispatch)
+            .send(Some(dispatch))
             .map_err(|_| ActorSendError("actor stopped".into()))
     }
 
@@ -300,7 +304,7 @@ impl<A: Actor> TypedActorRef<A> for V2ActorRef<A> {
             reply_tx: tx,
         });
         self.sender
-            .send(dispatch)
+            .send(Some(dispatch))
             .map_err(|_| ActorSendError("actor stopped".into()))?;
         Ok(AskReply::new(rx))
     }
@@ -385,7 +389,7 @@ impl V2TestRuntime {
         let alive = Arc::new(AtomicBool::new(true));
         let alive_task = alive.clone();
 
-        let (tx, mut rx) = mpsc::unbounded_channel::<BoxedDispatch<A>>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<Option<BoxedDispatch<A>>>();
 
         let id_task = actor_id.clone();
         let name_task = actor_name.clone();
@@ -395,14 +399,25 @@ impl V2TestRuntime {
             let mut ctx = ActorContext {
                 actor_id: id_task,
                 actor_name: name_task,
+                send_mode: None,
+                headers: Headers::new(),
             };
 
             actor.on_start(&mut ctx).await;
 
-            while let Some(dispatch) = rx.recv().await {
+            while let Some(msg) = rx.recv().await {
+                let dispatch = match msg {
+                    None => break, // stop signal
+                    Some(d) => d,
+                };
+
                 // Capture metadata before dispatch consumes the message
                 let send_mode = dispatch.send_mode();
                 let message_type = dispatch.message_type_name();
+
+                // Set context fields for this message
+                ctx.send_mode = Some(send_mode);
+                ctx.headers = Headers::new();
 
                 // Run inbound interceptor pipeline
                 let runtime_headers = RuntimeHeaders::new();
@@ -480,20 +495,42 @@ impl V2TestRuntime {
                         dispatch_result.send_reply();
                     }
                     Err(_panic) => {
+                        let error = ActorError::new("handler panicked");
+                        let action = actor.on_error(&error);
+
                         let outcome = Outcome::HandlerError {
-                            error: ActorError::new("handler panicked"),
+                            error,
                         };
                         for interceptor in &interceptors {
                             interceptor.on_complete(&ictx, &runtime_headers, &headers, &outcome);
                         }
-                        tracing::error!("handler panicked in actor {}", ctx.actor_name);
-                        break;
+
+                        match action {
+                            ErrorAction::Resume => {
+                                continue;
+                            }
+                            ErrorAction::Stop | ErrorAction::Escalate => {
+                                tracing::error!("handler panicked in actor {}, stopping", ctx.actor_name);
+                                break;
+                            }
+                            ErrorAction::Restart => {
+                                // TODO: full restart with Args/Deps recreation
+                                tracing::warn!(
+                                    "Restart not fully implemented for actor {}, treating as Resume",
+                                    ctx.actor_name
+                                );
+                                continue;
+                            }
+                        }
                     }
                 }
             }
 
             // Set alive=false BEFORE on_stop to avoid is_alive race condition
             alive_task.store(false, Ordering::SeqCst);
+            // Reset context for on_stop (no message being processed)
+            ctx.send_mode = None;
+            ctx.headers = Headers::new();
             actor.on_stop().await;
         });
 
@@ -1654,5 +1691,330 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0], "Tell");
         assert_eq!(entries[1], "Ask");
+    }
+
+    // -- Lifecycle & ErrorAction tests -------------------------------------
+
+    #[tokio::test]
+    async fn test_stop_triggers_on_stop() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+
+        struct StopTracker {
+            log: Arc<Mutex<Vec<String>>>,
+        }
+
+        #[async_trait]
+        impl Actor for StopTracker {
+            type Args = Arc<Mutex<Vec<String>>>;
+            type Deps = ();
+            fn create(args: Arc<Mutex<Vec<String>>>, _: ()) -> Self {
+                StopTracker { log: args }
+            }
+            async fn on_stop(&mut self) {
+                self.log.lock().unwrap().push("on_stop".into());
+            }
+        }
+
+        struct Ping;
+        impl Message for Ping {
+            type Reply = ();
+        }
+
+        #[async_trait]
+        impl Handler<Ping> for StopTracker {
+            async fn handle(&mut self, _: Ping, _: &mut ActorContext) {}
+        }
+
+        let runtime = V2TestRuntime::new();
+        let actor = runtime.spawn::<StopTracker>("tracker", log.clone());
+
+        actor.tell(Ping).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        actor.stop();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let entries = log.lock().unwrap();
+        assert!(entries.contains(&"on_stop".to_string()));
+        assert!(!actor.is_alive());
+    }
+
+    #[tokio::test]
+    async fn test_stop_makes_tell_fail() {
+        let runtime = V2TestRuntime::new();
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+
+        counter.stop();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(!counter.is_alive());
+        // Sending to a stopped actor should fail
+        let result = counter.tell(Increment(1));
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_on_error_resume_continues() {
+        struct ResumeActor {
+            count: Arc<AtomicU64>,
+        }
+
+        #[async_trait]
+        impl Actor for ResumeActor {
+            type Args = Arc<AtomicU64>;
+            type Deps = ();
+            fn create(args: Arc<AtomicU64>, _: ()) -> Self {
+                ResumeActor { count: args }
+            }
+            fn on_error(&mut self, _: &ActorError) -> ErrorAction {
+                ErrorAction::Resume
+            }
+        }
+
+        struct PanicMsg;
+        impl Message for PanicMsg {
+            type Reply = ();
+        }
+
+        #[async_trait]
+        impl Handler<PanicMsg> for ResumeActor {
+            async fn handle(&mut self, _: PanicMsg, _: &mut ActorContext) {
+                panic!("intentional panic");
+            }
+        }
+
+        struct CountMsg;
+        impl Message for CountMsg {
+            type Reply = ();
+        }
+
+        #[async_trait]
+        impl Handler<CountMsg> for ResumeActor {
+            async fn handle(&mut self, _: CountMsg, _: &mut ActorContext) {
+                self.count.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let count = Arc::new(AtomicU64::new(0));
+        let runtime = V2TestRuntime::new();
+        let actor = runtime.spawn::<ResumeActor>("resume", count.clone());
+
+        actor.tell(PanicMsg).unwrap(); // should panic but resume
+        actor.tell(CountMsg).unwrap(); // should still be processed
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(count.load(Ordering::SeqCst), 1, "actor should resume after panic");
+        assert!(actor.is_alive());
+    }
+
+    #[tokio::test]
+    async fn test_on_error_stop_terminates() {
+        struct StopOnError {
+            alive_flag: Arc<AtomicBool>,
+        }
+
+        #[async_trait]
+        impl Actor for StopOnError {
+            type Args = Arc<AtomicBool>;
+            type Deps = ();
+            fn create(args: Arc<AtomicBool>, _: ()) -> Self {
+                StopOnError { alive_flag: args }
+            }
+            fn on_error(&mut self, _: &ActorError) -> ErrorAction {
+                ErrorAction::Stop
+            }
+            async fn on_stop(&mut self) {
+                self.alive_flag.store(false, Ordering::SeqCst);
+            }
+        }
+
+        struct PanicMsg;
+        impl Message for PanicMsg {
+            type Reply = ();
+        }
+
+        #[async_trait]
+        impl Handler<PanicMsg> for StopOnError {
+            async fn handle(&mut self, _: PanicMsg, _: &mut ActorContext) {
+                panic!("intentional");
+            }
+        }
+
+        let alive = Arc::new(AtomicBool::new(true));
+        let runtime = V2TestRuntime::new();
+        let actor = runtime.spawn::<StopOnError>("stopper", alive.clone());
+
+        actor.tell(PanicMsg).unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(!alive.load(Ordering::SeqCst), "on_stop should have been called");
+        assert!(!actor.is_alive());
+    }
+
+    #[tokio::test]
+    async fn test_on_error_default_is_stop() {
+        struct PanicCounter {
+            count: u64,
+        }
+
+        impl Actor for PanicCounter {
+            type Args = Self;
+            type Deps = ();
+            fn create(args: Self, _: ()) -> Self {
+                args
+            }
+        }
+
+        struct PanicIncrement;
+        impl Message for PanicIncrement {
+            type Reply = ();
+        }
+
+        #[async_trait]
+        impl Handler<PanicIncrement> for PanicCounter {
+            async fn handle(&mut self, _: PanicIncrement, _: &mut ActorContext) {
+                panic!("boom");
+            }
+        }
+
+        let runtime = V2TestRuntime::new();
+        let actor = runtime.spawn::<PanicCounter>("panic-counter", PanicCounter { count: 0 });
+
+        actor.tell(PanicIncrement).unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Default on_error is Stop, so actor should be dead
+        assert!(!actor.is_alive());
+    }
+
+    #[tokio::test]
+    async fn test_actor_context_has_send_mode() {
+        let mode = Arc::new(Mutex::new(None));
+
+        struct ModeTracker {
+            mode: Arc<Mutex<Option<SendMode>>>,
+        }
+
+        impl Actor for ModeTracker {
+            type Args = Arc<Mutex<Option<SendMode>>>;
+            type Deps = ();
+            fn create(args: Arc<Mutex<Option<SendMode>>>, _: ()) -> Self {
+                ModeTracker { mode: args }
+            }
+        }
+
+        struct Check;
+        impl Message for Check {
+            type Reply = ();
+        }
+
+        #[async_trait]
+        impl Handler<Check> for ModeTracker {
+            async fn handle(&mut self, _: Check, ctx: &mut ActorContext) {
+                *self.mode.lock().unwrap() = ctx.send_mode;
+            }
+        }
+
+        let mode_ref = mode.clone();
+        let runtime = V2TestRuntime::new();
+        let actor = runtime.spawn::<ModeTracker>("tracker", mode_ref);
+
+        actor.tell(Check).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert_eq!(*mode.lock().unwrap(), Some(SendMode::Tell));
+    }
+
+    #[tokio::test]
+    async fn test_actor_context_has_ask_send_mode() {
+        let mode = Arc::new(Mutex::new(None));
+
+        struct AskModeTracker {
+            mode: Arc<Mutex<Option<SendMode>>>,
+        }
+
+        impl Actor for AskModeTracker {
+            type Args = Arc<Mutex<Option<SendMode>>>;
+            type Deps = ();
+            fn create(args: Arc<Mutex<Option<SendMode>>>, _: ()) -> Self {
+                AskModeTracker { mode: args }
+            }
+        }
+
+        struct AskCheck;
+        impl Message for AskCheck {
+            type Reply = u64;
+        }
+
+        #[async_trait]
+        impl Handler<AskCheck> for AskModeTracker {
+            async fn handle(&mut self, _: AskCheck, ctx: &mut ActorContext) -> u64 {
+                *self.mode.lock().unwrap() = ctx.send_mode;
+                42
+            }
+        }
+
+        let mode_ref = mode.clone();
+        let runtime = V2TestRuntime::new();
+        let actor = runtime.spawn::<AskModeTracker>("tracker", mode_ref);
+
+        let _ = actor.ask(AskCheck).unwrap().await.unwrap();
+
+        assert_eq!(*mode.lock().unwrap(), Some(SendMode::Ask));
+    }
+
+    #[tokio::test]
+    async fn test_on_error_restart_treated_as_resume() {
+        struct RestartActor {
+            count: Arc<AtomicU64>,
+        }
+
+        #[async_trait]
+        impl Actor for RestartActor {
+            type Args = Arc<AtomicU64>;
+            type Deps = ();
+            fn create(args: Arc<AtomicU64>, _: ()) -> Self {
+                RestartActor { count: args }
+            }
+            fn on_error(&mut self, _: &ActorError) -> ErrorAction {
+                ErrorAction::Restart
+            }
+        }
+
+        struct RestartPanicMsg;
+        impl Message for RestartPanicMsg {
+            type Reply = ();
+        }
+
+        #[async_trait]
+        impl Handler<RestartPanicMsg> for RestartActor {
+            async fn handle(&mut self, _: RestartPanicMsg, _: &mut ActorContext) {
+                panic!("intentional panic");
+            }
+        }
+
+        struct RestartCountMsg;
+        impl Message for RestartCountMsg {
+            type Reply = ();
+        }
+
+        #[async_trait]
+        impl Handler<RestartCountMsg> for RestartActor {
+            async fn handle(&mut self, _: RestartCountMsg, _: &mut ActorContext) {
+                self.count.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let count = Arc::new(AtomicU64::new(0));
+        let runtime = V2TestRuntime::new();
+        let actor = runtime.spawn::<RestartActor>("restart", count.clone());
+
+        actor.tell(RestartPanicMsg).unwrap();
+        actor.tell(RestartCountMsg).unwrap();
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Restart is treated as Resume for now
+        assert_eq!(count.load(Ordering::SeqCst), 1, "actor should continue after restart-as-resume");
+        assert!(actor.is_alive());
     }
 }
