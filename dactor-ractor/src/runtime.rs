@@ -12,9 +12,10 @@ use futures::FutureExt;
 use tokio_util::sync::CancellationToken;
 
 use dactor::actor::{
-    Actor, ActorContext, AskReply, FeedHandler, FeedMessage, Handler, StreamHandler, TypedActorRef,
+    Actor, ActorContext, ActorError, AskReply, FeedHandler, FeedMessage, Handler, StreamHandler,
+    TypedActorRef,
 };
-use dactor::errors::{ActorSendError, RuntimeError};
+use dactor::errors::{ActorSendError, ErrorAction, RuntimeError};
 use dactor::interceptor::{Disposition, SendMode};
 use dactor::message::{Headers, Message};
 use dactor::node::{ActorId, NodeId};
@@ -294,15 +295,73 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
 
     async fn handle(
         &self,
-        _myself: ractor::ActorRef<Self::Msg>,
+        myself: ractor::ActorRef<Self::Msg>,
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ractor::ActorProcessingErr> {
         let dispatch = message.0;
         state.ctx.send_mode = Some(dispatch.send_mode());
         state.ctx.headers = Headers::new();
-        let result = dispatch.dispatch(&mut state.actor, &mut state.ctx).await;
-        result.send_reply();
+
+        // Propagate cancellation token to context
+        let cancel_token = dispatch.cancel_token();
+        state.ctx.set_cancellation_token(cancel_token.clone());
+
+        // Check if already cancelled before dispatching
+        if let Some(ref token) = cancel_token {
+            if token.is_cancelled() {
+                dispatch.cancel();
+                state.ctx.set_cancellation_token(None);
+                return Ok(());
+            }
+        }
+
+        // Dispatch with panic catching and cancellation racing
+        let result = if let Some(ref token) = cancel_token {
+            let dispatch_fut = std::panic::AssertUnwindSafe(
+                dispatch.dispatch(&mut state.actor, &mut state.ctx),
+            )
+            .catch_unwind();
+            tokio::select! {
+                biased;
+                r = dispatch_fut => r,
+                _ = token.cancelled() => {
+                    state.ctx.set_cancellation_token(None);
+                    return Ok(());
+                }
+            }
+        } else {
+            std::panic::AssertUnwindSafe(
+                dispatch.dispatch(&mut state.actor, &mut state.ctx),
+            )
+            .catch_unwind()
+            .await
+        };
+
+        state.ctx.set_cancellation_token(None);
+
+        match result {
+            Ok(dispatch_result) => {
+                dispatch_result.send_reply();
+            }
+            Err(_panic) => {
+                let error = ActorError::internal("handler panicked");
+                let action = state.actor.on_error(&error);
+                match action {
+                    ErrorAction::Resume => {
+                        // Continue processing next message
+                    }
+                    ErrorAction::Stop | ErrorAction::Escalate => {
+                        myself.stop(None);
+                    }
+                    ErrorAction::Restart => {
+                        // TODO: full restart — treat as Resume for now
+                        tracing::warn!("Restart not fully implemented, treating as Resume");
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -311,6 +370,10 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
         _myself: ractor::ActorRef<Self::Msg>,
         state: &mut Self::State,
     ) -> Result<(), ractor::ActorProcessingErr> {
+        // Reset context to lifecycle semantics before on_stop
+        state.ctx.send_mode = None;
+        state.ctx.headers = Headers::new();
+        state.ctx.set_cancellation_token(None);
         state.actor.on_stop().await;
         Ok(())
     }

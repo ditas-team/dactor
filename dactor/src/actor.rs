@@ -225,6 +225,12 @@ impl ActorContext {
             None => futures::future::pending().await,
         }
     }
+
+    /// Set the cancellation token for the current message.
+    /// Used by runtime adapters to propagate cancellation into handlers.
+    pub fn set_cancellation_token(&mut self, token: Option<CancellationToken>) {
+        self.cancellation_token = token;
+    }
 }
 
 /// The core actor trait. Implemented by the user's actor struct.
