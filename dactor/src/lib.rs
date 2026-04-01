@@ -27,6 +27,7 @@ pub mod cluster;
 pub mod interceptor;
 pub mod mailbox;
 pub mod message;
+pub mod persistence;
 pub mod stream;
 pub mod supervision;
 pub mod timer;
@@ -68,6 +69,13 @@ pub use interceptor::{OutboundInterceptor, OutboundContext};
 pub use mailbox::{MailboxConfig, OverflowStrategy};
 pub use stream::{BoxStream, StreamSendError, StreamSender};
 pub use stream::StreamReceiver;
+pub use persistence::{
+    PersistenceId, SequenceId, JournalEntry, SnapshotEntry,
+    PersistError, RecoveryFailurePolicy, PersistFailurePolicy,
+    SnapshotConfig, SaveConfig,
+    JournalStorage, SnapshotStorage, StateStorage,
+    InMemoryStorage,
+};
 
 // Backward-compatible re-export of TestClock (feature-gated)
 #[cfg(feature = "test-support")]
