@@ -13,7 +13,7 @@
 | v0.2.0-alpha.3 — Messaging & Mailbox | PR 7–11 | ✅ Complete |
 | v0.2.0-beta.1 — Streaming & Cancellation | PR 12–15 | ✅ Complete |
 | v0.2.0-beta.2 — Error Model & Persistence | PR 16–18 | ✅ Complete |
-| v0.2.0-rc.1 — Observability & Remote | PR 19–21 | 🟡 In progress (2/3, PR 21 in review) |
+| v0.2.0-rc.1 — Observability & Remote | PR 19–21 | ✅ Complete |
 
 ---
 
@@ -41,7 +41,7 @@
 | 18 | Dead letters, Delay, Throttle | impl/pr-18-dead-letters | ✅ PR #20 | 180/180 pass | 8 new tests |
 | 19 | Observability (MetricsInterceptor) | impl/pr-19-observability | ✅ PR #21 | 189/189 pass | 9 new tests |
 | 20 | Conformance suite & MockCluster | impl/pr-20-conformance | ✅ PR #22 | 195/195 pass | 6 new tests |
-| 21 | Remote actors & cluster stubs | impl/pr-21-remote | 🟡 PR #23 (review) | 201/201 pass | 6 new tests |
+| 21 | Remote actors & cluster stubs | impl/pr-21-remote | ✅ PR #23 | 201/201 pass | 6 new tests |
 
 ---
 
