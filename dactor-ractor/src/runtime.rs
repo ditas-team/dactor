@@ -4,9 +4,10 @@
 //! single-message-type `ractor::Actor` trait using type-erased dispatch.
 
 use std::any::Any;
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::FutureExt;
@@ -20,6 +21,8 @@ use dactor::dispatch::{
     AskDispatch, Dispatch, FeedDispatch, StreamDispatch, TypedDispatch,
 };
 use dactor::errors::{ActorSendError, ErrorAction, RuntimeError};
+use dactor::mailbox::MailboxConfig;
+use dactor::supervision::ChildTerminated;
 use dactor::interceptor::{
     Disposition, InboundContext, InboundInterceptor, OutboundContext, OutboundInterceptor, Outcome,
     SendMode,
@@ -29,6 +32,20 @@ use dactor::node::{ActorId, NodeId};
 use dactor::stream::{BoxStream, StreamReceiver, StreamSender};
 
 use crate::cluster::RactorClusterEvents;
+
+// ---------------------------------------------------------------------------
+// Watch registry
+// ---------------------------------------------------------------------------
+
+/// A type-erased entry in the watch registry.
+struct WatchEntry {
+    watcher_id: ActorId,
+    /// Closure that delivers a [`ChildTerminated`] to the watcher actor.
+    notify: Box<dyn Fn(ChildTerminated) + Send + Sync>,
+}
+
+/// Shared watch registry mapping watched actor ID → list of watcher entries.
+type WatcherMap = Arc<Mutex<HashMap<ActorId, Vec<WatchEntry>>>>;
 
 // ---------------------------------------------------------------------------
 // Ractor wrapper actor
@@ -47,6 +64,8 @@ struct RactorActorState<A: Actor> {
     actor: A,
     ctx: ActorContext,
     interceptors: Vec<Box<dyn InboundInterceptor>>,
+    watchers: WatcherMap,
+    stop_reason: Option<String>,
 }
 
 /// Arguments passed to the ractor actor at spawn time.
@@ -56,6 +75,7 @@ struct RactorSpawnArgs<A: Actor> {
     actor_id: ActorId,
     actor_name: String,
     interceptors: Vec<Box<dyn InboundInterceptor>>,
+    watchers: WatcherMap,
 }
 
 impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
@@ -75,6 +95,8 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
             actor,
             ctx,
             interceptors: args.interceptors,
+            watchers: args.watchers,
+            stop_reason: None,
         })
     }
 
@@ -206,6 +228,7 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
                 dispatch_result.send_reply();
             }
             Err(_panic) => {
+                state.stop_reason = Some("handler panicked".into());
                 let error = ActorError::internal("handler panicked");
                 let action = state.actor.on_error(&error);
 
@@ -241,6 +264,32 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
         state.ctx.headers = Headers::new();
         state.ctx.set_cancellation_token(None);
         state.actor.on_stop().await;
+
+        // Notify all watchers that this actor has terminated.
+        let actor_id = state.ctx.actor_id.clone();
+        let actor_name = state.ctx.actor_name.clone();
+        let entries = {
+            let mut watchers = state.watchers.lock().unwrap();
+            // Remove entries where this actor is the TARGET (watchers of this actor)
+            let target_entries = watchers.remove(&actor_id).unwrap_or_default();
+            // Also clean up entries where this actor is the WATCHER (prevent leak)
+            for entries in watchers.values_mut() {
+                entries.retain(|e| e.watcher_id != actor_id);
+            }
+            watchers.retain(|_, v| !v.is_empty());
+            target_entries
+        };
+        if !entries.is_empty() {
+            let notification = ChildTerminated {
+                child_id: actor_id,
+                child_name: actor_name,
+                reason: state.stop_reason.clone(),
+            };
+            for entry in &entries {
+                (entry.notify)(notification.clone());
+            }
+        }
+
         Ok(())
     }
 }
@@ -558,15 +607,23 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
 // ---------------------------------------------------------------------------
 
 /// Options for spawning an actor, including the inbound interceptor pipeline.
+/// Options for spawning an actor. Use `..Default::default()` to future-proof
+/// against new fields.
 pub struct SpawnOptions {
     /// Inbound interceptors to attach to the actor.
     pub interceptors: Vec<Box<dyn InboundInterceptor>>,
+    /// Mailbox capacity configuration.
+    ///
+    /// **Note:** The ractor adapter currently only supports unbounded mailboxes.
+    /// Setting `Bounded` will log a warning and fall back to unbounded.
+    pub mailbox: MailboxConfig,
 }
 
 impl Default for SpawnOptions {
     fn default() -> Self {
         Self {
             interceptors: Vec::new(),
+            mailbox: MailboxConfig::Unbounded,
         }
     }
 }
@@ -585,6 +642,7 @@ pub struct RactorRuntime {
     next_local: AtomicU64,
     cluster_events: RactorClusterEvents,
     outbound_interceptors: Arc<Vec<Box<dyn OutboundInterceptor>>>,
+    watchers: WatcherMap,
 }
 
 impl RactorRuntime {
@@ -595,6 +653,7 @@ impl RactorRuntime {
             next_local: AtomicU64::new(1),
             cluster_events: RactorClusterEvents::new(),
             outbound_interceptors: Arc::new(Vec::new()),
+            watchers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -649,6 +708,9 @@ impl RactorRuntime {
     where
         A: Actor<Deps = ()> + 'static,
     {
+        if !matches!(options.mailbox, MailboxConfig::Unbounded) {
+            tracing::warn!("ractor adapter: bounded mailbox not yet implemented, using unbounded");
+        }
         self.spawn_internal::<A>(name, args, (), options.interceptors)
     }
 
@@ -678,6 +740,7 @@ impl RactorRuntime {
             actor_id: actor_id.clone(),
             actor_name: actor_name.clone(),
             interceptors,
+            watchers: self.watchers.clone(),
         };
 
         // Bridge sync → async: use a std thread to avoid blocking the
@@ -711,6 +774,42 @@ impl RactorRuntime {
             name: actor_name,
             inner: actor_ref,
             outbound_interceptors: self.outbound_interceptors.clone(),
+        }
+    }
+
+    /// Register actor `watcher` to be notified when `target_id` terminates.
+    ///
+    /// The watcher must implement `Handler<ChildTerminated>`. When the target
+    /// stops, the runtime delivers a [`ChildTerminated`] message to the watcher.
+    pub fn watch<W>(&self, watcher: &RactorActorRef<W>, target_id: ActorId)
+    where
+        W: Actor + Handler<ChildTerminated> + 'static,
+    {
+        let watcher_id = watcher.id();
+        let watcher_inner = watcher.inner.clone();
+
+        let entry = WatchEntry {
+            watcher_id,
+            notify: Box::new(move |msg: ChildTerminated| {
+                let dispatch: Box<dyn Dispatch<W>> = Box::new(TypedDispatch { msg });
+                if watcher_inner.cast(DactorMsg(dispatch)).is_err() {
+                    tracing::debug!("watch notification dropped — watcher may have stopped");
+                }
+            }),
+        };
+
+        let mut watchers = self.watchers.lock().unwrap();
+        watchers.entry(target_id).or_default().push(entry);
+    }
+
+    /// Unregister `watcher_id` from notifications about `target_id`.
+    pub fn unwatch(&self, watcher_id: &ActorId, target_id: &ActorId) {
+        let mut watchers = self.watchers.lock().unwrap();
+        if let Some(entries) = watchers.get_mut(target_id) {
+            entries.retain(|e| &e.watcher_id != watcher_id);
+            if entries.is_empty() {
+                watchers.remove(target_id);
+            }
         }
     }
 }
