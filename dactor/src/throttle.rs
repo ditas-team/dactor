@@ -8,10 +8,18 @@ use crate::message::{Headers, RuntimeHeaders};
 use crate::node::ActorId;
 
 /// Per-actor rate limiter — throttles messages if an actor exceeds
-/// the configured send rate within a sliding window.
+/// the configured send rate within a fixed time window.
 ///
-/// Uses `Disposition::Delay` for soft throttle and `Disposition::Reject`
-/// for severe rate limit violations (> 2× the limit).
+/// Uses a **tumbling window** (not sliding): the counter resets when the
+/// window duration expires. This means bursts across window boundaries
+/// can momentarily exceed the rate. For most use cases this is acceptable.
+///
+/// - Under limit → `Continue`
+/// - Over limit (1×–2×) → `Delay` with proportional backoff
+/// - Severely over (>2×) → `Reject`
+///
+/// **Note:** Entries for inactive actors accumulate in memory. In systems
+/// with high actor churn, consider periodic cleanup or bounded cache.
 pub struct ActorRateLimiter {
     max_rate: u64,
     window: Duration,
@@ -47,16 +55,16 @@ impl OutboundInterceptor for ActorRateLimiter {
 
         // Reset window if expired
         if now.duration_since(entry.1) > self.window {
-            *entry = (0, now);
+            *entry = (1, now); // reset and count this message
+        } else {
+            entry.0 += 1;
         }
-
-        entry.0 += 1;
         let count = entry.0;
 
         if count > self.max_rate * 2 {
             Disposition::Reject(format!(
-                "actor {} exceeded {}× rate limit",
-                ctx.target_name, self.max_rate
+                "actor {} exceeded 2× rate limit ({} messages, limit {})",
+                ctx.target_name, count, self.max_rate
             ))
         } else if count > self.max_rate {
             let backoff_ms = ((count - self.max_rate) * 10).min(1000);
