@@ -3394,4 +3394,64 @@ mod tests {
             }
         }
     }
+
+    // ── Conformance suite ────────────────────────────────
+    mod conformance_tests {
+        use super::*;
+        use crate::test_support::conformance;
+
+        #[tokio::test]
+        async fn conformance_tell_and_ask() {
+            let runtime = V2TestRuntime::new();
+            conformance::test_tell_and_ask(|name, init| {
+                runtime.spawn::<conformance::ConformanceCounter>(name, init)
+            })
+            .await;
+        }
+
+        #[tokio::test]
+        async fn conformance_message_ordering() {
+            let runtime = V2TestRuntime::new();
+            conformance::test_message_ordering(|name, init| {
+                runtime.spawn::<conformance::ConformanceCounter>(name, init)
+            })
+            .await;
+        }
+
+        #[tokio::test]
+        async fn conformance_ask_reply() {
+            let runtime = V2TestRuntime::new();
+            conformance::test_ask_reply(|name, init| {
+                runtime.spawn::<conformance::ConformanceCounter>(name, init)
+            })
+            .await;
+        }
+
+        #[tokio::test]
+        async fn conformance_stop() {
+            let runtime = V2TestRuntime::new();
+            conformance::test_stop(|name, init| {
+                runtime.spawn::<conformance::ConformanceCounter>(name, init)
+            })
+            .await;
+        }
+
+        #[tokio::test]
+        async fn conformance_unique_ids() {
+            let runtime = V2TestRuntime::new();
+            conformance::test_unique_ids(|name, init| {
+                runtime.spawn::<conformance::ConformanceCounter>(name, init)
+            })
+            .await;
+        }
+
+        #[tokio::test]
+        async fn conformance_actor_name() {
+            let runtime = V2TestRuntime::new();
+            conformance::test_actor_name(|name, init| {
+                runtime.spawn::<conformance::ConformanceCounter>(name, init)
+            })
+            .await;
+        }
+    }
 }
