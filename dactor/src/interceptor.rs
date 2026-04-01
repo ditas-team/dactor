@@ -17,6 +17,7 @@ use crate::node::{ActorId, NodeId};
 /// Interceptors and actor context use this to distinguish between
 /// fire-and-forget, request-reply, and streaming delivery modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SendMode {
     /// Fire-and-forget: no reply expected.
     Tell,
