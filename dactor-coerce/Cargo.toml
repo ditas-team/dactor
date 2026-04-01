@@ -1,0 +1,17 @@
+[package]
+name = "dactor-coerce"
+version = "0.2.0"
+edition = "2021"
+description = "Coerce adapter for the dactor distributed actor framework"
+license = "MIT"
+repository = "https://github.com/Yaming-Hub/dactor"
+
+[dependencies]
+dactor = { version = "0.2.0", path = "../dactor", features = ["test-support"] }
+tokio = { version = "1", features = ["sync", "rt", "time", "macros", "rt-multi-thread"] }
+async-trait = "0.1"
+tokio-util = "0.7"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
