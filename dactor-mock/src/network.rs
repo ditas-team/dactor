@@ -49,11 +49,22 @@ impl MockNetwork {
         *self.dropped.lock().unwrap()
     }
 
-    pub(crate) fn record_delivered(&self) {
+    /// Check if a message from src to dst should be delivered.
+    /// Returns false if nodes are partitioned.
+    pub fn can_deliver(&self, src: &NodeId, dst: &NodeId) -> bool {
+        if src == dst {
+            return true;
+        }
+        !self.is_partitioned(src, dst)
+    }
+
+    /// Record a successful delivery.
+    pub fn record_delivered(&self) {
         *self.delivered.lock().unwrap() += 1;
     }
 
-    pub(crate) fn record_dropped(&self) {
+    /// Record a dropped message.
+    pub fn record_dropped(&self) {
         *self.dropped.lock().unwrap() += 1;
     }
 }

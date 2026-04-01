@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use dactor::node::NodeId;
+use dactor::remote::ClusterState;
 
 use crate::network::MockNetwork;
 use crate::node::MockNode;
@@ -56,5 +57,38 @@ impl MockCluster {
     /// All node IDs.
     pub fn node_ids(&self) -> Vec<NodeId> {
         self.nodes.keys().cloned().collect()
+    }
+
+    /// Crash a node — stops all actors immediately.
+    pub fn crash_node(&mut self, id: &str) {
+        self.nodes.remove(&NodeId(id.to_string()));
+    }
+
+    /// Restart a node — creates a fresh node with same ID.
+    pub fn restart_node(&mut self, id: &str) {
+        let node_id = NodeId(id.to_string());
+        self.nodes.insert(node_id.clone(), MockNode::new(node_id));
+    }
+
+    /// Freeze a node — pauses are simulated, actors remain but don't process.
+    /// For M2, this is a stub that removes the node temporarily.
+    pub fn freeze_node(&mut self, id: &str) -> Option<MockNode> {
+        self.nodes.remove(&NodeId(id.to_string()))
+    }
+
+    /// Unfreeze a node — restore it.
+    pub fn unfreeze_node(&mut self, id: &str, node: MockNode) {
+        self.nodes.insert(NodeId(id.to_string()), node);
+    }
+
+    /// Get a ClusterState snapshot.
+    pub fn state(&self) -> ClusterState {
+        let node_ids: Vec<NodeId> = self.nodes.keys().cloned().collect();
+        let local = node_ids.first().cloned().unwrap_or(NodeId("unknown".into()));
+        ClusterState {
+            local_node: local,
+            nodes: node_ids,
+            is_leader: false,
+        }
     }
 }
