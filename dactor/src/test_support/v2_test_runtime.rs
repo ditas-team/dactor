@@ -745,6 +745,16 @@ impl V2TestRuntime {
         }
     }
 
+    /// Create a new runtime with a custom node identity.
+    pub fn with_node_id(node_id: NodeId) -> Self {
+        Self {
+            node_id,
+            next_local: AtomicU64::new(1),
+            outbound_interceptors: Arc::new(Vec::new()),
+            watchers: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
     /// Add a global outbound interceptor.
     ///
     /// **Must be called before any actors are spawned.** Panics if actors
