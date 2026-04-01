@@ -142,7 +142,7 @@ async fn test_freeze_unfreeze() {
     assert_eq!(cluster.node_count(), 0);
 
     // Unfreeze: restore node
-    cluster.unfreeze_node("node-1", frozen);
+    cluster.unfreeze_node(frozen);
     assert_eq!(cluster.node_count(), 1);
 
     // Actor should still be accessible (same runtime instance)
@@ -186,7 +186,7 @@ async fn test_network_delivery_counters() {
 #[tokio::test]
 async fn test_cluster_state() {
     let cluster = MockCluster::new(&["node-1", "node-2", "node-3"]);
-    let state = cluster.state();
+    let state = cluster.state().expect("cluster should not be empty");
     assert_eq!(state.node_count(), 3);
     assert!(state.contains(&NodeId("node-2".into())));
 }
