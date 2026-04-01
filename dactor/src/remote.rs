@@ -5,6 +5,7 @@
 
 use crate::node::{NodeId, ActorId};
 use crate::interceptor::SendMode;
+use uuid::Uuid;
 
 /// Marker trait for messages that can be sent to remote actors.
 /// Messages must be serializable to cross the network boundary.
@@ -61,7 +62,7 @@ pub struct WireEnvelope {
     /// Serialized message body.
     pub body: Vec<u8>,
     /// Request ID for correlating ask replies (None for tell).
-    pub request_id: Option<String>,
+    pub request_id: Option<Uuid>,
     /// Message version for schema evolution (None = current version).
     pub version: Option<u32>,
 }
@@ -216,10 +217,10 @@ mod tests {
             send_mode: SendMode::Ask,
             headers: WireHeaders::new(),
             body: vec![],
-            request_id: Some("req-42".into()),
+            request_id: Some(Uuid::new_v4()),
             version: None,
         };
-        assert_eq!(envelope.request_id.as_deref(), Some("req-42"));
+        assert!(envelope.request_id.is_some());
         assert_eq!(envelope.send_mode, SendMode::Ask);
     }
 }
