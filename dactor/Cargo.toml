@@ -51,3 +51,6 @@ required-features = ["test-support"]
 [[example]]
 name = "bounded_mailbox"
 required-features = ["test-support"]
+
+[[example]]
+name = "persistence"
