@@ -65,6 +65,7 @@ struct RactorActorState<A: Actor> {
     ctx: ActorContext,
     interceptors: Vec<Box<dyn InboundInterceptor>>,
     watchers: WatcherMap,
+    stop_reason: Option<String>,
 }
 
 /// Arguments passed to the ractor actor at spawn time.
@@ -95,6 +96,7 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
             ctx,
             interceptors: args.interceptors,
             watchers: args.watchers,
+            stop_reason: None,
         })
     }
 
@@ -226,6 +228,7 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
                 dispatch_result.send_reply();
             }
             Err(_panic) => {
+                state.stop_reason = Some("handler panicked".into());
                 let error = ActorError::internal("handler panicked");
                 let action = state.actor.on_error(&error);
 
@@ -267,13 +270,20 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
         let actor_name = state.ctx.actor_name.clone();
         let entries = {
             let mut watchers = state.watchers.lock().unwrap();
-            watchers.remove(&actor_id).unwrap_or_default()
+            // Remove entries where this actor is the TARGET (watchers of this actor)
+            let target_entries = watchers.remove(&actor_id).unwrap_or_default();
+            // Also clean up entries where this actor is the WATCHER (prevent leak)
+            for entries in watchers.values_mut() {
+                entries.retain(|e| e.watcher_id != actor_id);
+            }
+            watchers.retain(|_, v| !v.is_empty());
+            target_entries
         };
         if !entries.is_empty() {
             let notification = ChildTerminated {
                 child_id: actor_id,
                 child_name: actor_name,
-                reason: None,
+                reason: state.stop_reason.clone(),
             };
             for entry in &entries {
                 (entry.notify)(notification.clone());
@@ -597,6 +607,8 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
 // ---------------------------------------------------------------------------
 
 /// Options for spawning an actor, including the inbound interceptor pipeline.
+/// Options for spawning an actor. Use `..Default::default()` to future-proof
+/// against new fields.
 pub struct SpawnOptions {
     /// Inbound interceptors to attach to the actor.
     pub interceptors: Vec<Box<dyn InboundInterceptor>>,
@@ -780,7 +792,9 @@ impl RactorRuntime {
             watcher_id,
             notify: Box::new(move |msg: ChildTerminated| {
                 let dispatch: Box<dyn Dispatch<W>> = Box::new(TypedDispatch { msg });
-                let _ = watcher_inner.cast(DactorMsg(dispatch));
+                if watcher_inner.cast(DactorMsg(dispatch)).is_err() {
+                    tracing::debug!("watch notification dropped — watcher may have stopped");
+                }
             }),
         };
 
