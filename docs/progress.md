@@ -14,6 +14,11 @@
 | v0.2.0-beta.1 — Streaming & Cancellation | PR 12–15 | ✅ Complete |
 | v0.2.0-beta.2 — Error Model & Persistence | PR 16–18 | ✅ Complete |
 | v0.2.0-rc.1 — Observability & Remote | PR 19–21 | ✅ Complete |
+| Adapter — dactor-ractor | PR R1–R3 | ✅ Complete |
+| Adapter — dactor-kameo | PR K1 | ✅ Complete |
+| Adapter — dactor-mock | PR M1–M2 | ✅ Complete |
+| Adapter — dactor-coerce | PR C1 | ✅ Complete (stub) |
+| Cleanup — dispatch extraction, V2 prefix removal | cleanup | ✅ Complete |
 
 ---
 
@@ -43,17 +48,31 @@
 | 20 | Conformance suite & MockCluster | impl/pr-20-conformance | ✅ PR #22 | 195/195 pass | 6 new tests |
 | 21 | Remote actors & cluster stubs | impl/pr-21-remote | ✅ PR #23 | 201/201 pass | 6 new tests |
 
+### Adapter & Mock PRs
+
+| PR | Title | Branch | Status | Notes |
+|----|-------|--------|--------|-------|
+| R1 | Ractor adapter v0.2 — spawn, tell, ask, stream, feed | impl/ractor-v2 | ✅ PR #25 | Full v0.2 adapter |
+| R2 | Ractor — inbound + outbound interceptor pipelines | impl/ractor-interceptors | ✅ PR #26 | Interceptor wiring |
+| R3 | Ractor — comprehensive adapter tests | impl/ractor-tests | ✅ PR #27 | Adapter test coverage |
+| K1 | Kameo adapter v0.2 — full implementation | impl/kameo-v2 | ✅ PR #28 | Full v0.2 adapter |
+| M1 | dactor-mock — MockCluster, MockNode, MockNetwork | impl/mock-cluster | ✅ PR #29 | Multi-node simulation |
+| C1 | dactor-coerce adapter crate (stub) | impl/coerce-stub | ✅ PR #30 | Stub, no runtime wired |
+| — | Remove V2 prefix and old v0.1 API | impl/cleanup-v2-prefix | ✅ PR #31 | Naming cleanup |
+| — | Refactor: Extract shared dispatch module | impl/dispatch-extract | ✅ PR #32 | Shared dispatch module |
+| M2 | Mock cluster — node fault injection + delivery checks | impl/mock-faults | ✅ PR #33 | Fault injection |
+
 ---
 
 ## Test Coverage
 
 | Layer | Target | Current |
 |-------|--------|---------|
-| Core unit tests | ~150 | 0 |
-| Adapter unit tests | ~80 | 44 (v0.1) |
-| Conformance tests | ~50 | 0 |
+| Core unit tests | ~150 | 157 |
+| Adapter unit tests | ~80 | 44 (ractor + kameo) |
+| Conformance tests | ~50 | 6 |
 | Integration tests | ~30 | 0 |
-| **Total** | **~310** | **44** |
+| **Total** | **~310** | **201+** |
 
 ---
 
@@ -82,3 +101,12 @@
 | 2026-04-01 | PR 19 | MetricsInterceptor, MetricsStore, ActorMetrics with latency percentiles |
 | 2026-04-01 | PR 20 | Conformance test suite (6 standardized tests for runtime verification) |
 | 2026-04-01 | PR 21 | Remote stubs: WireEnvelope, MessageSerializer, ClusterState, ClusterDiscovery |
+| 2026-04-01 | PR R1 | Ractor adapter v0.2: RactorRuntime, RactorActorRef, spawn/tell/ask/stream/feed |
+| 2026-04-01 | PR R2 | Ractor inbound + outbound interceptor pipelines |
+| 2026-04-01 | PR R3 | Comprehensive ractor adapter tests |
+| 2026-04-01 | PR K1 | Kameo adapter v0.2: KameoRuntime, KameoActorRef, full API |
+| 2026-04-01 | PR M1 | dactor-mock: MockCluster, MockNode, MockNetwork, cross-node messaging |
+| 2026-04-01 | PR C1 | dactor-coerce stub crate |
+| 2026-04-01 | cleanup | Remove V2 prefix from all types, drop old v0.1 API |
+| 2026-04-01 | cleanup | Extract shared dispatch module from test_runtime |
+| 2026-04-01 | PR M2 | Mock cluster: node fault injection, delivery checks |
