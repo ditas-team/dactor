@@ -13,7 +13,7 @@
 | v0.2.0-alpha.3 — Messaging & Mailbox | PR 7–11 | ✅ Complete |
 | v0.2.0-beta.1 — Streaming & Cancellation | PR 12–15 | ✅ Complete |
 | v0.2.0-beta.2 — Error Model & Persistence | PR 16–18 | ✅ Complete |
-| v0.2.0-rc.1 — Observability & Remote | PR 19–21 | 🟡 In progress (1/3) |
+| v0.2.0-rc.1 — Observability & Remote | PR 19–21 | 🟡 In progress (2/3, PR 21 in review) |
 
 ---
 
@@ -40,8 +40,8 @@
 | 17 | Persistence (EventSourced + DurableState) | impl/pr-17-persistence | ✅ PR #19 | 172/172 pass | 17 new tests |
 | 18 | Dead letters, Delay, Throttle | impl/pr-18-dead-letters | ✅ PR #20 | 180/180 pass | 8 new tests |
 | 19 | Observability (MetricsInterceptor) | impl/pr-19-observability | ✅ PR #21 | 189/189 pass | 9 new tests |
-| 20 | Conformance suite & MockCluster | | 🔲 Not started | | |
-| 21 | Remote actors & cluster stubs | | 🔲 Not started | | |
+| 20 | Conformance suite & MockCluster | impl/pr-20-conformance | ✅ PR #22 | 195/195 pass | 6 new tests |
+| 21 | Remote actors & cluster stubs | impl/pr-21-remote | 🟡 PR #23 (review) | 201/201 pass | 6 new tests |
 
 ---
 
@@ -80,3 +80,5 @@
 | 2026-04-01 | PR 17 | Persistence traits (Journal/Snapshot/State storage), InMemoryStorage, PersistenceId |
 | 2026-04-01 | PR 18 | DeadLetterHandler, CollectingDeadLetterHandler, ActorRateLimiter throttle |
 | 2026-04-01 | PR 19 | MetricsInterceptor, MetricsStore, ActorMetrics with latency percentiles |
+| 2026-04-01 | PR 20 | Conformance test suite (6 standardized tests for runtime verification) |
+| 2026-04-01 | PR 21 | Remote stubs: WireEnvelope, MessageSerializer, ClusterState, ClusterDiscovery |

@@ -36,6 +36,7 @@ pub mod throttle;
 pub mod timer;
 pub mod clock;
 pub mod node;
+pub mod remote;
 
 #[cfg(feature = "test-support")]
 pub mod test_support;
@@ -78,6 +79,11 @@ pub use metrics::{MetricsInterceptor, MetricsStore, ActorMetrics};
 pub use mailbox::{MailboxConfig, OverflowStrategy};
 pub use stream::{BoxStream, StreamSendError, StreamSender};
 pub use stream::StreamReceiver;
+pub use remote::{
+    RemoteMessage, MessageSerializer, SerializationError,
+    WireEnvelope, WireHeaders, MessageVersionHandler,
+    ClusterState, ClusterDiscovery, StaticSeeds,
+};
 pub use persistence::{
     PersistenceId, SequenceId, JournalEntry, SnapshotEntry,
     PersistError, RecoveryFailurePolicy, PersistFailurePolicy,
