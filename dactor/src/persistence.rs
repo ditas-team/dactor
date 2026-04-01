@@ -226,6 +226,11 @@ pub trait StateStorage: Send + Sync + 'static {
 
 /// In-memory storage implementation for testing.
 /// Stores journal events, snapshots, and state in HashMaps.
+///
+/// **Note:** Uses `std::sync::Mutex` (not `tokio::sync::Mutex`) intentionally.
+/// All lock-guarded operations are immediate HashMap lookups with no `.await`
+/// points while the lock is held. Per tokio docs, `std::sync::Mutex` is
+/// preferred for short, non-async critical sections.
 pub struct InMemoryStorage {
     journals: Mutex<HashMap<String, Vec<JournalEntry>>>,
     snapshots: Mutex<HashMap<String, Vec<SnapshotEntry>>>,
