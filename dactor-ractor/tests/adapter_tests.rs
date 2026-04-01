@@ -439,3 +439,419 @@ mod interceptor_tests {
         assert!(actor.is_alive());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Lifecycle tests
+// ---------------------------------------------------------------------------
+
+mod lifecycle_tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use tokio::sync::Mutex;
+
+    use dactor::actor::{Actor, ActorContext, ActorError, Handler, TypedActorRef};
+    use dactor::errors::ErrorAction;
+    use dactor::message::Message;
+    use dactor_ractor::RactorRuntime;
+
+    // -- Actor that records lifecycle events --
+
+    struct LifecycleActor {
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl Actor for LifecycleActor {
+        type Args = Arc<Mutex<Vec<String>>>;
+        type Deps = ();
+        fn create(args: Self::Args, _deps: ()) -> Self {
+            Self { events: args }
+        }
+        async fn on_start(&mut self, _ctx: &mut ActorContext) {
+            self.events.lock().await.push("on_start".into());
+        }
+        async fn on_stop(&mut self) {
+            self.events.lock().await.push("on_stop".into());
+        }
+    }
+
+    struct Greet;
+    impl Message for Greet {
+        type Reply = ();
+    }
+
+    #[async_trait]
+    impl Handler<Greet> for LifecycleActor {
+        async fn handle(&mut self, _msg: Greet, _ctx: &mut ActorContext) {
+            self.events.lock().await.push("handle".into());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_on_start_called_before_messages() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let runtime = RactorRuntime::new();
+        let actor = runtime.spawn::<LifecycleActor>("lifecycle-start", events.clone());
+
+        actor.tell(Greet).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let log = events.lock().await;
+        assert!(log.len() >= 2, "expected at least on_start + handle");
+        assert_eq!(log[0], "on_start");
+        assert_eq!(log[1], "handle");
+    }
+
+    #[tokio::test]
+    async fn test_on_stop_called_after_stop() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let runtime = RactorRuntime::new();
+        let actor = runtime.spawn::<LifecycleActor>("lifecycle-stop", events.clone());
+
+        // Let on_start finish
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        actor.stop();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let log = events.lock().await;
+        assert!(log.contains(&"on_stop".to_string()), "on_stop should be called");
+    }
+
+    // -- Actor that panics on a specific message, with configurable on_error --
+
+    struct PanicActor {
+        action: ErrorAction,
+        error_count: Arc<AtomicU64>,
+        handle_count: Arc<AtomicU64>,
+    }
+
+    impl Actor for PanicActor {
+        type Args = (ErrorAction, Arc<AtomicU64>, Arc<AtomicU64>);
+        type Deps = ();
+        fn create(args: Self::Args, _deps: ()) -> Self {
+            Self {
+                action: args.0,
+                error_count: args.1,
+                handle_count: args.2,
+            }
+        }
+        fn on_error(&mut self, _error: &ActorError) -> ErrorAction {
+            self.error_count.fetch_add(1, Ordering::SeqCst);
+            self.action.clone()
+        }
+    }
+
+    struct DoPanic;
+    impl Message for DoPanic {
+        type Reply = ();
+    }
+
+    #[async_trait]
+    impl Handler<DoPanic> for PanicActor {
+        async fn handle(&mut self, _msg: DoPanic, _ctx: &mut ActorContext) {
+            panic!("intentional test panic");
+        }
+    }
+
+    struct SafeMsg;
+    impl Message for SafeMsg {
+        type Reply = String;
+    }
+
+    #[async_trait]
+    impl Handler<SafeMsg> for PanicActor {
+        async fn handle(&mut self, _msg: SafeMsg, _ctx: &mut ActorContext) -> String {
+            self.handle_count.fetch_add(1, Ordering::SeqCst);
+            "ok".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_on_error_resume_continues() {
+        let error_count = Arc::new(AtomicU64::new(0));
+        let handle_count = Arc::new(AtomicU64::new(0));
+        let runtime = RactorRuntime::new();
+        let actor = runtime.spawn::<PanicActor>(
+            "panic-resume",
+            (ErrorAction::Resume, error_count.clone(), handle_count.clone()),
+        );
+
+        // Cause a panic
+        actor.tell(DoPanic).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // on_error should have been called
+        assert_eq!(error_count.load(Ordering::SeqCst), 1);
+
+        // Actor should still be alive and handle messages after resume
+        let reply = actor.ask(SafeMsg, None).unwrap().await.unwrap();
+        assert_eq!(reply, "ok");
+        assert_eq!(handle_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_on_error_stop_terminates() {
+        let error_count = Arc::new(AtomicU64::new(0));
+        let handle_count = Arc::new(AtomicU64::new(0));
+        let runtime = RactorRuntime::new();
+        let actor = runtime.spawn::<PanicActor>(
+            "panic-stop",
+            (ErrorAction::Stop, error_count.clone(), handle_count.clone()),
+        );
+
+        // Cause a panic
+        actor.tell(DoPanic).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // on_error should have been called
+        assert_eq!(error_count.load(Ordering::SeqCst), 1);
+        // Actor should be dead
+        assert!(!actor.is_alive());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stream tests
+// ---------------------------------------------------------------------------
+
+mod stream_tests {
+    use async_trait::async_trait;
+    use futures::StreamExt;
+
+    use dactor::actor::{Actor, ActorContext, StreamHandler, TypedActorRef};
+    use dactor::message::Message;
+    use dactor::stream::StreamSender;
+    use dactor_ractor::RactorRuntime;
+
+    // -- Actor that streams N items --
+
+    struct Streamer;
+
+    impl Actor for Streamer {
+        type Args = ();
+        type Deps = ();
+        fn create(_: (), _: ()) -> Self {
+            Streamer
+        }
+    }
+
+    struct StreamN(u32);
+    impl Message for StreamN {
+        type Reply = u32;
+    }
+
+    #[async_trait]
+    impl StreamHandler<StreamN> for Streamer {
+        async fn handle_stream(
+            &mut self,
+            msg: StreamN,
+            sender: StreamSender<u32>,
+            _ctx: &mut ActorContext,
+        ) {
+            for i in 0..msg.0 {
+                if sender.send(i).await.is_err() {
+                    return;
+                }
+            }
+        }
+    }
+
+    struct StreamEmpty;
+    impl Message for StreamEmpty {
+        type Reply = u32;
+    }
+
+    #[async_trait]
+    impl StreamHandler<StreamEmpty> for Streamer {
+        async fn handle_stream(
+            &mut self,
+            _msg: StreamEmpty,
+            _sender: StreamSender<u32>,
+            _ctx: &mut ActorContext,
+        ) {
+            // Send nothing — stream closes when handler returns
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stream_returns_items() {
+        let runtime = RactorRuntime::new();
+        let actor = runtime.spawn::<Streamer>("streamer-items", ());
+
+        let stream = actor.stream(StreamN(5), 8, None).unwrap();
+        let items: Vec<u32> = stream.collect().await;
+        assert_eq!(items, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[tokio::test]
+    async fn test_stream_empty() {
+        let runtime = RactorRuntime::new();
+        let actor = runtime.spawn::<Streamer>("streamer-empty", ());
+
+        let stream = actor.stream(StreamEmpty, 8, None).unwrap();
+        let items: Vec<u32> = stream.collect().await;
+        assert!(items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_stream_consumer_drops_early() {
+        let runtime = RactorRuntime::new();
+        let actor = runtime.spawn::<Streamer>("streamer-drop", ());
+
+        // Request a stream of 1000 items but only take 2
+        let stream = actor.stream(StreamN(1000), 1, None).unwrap();
+        let items: Vec<u32> = stream.take(2).collect().await;
+        assert_eq!(items, vec![0, 1]);
+
+        // Actor should still be alive after consumer drop
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(actor.is_alive());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Feed tests
+// ---------------------------------------------------------------------------
+
+mod feed_tests {
+    use async_trait::async_trait;
+
+    use dactor::actor::{Actor, ActorContext, FeedHandler, FeedMessage, TypedActorRef};
+    use dactor::stream::{BoxStream, StreamReceiver};
+    use dactor_ractor::RactorRuntime;
+
+    // -- Actor that sums fed integers --
+
+    struct Summer;
+
+    impl Actor for Summer {
+        type Args = ();
+        type Deps = ();
+        fn create(_: (), _: ()) -> Self {
+            Summer
+        }
+    }
+
+    struct SumFeed;
+    impl FeedMessage for SumFeed {
+        type Item = u64;
+        type Reply = u64;
+    }
+
+    #[async_trait]
+    impl FeedHandler<SumFeed> for Summer {
+        async fn handle_feed(
+            &mut self,
+            _msg: SumFeed,
+            mut receiver: StreamReceiver<u64>,
+            _ctx: &mut ActorContext,
+        ) -> u64 {
+            let mut sum = 0u64;
+            while let Some(val) = receiver.recv().await {
+                sum += val;
+            }
+            sum
+        }
+    }
+
+    fn items_stream(items: Vec<u64>) -> BoxStream<u64> {
+        Box::pin(futures::stream::iter(items))
+    }
+
+    #[tokio::test]
+    async fn test_feed_sum_items() {
+        let runtime = RactorRuntime::new();
+        let actor = runtime.spawn::<Summer>("summer-feed", ());
+
+        let input = items_stream(vec![1, 2, 3, 4, 5]);
+        let reply = actor.feed(SumFeed, input, 8, None).unwrap().await.unwrap();
+        assert_eq!(reply, 15);
+    }
+
+    #[tokio::test]
+    async fn test_feed_empty_stream() {
+        let runtime = RactorRuntime::new();
+        let actor = runtime.spawn::<Summer>("summer-empty", ());
+
+        let input = items_stream(vec![]);
+        let reply = actor.feed(SumFeed, input, 8, None).unwrap().await.unwrap();
+        assert_eq!(reply, 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cancellation tests
+// ---------------------------------------------------------------------------
+
+mod cancellation_tests {
+    use async_trait::async_trait;
+    use tokio_util::sync::CancellationToken;
+
+    use dactor::actor::{Actor, ActorContext, Handler, TypedActorRef};
+    use dactor::errors::RuntimeError;
+    use dactor::message::Message;
+    use dactor_ractor::RactorRuntime;
+
+    struct SlowActor;
+
+    impl Actor for SlowActor {
+        type Args = ();
+        type Deps = ();
+        fn create(_: (), _: ()) -> Self {
+            SlowActor
+        }
+    }
+
+    struct SlowPing;
+    impl Message for SlowPing {
+        type Reply = String;
+    }
+
+    #[async_trait]
+    impl Handler<SlowPing> for SlowActor {
+        async fn handle(&mut self, _msg: SlowPing, _ctx: &mut ActorContext) -> String {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            "done".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cancel_ask_before_handler() {
+        let runtime = RactorRuntime::new();
+        let actor = runtime.spawn::<SlowActor>("cancel-pre", ());
+
+        // Pre-cancel the token before sending
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let result = actor.ask(SlowPing, Some(token)).unwrap().await;
+        match result {
+            Err(RuntimeError::Cancelled) => {} // expected
+            Err(RuntimeError::ActorNotFound(_)) => {} // also acceptable
+            other => panic!("expected Cancelled or ActorNotFound, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_no_cancel_runs_normally() {
+        let runtime = RactorRuntime::new();
+        let actor = runtime.spawn::<SlowActor>("cancel-none", ());
+
+        struct QuickPing;
+        impl Message for QuickPing {
+            type Reply = String;
+        }
+
+        #[async_trait]
+        impl Handler<QuickPing> for SlowActor {
+            async fn handle(&mut self, _msg: QuickPing, _ctx: &mut ActorContext) -> String {
+                "quick".into()
+            }
+        }
+
+        let reply = actor.ask(QuickPing, None).unwrap().await.unwrap();
+        assert_eq!(reply, "quick");
+    }
+}
