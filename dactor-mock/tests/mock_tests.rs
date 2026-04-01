@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use dactor::actor::TypedActorRef;
+use dactor::actor::ActorRef;
 use dactor::node::NodeId;
 use dactor::test_support::conformance::*;
 use dactor_mock::MockCluster;

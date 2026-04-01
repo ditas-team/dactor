@@ -28,20 +28,20 @@ dactor-ractor = "0.1"   # or dactor-kameo = "0.1"
 ### Use an Actor Runtime
 
 ```rust
-use dactor::{ActorRuntime, ActorRef};
-use dactor_ractor::RactorRuntime;  // or dactor_kameo::KameoRuntime
+use dactor::{Actor, ActorRef, Handler, TestRuntime};
+use dactor::message::Message;
 
+// Define your actor, messages, and handlers, then:
 #[tokio::main]
 async fn main() {
-    let runtime = RactorRuntime::new();
+    let runtime = TestRuntime::new();
+    let actor = runtime.spawn::<Counter>("counter", Counter { count: 0 });
 
-    // Spawn an actor that handles u64 messages
-    let actor = runtime.spawn("counter", |msg: u64| {
-        println!("Received: {msg}");
-    });
+    // Fire-and-forget
+    actor.tell(Increment(1)).unwrap();
 
-    // Fire-and-forget send
-    actor.send(42).unwrap();
+    // Request-reply
+    let count = actor.ask(GetCount, None).unwrap().await.unwrap();
 }
 ```
 
@@ -64,8 +64,9 @@ async fn main() {
 
 ### Core Traits
 
-- **ActorRef\<M\>** — Handle to a running actor for fire-and-forget messaging
-- **ActorRuntime** — Actor spawning, timer scheduling, processing groups
+- **ActorRef\<A\>** — Typed handle to a running actor (tell, ask, stream, feed)
+- **Actor** — Core actor trait with lifecycle hooks
+- **Handler\<M\>** — Per-message-type handler trait
 - **ClusterEvents** — Subscribe to node join/leave notifications
 - **TimerHandle** — Cancellable scheduled timer
 - **Clock** — Time abstraction for deterministic testing
@@ -80,7 +81,7 @@ async fn main() {
 | Send | `cast()` fire-and-forget | `tell().try_send()` fire-and-forget |
 | Timers | tokio tasks | tokio tasks |
 
-Both adapters expose identical `ActorRuntime` semantics. Choose based on your
+Both adapters expose identical `ActorRef` semantics. Choose based on your
 preferred actor framework.
 
 ## Testing

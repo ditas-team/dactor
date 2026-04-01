@@ -1,7 +1,7 @@
 //! Integration tests for the dactor-kameo v0.2 adapter.
 //!
 //! Runs the conformance suite plus kameo-specific tests for the v0.2
-//! `Actor` / `Handler<M>` / `TypedActorRef<A>` API.
+//! `Actor` / `Handler<M>` / `ActorRef<A>` API.
 
 use dactor::test_support::conformance::*;
 use dactor_kameo::KameoRuntime;
@@ -73,7 +73,7 @@ mod interceptor_tests {
 
     use async_trait::async_trait;
 
-    use dactor::actor::{Actor, ActorContext, Handler, TypedActorRef};
+    use dactor::actor::{Actor, ActorContext, Handler, ActorRef};
     use dactor::errors::RuntimeError;
     use dactor::interceptor::{
         Disposition, InboundContext, InboundInterceptor, OutboundContext, OutboundInterceptor,
@@ -451,7 +451,7 @@ mod lifecycle_tests {
     use async_trait::async_trait;
     use tokio::sync::Mutex;
 
-    use dactor::actor::{Actor, ActorContext, ActorError, Handler, TypedActorRef};
+    use dactor::actor::{Actor, ActorContext, ActorError, Handler, ActorRef};
     use dactor::errors::ErrorAction;
     use dactor::message::Message;
     use dactor_kameo::KameoRuntime;
@@ -620,7 +620,7 @@ mod stream_tests {
     use async_trait::async_trait;
     use futures::StreamExt;
 
-    use dactor::actor::{Actor, ActorContext, StreamHandler, TypedActorRef};
+    use dactor::actor::{Actor, ActorContext, StreamHandler, ActorRef};
     use dactor::message::Message;
     use dactor::stream::StreamSender;
     use dactor_kameo::KameoRuntime;
@@ -718,7 +718,7 @@ mod stream_tests {
 mod feed_tests {
     use async_trait::async_trait;
 
-    use dactor::actor::{Actor, ActorContext, FeedHandler, FeedMessage, TypedActorRef};
+    use dactor::actor::{Actor, ActorContext, FeedHandler, FeedMessage, ActorRef};
     use dactor::stream::{BoxStream, StreamReceiver};
     use dactor_kameo::KameoRuntime;
 
@@ -789,7 +789,7 @@ mod cancellation_tests {
     use async_trait::async_trait;
     use tokio_util::sync::CancellationToken;
 
-    use dactor::actor::{Actor, ActorContext, Handler, TypedActorRef};
+    use dactor::actor::{Actor, ActorContext, Handler, ActorRef};
     use dactor::errors::RuntimeError;
     use dactor::message::Message;
     use dactor_kameo::KameoRuntime;

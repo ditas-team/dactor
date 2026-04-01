@@ -1,6 +1,6 @@
 //! V0.2 ractor adapter runtime for the dactor actor framework.
 //!
-//! Bridges dactor's `Actor`/`Handler<M>`/`TypedActorRef<A>` API with ractor's
+//! Bridges dactor's `Actor`/`Handler<M>`/`ActorRef<A>` API with ractor's
 //! single-message-type `ractor::Actor` trait using type-erased dispatch.
 
 use std::any::Any;
@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use dactor::actor::{
     Actor, ActorContext, ActorError, AskReply, FeedHandler, FeedMessage, Handler, StreamHandler,
-    TypedActorRef,
+    ActorRef,
 };
 use dactor::errors::{ActorSendError, ErrorAction, RuntimeError};
 use dactor::interceptor::{
@@ -29,7 +29,7 @@ use dactor::stream::{BoxStream, StreamReceiver, StreamSender};
 use crate::cluster::RactorClusterEvents;
 
 // ---------------------------------------------------------------------------
-// Type-erased dispatch (same pattern as V2TestRuntime)
+// Type-erased dispatch (same pattern as TestRuntime)
 // ---------------------------------------------------------------------------
 
 #[async_trait]
@@ -472,10 +472,10 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
 }
 
 // ---------------------------------------------------------------------------
-// RactorActorRef — dactor TypedActorRef backed by ractor
+// RactorActorRef — dactor ActorRef backed by ractor
 // ---------------------------------------------------------------------------
 
-/// A dactor `TypedActorRef` backed by a ractor `ActorRef`.
+/// A dactor `ActorRef` backed by a ractor `ActorRef`.
 ///
 /// Messages are delivered through ractor's mailbox as type-erased dispatch
 /// envelopes, enabling multiple `Handler<M>` impls per actor.
@@ -503,7 +503,7 @@ impl<A: Actor> std::fmt::Debug for RactorActorRef<A> {
     }
 }
 
-impl<A: Actor + 'static> TypedActorRef<A> for RactorActorRef<A> {
+impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
     fn id(&self) -> ActorId {
         self.id.clone()
     }

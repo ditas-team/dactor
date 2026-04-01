@@ -3,10 +3,10 @@
 //! Run with: cargo run --example streaming --features test-support
 
 use async_trait::async_trait;
-use dactor::actor::{Actor, ActorContext, FeedHandler, FeedMessage, StreamHandler, TypedActorRef};
+use dactor::actor::{Actor, ActorContext, FeedHandler, FeedMessage, StreamHandler, ActorRef};
 use dactor::message::Message;
 use dactor::stream::{StreamReceiver, StreamSender};
-use dactor::V2TestRuntime;
+use dactor::TestRuntime;
 use tokio_stream::StreamExt;
 
 // ===========================================================================
@@ -96,7 +96,7 @@ impl FeedHandler<SumItems> for Aggregator {
 async fn main() {
     println!("=== Streaming Example ===\n");
 
-    let runtime = V2TestRuntime::new();
+    let runtime = TestRuntime::new();
 
     // --- Server-streaming (stream) ---
     println!("--- Server-streaming: LogServer ---");

@@ -9,8 +9,9 @@
 //!
 //! ## Core Traits
 //!
-//! - [`ActorRef`] — Handle to a running actor for fire-and-forget messaging
-//! - [`ActorRuntime`] — Actor spawning, timers, and processing groups
+//! - [`ActorRef`] — Typed handle to a running actor (tell, ask, stream, feed)
+//! - [`Actor`] — Core actor trait with lifecycle hooks
+//! - [`Handler`] — Per-message-type handler trait
 //! - [`ClusterEvents`] — Subscribe to node join/leave notifications
 //! - [`TimerHandle`] — Cancellable scheduled timer
 //! - [`Clock`] — Time abstraction for deterministic testing
@@ -53,9 +54,8 @@ pub mod prelude {
 
 // Backward-compatible re-exports at crate root
 pub use async_trait::async_trait;
-pub use actor::{ActorRef, ActorRuntime};
-pub use actor::{Actor, ActorContext, ActorError, SpawnConfig};
-pub use actor::{AskReply, Handler, StreamHandler, TypedActorRef};
+pub use actor::{Actor, ActorContext, ActorError, ActorRef, SpawnConfig};
+pub use actor::{AskReply, Handler, StreamHandler};
 pub use actor::{FeedMessage, FeedHandler};
 pub use actor::cancel_after;
 pub use tokio_util::sync::CancellationToken;
@@ -96,6 +96,6 @@ pub use persistence::{
 #[cfg(feature = "test-support")]
 pub use test_support::test_clock::TestClock;
 
-// V2 test runtime re-exports (feature-gated)
+// Test runtime re-exports (feature-gated)
 #[cfg(feature = "test-support")]
-pub use test_support::v2_test_runtime::{V2TestRuntime, V2ActorRef, SpawnOptions};
+pub use test_support::test_runtime::{TestRuntime, TestActorRef, SpawnOptions};

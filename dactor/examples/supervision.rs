@@ -6,11 +6,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use dactor::actor::{Actor, ActorContext, ActorError, Handler, TypedActorRef};
+use dactor::actor::{Actor, ActorContext, ActorError, Handler, ActorRef};
 use dactor::errors::ErrorAction;
 use dactor::message::Message;
 use dactor::supervision::ChildTerminated;
-use dactor::V2TestRuntime;
+use dactor::TestRuntime;
 
 // ---------------------------------------------------------------------------
 // Messages
@@ -119,7 +119,7 @@ impl Handler<ChildTerminated> for Supervisor {
 async fn main() {
     println!("=== Supervision Example ===\n");
 
-    let runtime = V2TestRuntime::new();
+    let runtime = TestRuntime::new();
     let events = Arc::new(Mutex::new(Vec::<String>::new()));
 
     // Spawn supervisor and worker.

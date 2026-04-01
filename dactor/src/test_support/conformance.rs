@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::actor::{Actor, ActorContext, Handler, TypedActorRef};
+use crate::actor::{Actor, ActorContext, Handler, ActorRef};
 use crate::message::Message;
 
 // ── Test Actor Definitions ──────────────────────────
@@ -57,7 +57,7 @@ impl Handler<GetCount> for ConformanceCounter {
 /// Test: tell delivers messages and ask returns the correct reply.
 pub async fn test_tell_and_ask<R, F>(spawn: F)
 where
-    R: TypedActorRef<ConformanceCounter>,
+    R: ActorRef<ConformanceCounter>,
     F: FnOnce(&str, u64) -> R,
 {
     let actor = spawn("counter", 0);
@@ -78,7 +78,7 @@ where
 /// Test: 100 messages processed in order.
 pub async fn test_message_ordering<R, F>(spawn: F)
 where
-    R: TypedActorRef<ConformanceCounter>,
+    R: ActorRef<ConformanceCounter>,
     F: FnOnce(&str, u64) -> R,
 {
     let actor = spawn("ordered", 0);
@@ -93,7 +93,7 @@ where
 /// Test: ask returns the correct reply type.
 pub async fn test_ask_reply<R, F>(spawn: F)
 where
-    R: TypedActorRef<ConformanceCounter>,
+    R: ActorRef<ConformanceCounter>,
     F: FnOnce(&str, u64) -> R,
 {
     let actor = spawn("ask-reply", 42);
@@ -104,7 +104,7 @@ where
 /// Test: stop() makes actor not alive.
 pub async fn test_stop<R, F>(spawn: F)
 where
-    R: TypedActorRef<ConformanceCounter>,
+    R: ActorRef<ConformanceCounter>,
     F: FnOnce(&str, u64) -> R,
 {
     let actor = spawn("stopper", 0);
@@ -117,7 +117,7 @@ where
 /// Test: actor IDs are unique per spawn.
 pub async fn test_unique_ids<R, F>(spawn: F)
 where
-    R: TypedActorRef<ConformanceCounter>,
+    R: ActorRef<ConformanceCounter>,
     F: Fn(&str, u64) -> R,
 {
     let a1 = spawn("a", 0);
@@ -128,7 +128,7 @@ where
 /// Test: actor name matches the name given at spawn.
 pub async fn test_actor_name<R, F>(spawn: F)
 where
-    R: TypedActorRef<ConformanceCounter>,
+    R: ActorRef<ConformanceCounter>,
     F: FnOnce(&str, u64) -> R,
 {
     let actor = spawn("my-counter", 0);

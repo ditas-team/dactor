@@ -7,14 +7,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use dactor::actor::{Actor, ActorContext, Handler, TypedActorRef};
+use dactor::actor::{Actor, ActorContext, Handler, ActorRef};
 use dactor::interceptor::{
     Disposition, InboundContext, InboundInterceptor, Outcome, OutboundContext,
     OutboundInterceptor,
 };
 use dactor::mailbox::MailboxConfig;
 use dactor::message::{Headers, Message, Priority, RuntimeHeaders};
-use dactor::{SpawnOptions, V2TestRuntime};
+use dactor::{SpawnOptions, TestRuntime};
 
 // ---------------------------------------------------------------------------
 // Actor
@@ -181,7 +181,7 @@ async fn main() {
     let log = Arc::new(Mutex::new(Vec::<String>::new()));
 
     // Register a global outbound interceptor BEFORE spawning actors.
-    let mut runtime = V2TestRuntime::new();
+    let mut runtime = TestRuntime::new();
     runtime.add_outbound_interceptor(Box::new(HeaderStampInterceptor));
 
     // Spawn the actor with per-actor inbound interceptors via SpawnOptions.

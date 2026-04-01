@@ -4,7 +4,7 @@ use futures::Stream;
 
 /// A pinned, boxed, `Send`-safe async stream of items.
 ///
-/// Returned by [`TypedActorRef::stream`](crate::actor::TypedActorRef::stream)
+/// Returned by [`ActorRef::stream`](crate::actor::ActorRef::stream)
 /// so callers can consume streamed replies with `StreamExt` combinators.
 pub type BoxStream<T> = Pin<Box<dyn Stream<Item = T> + Send>>;
 

@@ -1,6 +1,6 @@
 //! Coerce adapter runtime.
 //!
-//! Currently wraps `V2TestRuntime` as a placeholder. The actual `coerce-rt`
+//! Currently wraps `TestRuntime` as a placeholder. The actual `coerce-rt`
 //! integration will replace the internal implementation while keeping
 //! the same public API.
 //!
@@ -17,7 +17,7 @@ use dactor::mailbox::MailboxConfig;
 use dactor::message::*;
 use dactor::node::*;
 use dactor::stream::*;
-use dactor::test_support::v2_test_runtime::{V2ActorRef, V2TestRuntime};
+use dactor::test_support::test_runtime::{TestActorRef, TestRuntime};
 
 use tokio_util::sync::CancellationToken;
 
@@ -46,18 +46,18 @@ impl Default for SpawnOptions {
 
 /// Coerce adapter runtime.
 ///
-/// Currently backed by [`V2TestRuntime`] as a placeholder.
+/// Currently backed by [`TestRuntime`] as a placeholder.
 /// The `coerce-rt` dependency will be integrated in a future PR,
 /// replacing the internals while preserving this public API.
 pub struct CoerceRuntime {
-    inner: V2TestRuntime,
+    inner: TestRuntime,
 }
 
 impl CoerceRuntime {
     /// Create a new `CoerceRuntime`.
     pub fn new() -> Self {
         Self {
-            inner: V2TestRuntime::new(),
+            inner: TestRuntime::new(),
         }
     }
 
@@ -96,8 +96,8 @@ impl CoerceRuntime {
     where
         A: Actor<Deps = ()> + 'static,
     {
-        // Convert our SpawnOptions into V2TestRuntime's SpawnOptions.
-        let inner_opts = dactor::test_support::v2_test_runtime::SpawnOptions {
+        // Convert our SpawnOptions into TestRuntime's SpawnOptions.
+        let inner_opts = dactor::test_support::test_runtime::SpawnOptions {
             interceptors: options.interceptors,
             mailbox: options.mailbox,
         };
@@ -126,9 +126,9 @@ impl Default for CoerceRuntime {
 
 /// A reference to an actor managed by the coerce adapter.
 ///
-/// Currently wraps [`V2ActorRef`] as a placeholder.
+/// Currently wraps [`TestActorRef`] as a placeholder.
 pub struct CoerceActorRef<A: Actor> {
-    inner: V2ActorRef<A>,
+    inner: TestActorRef<A>,
 }
 
 impl<A: Actor> Clone for CoerceActorRef<A> {
@@ -139,7 +139,7 @@ impl<A: Actor> Clone for CoerceActorRef<A> {
     }
 }
 
-impl<A: Actor + 'static> TypedActorRef<A> for CoerceActorRef<A> {
+impl<A: Actor + 'static> ActorRef<A> for CoerceActorRef<A> {
     fn id(&self) -> ActorId {
         self.inner.id()
     }

@@ -1,6 +1,6 @@
 //! V0.2 kameo adapter runtime for the dactor actor framework.
 //!
-//! Bridges dactor's `Actor`/`Handler<M>`/`TypedActorRef<A>` API with kameo's
+//! Bridges dactor's `Actor`/`Handler<M>`/`ActorRef<A>` API with kameo's
 //! single-message-type `kameo::Actor` trait using type-erased dispatch.
 
 use std::any::Any;
@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use dactor::actor::{
     Actor, ActorContext, ActorError, AskReply, FeedHandler, FeedMessage, Handler, StreamHandler,
-    TypedActorRef,
+    ActorRef,
 };
 use dactor::errors::{ActorSendError, ErrorAction, RuntimeError};
 use dactor::interceptor::{
@@ -479,10 +479,10 @@ impl<A: Actor + 'static> kameo::message::Message<DactorMsg<A>> for KameoDactorAc
 }
 
 // ---------------------------------------------------------------------------
-// KameoActorRef — dactor TypedActorRef backed by kameo
+// KameoActorRef — dactor ActorRef backed by kameo
 // ---------------------------------------------------------------------------
 
-/// A dactor `TypedActorRef` backed by a kameo `ActorRef`.
+/// A dactor `ActorRef` backed by a kameo `ActorRef`.
 ///
 /// Messages are delivered through kameo's mailbox as type-erased dispatch
 /// envelopes, enabling multiple `Handler<M>` impls per actor.
@@ -510,7 +510,7 @@ impl<A: Actor> std::fmt::Debug for KameoActorRef<A> {
     }
 }
 
-impl<A: Actor + 'static> TypedActorRef<A> for KameoActorRef<A> {
+impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
     fn id(&self) -> ActorId {
         self.id.clone()
     }

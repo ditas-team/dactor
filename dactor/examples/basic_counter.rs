@@ -5,9 +5,9 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use dactor::actor::{Actor, ActorContext, Handler, TypedActorRef};
+use dactor::actor::{Actor, ActorContext, Handler, ActorRef};
 use dactor::message::Message;
-use dactor::V2TestRuntime;
+use dactor::TestRuntime;
 
 // ---------------------------------------------------------------------------
 // Messages
@@ -82,7 +82,7 @@ async fn main() {
     println!("=== Basic Counter Example ===\n");
 
     // 1. Create the runtime and spawn the actor.
-    let runtime = V2TestRuntime::new();
+    let runtime = TestRuntime::new();
     let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
     println!("Spawned actor '{}'", counter.name());
 

@@ -5,10 +5,10 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use dactor::actor::{Actor, ActorContext, Handler, TypedActorRef};
+use dactor::actor::{Actor, ActorContext, Handler, ActorRef};
 use dactor::mailbox::{MailboxConfig, OverflowStrategy};
 use dactor::message::Message;
-use dactor::{SpawnOptions, V2TestRuntime};
+use dactor::{SpawnOptions, TestRuntime};
 
 // ---------------------------------------------------------------------------
 // A deliberately slow actor that sleeps inside its handler
@@ -46,7 +46,7 @@ impl Handler<SlowMsg> for SlowActor {
 async fn main() {
     println!("=== Bounded Mailbox Example ===\n");
 
-    let runtime = V2TestRuntime::new();
+    let runtime = TestRuntime::new();
 
     // --- RejectWithError strategy ---
     println!("--- Bounded(5) + RejectWithError ---");
