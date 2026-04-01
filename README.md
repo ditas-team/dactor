@@ -4,9 +4,9 @@ An abstract framework for distributed actors in Rust.
 
 dactor provides a **provider-agnostic** actor API that works across multiple
 actor runtimes ([ractor](https://crates.io/crates/ractor),
-[kameo](https://crates.io/crates/kameo),
-[coerce](https://crates.io/crates/coerce)). Write your actor logic once,
-swap the runtime underneath.
+[kameo](https://crates.io/crates/kameo), with a
+[coerce](https://crates.io/crates/coerce) adapter in progress).
+Write your actor logic once, swap the runtime underneath.
 
 ## Key Features
 
@@ -39,7 +39,8 @@ Add the core crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-dactor = "0.2"
+dactor = { version = "0.2", features = ["test-support"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 ```
 
 Define an actor, its messages, and handlers:
@@ -63,14 +64,14 @@ impl Message for Increment { type Reply = (); }
 struct GetCount;
 impl Message for GetCount { type Reply = u64; }
 
-#[async_trait::async_trait]
+#[dactor::async_trait]
 impl Handler<Increment> for Counter {
     async fn handle(&mut self, msg: Increment, _ctx: &mut ActorContext) {
         self.count += msg.0;
     }
 }
 
-#[async_trait::async_trait]
+#[dactor::async_trait]
 impl Handler<GetCount> for Counter {
     async fn handle(&mut self, _msg: GetCount, _ctx: &mut ActorContext) -> u64 {
         self.count
@@ -144,8 +145,9 @@ Use an adapter to run your actors on a real runtime:
 
 ```toml
 [dependencies]
-dactor = "0.2"
-dactor-ractor = "0.1"   # or dactor-kameo = "0.1"
+dactor = { version = "0.2", features = ["test-support"] }
+dactor-ractor = "0.2"   # or dactor-kameo = "0.2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 ```
 
 All adapters expose the same `ActorRef<A>` semantics. Choose based on your
@@ -158,12 +160,12 @@ examples:
 
 | Example | Description | Command |
 |---------|-------------|---------|
-| [`basic_counter`](dactor/examples/basic_counter.rs) | Tell + ask patterns with a counter actor | `cargo run --example basic_counter -p dactor` |
-| [`streaming`](dactor/examples/streaming.rs) | Server-streaming and client-streaming | `cargo run --example streaming -p dactor` |
-| [`supervision`](dactor/examples/supervision.rs) | DeathWatch and ErrorAction handling | `cargo run --example supervision -p dactor` |
-| [`interceptors`](dactor/examples/interceptors.rs) | Inbound/outbound interceptor pipelines | `cargo run --example interceptors -p dactor` |
-| [`persistence`](dactor/examples/persistence.rs) | Event sourcing with journal + snapshots | `cargo run --example persistence -p dactor` |
-| [`bounded_mailbox`](dactor/examples/bounded_mailbox.rs) | Bounded mailbox with overflow strategies | `cargo run --example bounded_mailbox -p dactor` |
+| [`basic_counter`](dactor/examples/basic_counter.rs) | Tell + ask patterns with a counter actor | `cargo run --example basic_counter -p dactor --features test-support` |
+| [`streaming`](dactor/examples/streaming.rs) | Server-streaming and client-streaming | `cargo run --example streaming -p dactor --features test-support` |
+| [`supervision`](dactor/examples/supervision.rs) | DeathWatch and ErrorAction handling | `cargo run --example supervision -p dactor --features test-support` |
+| [`interceptors`](dactor/examples/interceptors.rs) | Inbound/outbound interceptor pipelines | `cargo run --example interceptors -p dactor --features test-support` |
+| [`persistence`](dactor/examples/persistence.rs) | Event sourcing with journal + snapshots | `cargo run --example persistence -p dactor --features test-support` |
+| [`bounded_mailbox`](dactor/examples/bounded_mailbox.rs) | Bounded mailbox with overflow strategies | `cargo run --example bounded_mailbox -p dactor --features test-support` |
 
 ## Project Structure
 
