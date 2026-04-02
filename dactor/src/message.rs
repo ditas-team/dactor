@@ -202,6 +202,36 @@ impl std::fmt::Display for Priority {
     }
 }
 
+/// Built-in header for message byte length. Stamped by the runtime for
+/// remote messages so that throttling interceptors can make decisions
+/// based on total message size (e.g., rate-limit by bytes/sec, reject
+/// oversized messages).
+///
+/// For local messages, this is `None` (no serialization occurs).
+/// For remote messages, the runtime stamps this after serialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContentLength(pub u64);
+
+impl ContentLength {
+    pub fn bytes(&self) -> u64 { self.0 }
+}
+
+impl HeaderValue for ContentLength {
+    fn header_name(&self) -> &'static str { "dactor.ContentLength" }
+
+    fn to_bytes(&self) -> Option<Vec<u8>> {
+        Some(self.0.to_le_bytes().to_vec())
+    }
+
+    fn as_any(&self) -> &dyn Any { self }
+}
+
+impl std::fmt::Display for ContentLength {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}B", self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

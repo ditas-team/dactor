@@ -1423,6 +1423,11 @@ actor code doesn't change.
 ```rust
 /// Controls automatic batching for stream and feed channels.
 /// Batching is transparent — the sender/receiver API remains per-item.
+///
+/// A batch is flushed when ANY of these conditions is met (whichever first):
+/// - `max_items` items have accumulated
+/// - `max_delay` has elapsed since the first item in the current batch
+/// - `max_bytes` total estimated byte size is exceeded (if set)
 #[derive(Debug, Clone)]
 pub struct BatchConfig {
     /// Maximum number of items to batch together.
@@ -1433,6 +1438,12 @@ pub struct BatchConfig {
     /// If fewer than `max_items` are buffered but this duration elapses
     /// since the first item in the batch, the batch is flushed.
     pub max_delay: Duration,
+
+    /// Optional maximum accumulated byte size per batch.
+    /// When the total estimated size of buffered items exceeds this,
+    /// the batch is flushed. Useful for controlling wire frame sizes
+    /// in remote transport. `None` means no byte limit.
+    pub max_bytes: Option<usize>,
 }
 
 impl Default for BatchConfig {
@@ -1440,6 +1451,7 @@ impl Default for BatchConfig {
         Self {
             max_items: 64,
             max_delay: Duration::from_millis(5),
+            max_bytes: None,
         }
     }
 }
@@ -1522,6 +1534,7 @@ as usual.
 | `max_items=1, max_delay=0` | No batching (baseline) | Lowest per-item latency |
 | `max_items=64, max_delay=5ms` | Good (default) | ≤5ms added latency |
 | `max_items=256, max_delay=50ms` | Best for bulk transfer | Higher latency acceptable |
+| `max_bytes=64KB` | Limits wire frame size | Flush on byte threshold |
 
 > **Note:** `stream()` and `feed()` without `_batched` suffix continue to
 > work with no batching (per-item delivery). Batching is opt-in.
@@ -2484,7 +2497,13 @@ crates such as [`dcontext`](https://github.com/Yaming-Hub/dcontext) and
 consumed by interceptors for context propagation. This keeps dactor free of
 opinionated context structures.
 
-The only built-in header type is `Priority` (used by priority mailboxes):
+The built-in header types are:
+
+- **`Priority`** — message priority level for priority mailboxes (§5.6)
+- **`ContentLength`** — byte size of the serialized message body, stamped
+  by the runtime for remote messages. Enables throttling interceptors to
+  make decisions based on total message size (rate-limit by bytes/sec,
+  reject oversized messages, etc.)
 
 ```rust
 /// Message priority level for priority mailboxes.
@@ -2498,6 +2517,24 @@ impl HeaderValue for Priority {
     }
     fn from_bytes(bytes: &[u8]) -> Result<Self, ActorError> {
         bincode::deserialize(bytes).map_err(|e| ActorError::new(ErrorCode::Internal, e.to_string()))
+    }
+    fn as_any(&self) -> &dyn std::any::Any { self }
+}
+
+/// Byte length of the serialized message body.
+/// Stamped by the runtime after serialization for remote messages.
+/// Local messages do not have this header.
+pub struct ContentLength(pub u64);
+
+impl HeaderValue for ContentLength {
+    fn header_name(&self) -> &'static str { "dactor.ContentLength" }
+    fn to_bytes(&self) -> Option<Vec<u8>> {
+        Some(self.0.to_le_bytes().to_vec())
+    }
+    fn from_bytes(bytes: &[u8]) -> Result<Self, ActorError> {
+        let arr: [u8; 8] = bytes.try_into()
+            .map_err(|_| ActorError::new(ErrorCode::Internal, "invalid ContentLength"))?;
+        Ok(Self(u64::from_le_bytes(arr)))
     }
     fn as_any(&self) -> &dyn std::any::Any { self }
 }

@@ -111,9 +111,11 @@ impl<T: Send + 'static> StreamReceiver<T> {
 // ---------------------------------------------------------------------------
 
 /// Controls automatic batching for stream and feed channels.
-/// Items are accumulated and flushed as a batch when either
-/// `max_items` is reached or `max_delay` elapses since the first
-/// item in the current batch — whichever comes first.
+/// Items are accumulated and flushed as a batch when any of these
+/// conditions is met (whichever comes first):
+/// - `max_items` items have accumulated
+/// - `max_delay` has elapsed since the first item in the current batch
+/// - `max_bytes` total estimated byte size is exceeded (if set)
 ///
 /// Batching is transparent: senders push individual items and
 /// receivers pull individual items. The batching layer sits between
@@ -127,6 +129,14 @@ pub struct BatchConfig {
     /// If fewer than `max_items` are buffered but this duration
     /// elapses since the first item, the batch is flushed.
     pub max_delay: Duration,
+    /// Optional maximum accumulated byte size per batch.
+    /// When the total estimated size of buffered items exceeds this,
+    /// the batch is flushed. Useful for controlling wire frame sizes
+    /// in remote transport. `None` means no byte limit.
+    ///
+    /// The size estimate is provided by the caller via
+    /// `BatchWriter::push_with_size()`.
+    pub max_bytes: Option<usize>,
 }
 
 impl Default for BatchConfig {
@@ -134,6 +144,7 @@ impl Default for BatchConfig {
         Self {
             max_items: 64,
             max_delay: Duration::from_millis(5),
+            max_bytes: None,
         }
     }
 }
@@ -143,16 +154,27 @@ impl BatchConfig {
         Self {
             max_items: max_items.max(1),
             max_delay,
+            max_bytes: None,
         }
+    }
+
+    /// Set the maximum byte size per batch.
+    pub fn with_max_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_bytes = Some(max_bytes);
+        self
     }
 }
 
 /// Batching writer: accumulates items and flushes as `Vec<T>` batches.
 /// Sits between the producer and the channel sender.
+///
+/// Flushes when any condition is met: `max_items` reached, `max_delay`
+/// elapsed, or `max_bytes` exceeded (if configured).
 pub struct BatchWriter<T: Send + 'static> {
     sender: tokio::sync::mpsc::Sender<Vec<T>>,
     config: BatchConfig,
     buffer: Vec<T>,
+    buffered_bytes: usize,
     flush_deadline: Option<tokio::time::Instant>,
 }
 
@@ -163,17 +185,27 @@ impl<T: Send + 'static> BatchWriter<T> {
             sender,
             config,
             buffer: Vec::with_capacity(cap),
+            buffered_bytes: 0,
             flush_deadline: None,
         }
     }
 
-    /// Add an item. Flushes if batch is full.
+    /// Add an item. Flushes if batch is full (by count).
     pub async fn push(&mut self, item: T) -> Result<(), StreamSendError> {
+        self.push_with_size(item, 0).await
+    }
+
+    /// Add an item with an estimated byte size.
+    /// Flushes if batch is full by count OR by accumulated bytes.
+    pub async fn push_with_size(&mut self, item: T, item_bytes: usize) -> Result<(), StreamSendError> {
         self.buffer.push(item);
+        self.buffered_bytes += item_bytes;
         if self.flush_deadline.is_none() {
             self.flush_deadline = Some(tokio::time::Instant::now() + self.config.max_delay);
         }
-        if self.buffer.len() >= self.config.max_items {
+        let should_flush = self.buffer.len() >= self.config.max_items
+            || self.config.max_bytes.map_or(false, |max| self.buffered_bytes >= max);
+        if should_flush {
             self.flush().await?;
         }
         Ok(())
@@ -186,6 +218,7 @@ impl<T: Send + 'static> BatchWriter<T> {
         }
         let batch = std::mem::take(&mut self.buffer);
         self.buffer = Vec::with_capacity(self.config.max_items);
+        self.buffered_bytes = 0;
         self.flush_deadline = None;
         self.sender
             .send(batch)
@@ -206,6 +239,11 @@ impl<T: Send + 'static> BatchWriter<T> {
     /// Remaining items in buffer.
     pub fn buffered_count(&self) -> usize {
         self.buffer.len()
+    }
+
+    /// Accumulated byte size of buffered items.
+    pub fn buffered_bytes(&self) -> usize {
+        self.buffered_bytes
     }
 
     /// The configured maximum delay between the first buffered item and flush.
