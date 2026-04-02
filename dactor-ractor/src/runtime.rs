@@ -527,48 +527,8 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
         A: FeedHandler<M>,
         M: FeedMessage,
     {
-        // Run outbound interceptors
-        let runtime_headers = RuntimeHeaders::new();
-        let mut headers = Headers::new();
-        let octx = OutboundContext {
-            target_id: self.id.clone(),
-            target_name: &self.name,
-            message_type: std::any::type_name::<M>(),
-            send_mode: SendMode::Feed,
-            remote: false,
-        };
-
-        for interceptor in self.outbound_interceptors.iter() {
-            match interceptor.on_send(&octx, &runtime_headers, &mut headers, &msg as &dyn Any) {
-                Disposition::Continue => {}
-                Disposition::Delay(_) => {}
-                Disposition::Drop => {
-                    let (tx, rx) = tokio::sync::oneshot::channel();
-                    let _ = tx.send(Err(RuntimeError::ActorNotFound(
-                        "message dropped by outbound interceptor".into(),
-                    )));
-                    return Ok(AskReply::new(rx));
-                }
-                Disposition::Reject(reason) => {
-                    let (tx, rx) = tokio::sync::oneshot::channel();
-                    let name = interceptor.name().to_string();
-                    let _ = tx.send(Err(RuntimeError::Rejected {
-                        interceptor: name,
-                        reason,
-                    }));
-                    return Ok(AskReply::new(rx));
-                }
-                Disposition::Retry(retry_after) => {
-                    let (tx, rx) = tokio::sync::oneshot::channel();
-                    let name = interceptor.name().to_string();
-                    let _ = tx.send(Err(RuntimeError::RetryAfter {
-                        interceptor: name,
-                        retry_after,
-                    }));
-                    return Ok(AskReply::new(rx));
-                }
-            }
-        }
+        // Note: no on_send() for FeedMessage — it's a type tag with no data.
+        // Per-item interception happens via on_stream_item() in the drain task.
 
         let buffer = buffer.max(1);
         let (item_tx, item_rx) = tokio::sync::mpsc::channel(buffer);
@@ -768,48 +728,8 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
         A: FeedHandler<M>,
         M: FeedMessage,
     {
-        // Run outbound interceptors (same as feed())
-        let runtime_headers = RuntimeHeaders::new();
-        let mut headers = Headers::new();
-        let octx = OutboundContext {
-            target_id: self.id.clone(),
-            target_name: &self.name,
-            message_type: std::any::type_name::<M>(),
-            send_mode: SendMode::Feed,
-            remote: false,
-        };
-
-        for interceptor in self.outbound_interceptors.iter() {
-            match interceptor.on_send(&octx, &runtime_headers, &mut headers, &msg as &dyn Any) {
-                Disposition::Continue => {}
-                Disposition::Delay(_) => {}
-                Disposition::Drop => {
-                    let (tx, rx) = tokio::sync::oneshot::channel();
-                    let _ = tx.send(Err(RuntimeError::ActorNotFound(
-                        "message dropped by outbound interceptor".into(),
-                    )));
-                    return Ok(AskReply::new(rx));
-                }
-                Disposition::Reject(reason) => {
-                    let (tx, rx) = tokio::sync::oneshot::channel();
-                    let name = interceptor.name().to_string();
-                    let _ = tx.send(Err(RuntimeError::Rejected {
-                        interceptor: name,
-                        reason,
-                    }));
-                    return Ok(AskReply::new(rx));
-                }
-                Disposition::Retry(retry_after) => {
-                    let (tx, rx) = tokio::sync::oneshot::channel();
-                    let name = interceptor.name().to_string();
-                    let _ = tx.send(Err(RuntimeError::RetryAfter {
-                        interceptor: name,
-                        retry_after,
-                    }));
-                    return Ok(AskReply::new(rx));
-                }
-            }
-        }
+        // Note: no on_send() for FeedMessage — it's a type tag with no data.
+        // Per-item interception happens via on_stream_item() in the drain task.
 
         let buffer = buffer.max(1);
         let (item_tx, item_rx) = tokio::sync::mpsc::channel(buffer);
