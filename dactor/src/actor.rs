@@ -326,7 +326,7 @@ pub trait ActorRef<A: Actor>: Clone + Send + Sync + 'static {
         &self,
         msg: M,
         buffer: usize,
-        batch: BatchConfig,
+        batch_config: BatchConfig,
         cancel: Option<CancellationToken>,
     ) -> Result<BoxStream<M::Reply>, ActorSendError>
     where
@@ -339,7 +339,7 @@ pub trait ActorRef<A: Actor>: Clone + Send + Sync + 'static {
         msg: M,
         input: BoxStream<M::Item>,
         buffer: usize,
-        batch: BatchConfig,
+        batch_config: BatchConfig,
         cancel: Option<CancellationToken>,
     ) -> Result<AskReply<M::Reply>, ActorSendError>
     where

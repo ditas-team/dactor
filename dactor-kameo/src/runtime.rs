@@ -498,7 +498,28 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
             .tell(DactorMsg(dispatch))
             .try_send()
             .map_err(|e| ActorSendError(e.to_string()))?;
-        Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
+
+        // Wrap the stream to call on_stream_item for each reply item
+        let interceptors = self.outbound_interceptors.clone();
+        let target_id = self.id.clone();
+        let target_name = self.name.clone();
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        let intercepted = futures::StreamExt::scan(stream, 0u64, move |seq, item| {
+            let octx = OutboundContext {
+                target_id: target_id.clone(),
+                target_name: &target_name,
+                message_type: std::any::type_name::<M>(),
+                send_mode: SendMode::Stream,
+                remote: false,
+            };
+            let item_headers = Headers::new();
+            for interceptor in interceptors.iter() {
+                interceptor.on_stream_item(&octx, &item_headers, *seq, &item as &dyn Any);
+            }
+            *seq += 1;
+            std::future::ready(Some(item))
+        });
+        Ok(Box::pin(intercepted))
     }
 
     fn feed<M>(
@@ -570,10 +591,15 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
             .try_send()
             .map_err(|e| ActorSendError(e.to_string()))?;
 
-        // Drain the input stream into the item channel
+        // Drain the input stream into the item channel with per-item interception
+        let interceptors = self.outbound_interceptors.clone();
+        let target_id = self.id.clone();
+        let target_name = self.name.clone();
         tokio::spawn(async move {
             use futures::StreamExt;
             let mut input = input;
+            let mut seq: u64 = 0;
+            let item_headers = Headers::new();
             let result = std::panic::AssertUnwindSafe(async {
                 if let Some(ref token) = cancel {
                     loop {
@@ -582,6 +608,17 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
                             _ = token.cancelled() => break,
                             item = input.next() => match item {
                                 Some(item) => {
+                                    let octx = OutboundContext {
+                                        target_id: target_id.clone(),
+                                        target_name: &target_name,
+                                        message_type: std::any::type_name::<M>(),
+                                        send_mode: SendMode::Feed,
+                                        remote: false,
+                                    };
+                                    for interceptor in interceptors.iter() {
+                                        interceptor.on_stream_item(&octx, &item_headers, seq, &item as &dyn Any);
+                                    }
+                                    seq += 1;
                                     if item_tx.send(item).await.is_err() {
                                         break;
                                     }
@@ -592,6 +629,17 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
                     }
                 } else {
                     while let Some(item) = input.next().await {
+                        let octx = OutboundContext {
+                            target_id: target_id.clone(),
+                            target_name: &target_name,
+                            message_type: std::any::type_name::<M>(),
+                            send_mode: SendMode::Feed,
+                            remote: false,
+                        };
+                        for interceptor in interceptors.iter() {
+                            interceptor.on_stream_item(&octx, &item_headers, seq, &item as &dyn Any);
+                        }
+                        seq += 1;
                         if item_tx.send(item).await.is_err() {
                             break;
                         }
@@ -612,7 +660,7 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
         &self,
         msg: M,
         buffer: usize,
-        batch: BatchConfig,
+        batch_config: BatchConfig,
         cancel: Option<CancellationToken>,
     ) -> Result<BoxStream<M::Reply>, ActorSendError>
     where
@@ -664,9 +712,9 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
         let (batch_tx, batch_rx) = tokio::sync::mpsc::channel::<Vec<M::Reply>>(buffer);
         let reader = BatchReader::new(batch_rx);
 
-        let batch_delay = batch.max_delay;
+        let batch_delay = batch_config.max_delay;
         tokio::spawn(async move {
-            let mut writer = BatchWriter::new(batch_tx, batch);
+            let mut writer = BatchWriter::new(batch_tx, batch_config);
             loop {
                 if writer.buffered_count() > 0 {
                     let deadline = tokio::time::Instant::now() + batch_delay;
@@ -694,7 +742,26 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
             let _ = writer.flush().await;
         });
 
-        Ok(reader.into_stream())
+        // Wrap the output stream to call on_stream_item for each reply item
+        let interceptors = self.outbound_interceptors.clone();
+        let target_id = self.id.clone();
+        let target_name = self.name.clone();
+        let intercepted = futures::StreamExt::scan(reader.into_stream(), 0u64, move |seq, item| {
+            let octx = OutboundContext {
+                target_id: target_id.clone(),
+                target_name: &target_name,
+                message_type: std::any::type_name::<M>(),
+                send_mode: SendMode::Stream,
+                remote: false,
+            };
+            let item_headers = Headers::new();
+            for interceptor in interceptors.iter() {
+                interceptor.on_stream_item(&octx, &item_headers, *seq, &item as &dyn Any);
+            }
+            *seq += 1;
+            std::future::ready(Some(item))
+        });
+        Ok(Box::pin(intercepted))
     }
 
     fn feed_batched<M>(
@@ -702,7 +769,7 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
         msg: M,
         input: BoxStream<M::Item>,
         buffer: usize,
-        batch: BatchConfig,
+        batch_config: BatchConfig,
         cancel: Option<CancellationToken>,
     ) -> Result<AskReply<M::Reply>, ActorSendError>
     where
@@ -768,16 +835,37 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
             .map_err(|e| ActorSendError(e.to_string()))?;
 
         // Drain task: batch input items, then unbatch into item_tx
+        let interceptors = self.outbound_interceptors.clone();
+        let target_id = self.id.clone();
+        let target_name = self.name.clone();
         tokio::spawn(async move {
             use futures::StreamExt;
+
+            // Wrap input stream with per-item outbound interception
+            let mut seq: u64 = 0;
+            let input: BoxStream<M::Item> = Box::pin(input.map(move |item| {
+                let octx = OutboundContext {
+                    target_id: target_id.clone(),
+                    target_name: &target_name,
+                    message_type: std::any::type_name::<M>(),
+                    send_mode: SendMode::Feed,
+                    remote: false,
+                };
+                let item_headers = Headers::new();
+                for interceptor in interceptors.iter() {
+                    interceptor.on_stream_item(&octx, &item_headers, seq, &item as &dyn Any);
+                }
+                seq += 1;
+                item
+            }));
 
             let (batch_tx, mut batch_rx) = tokio::sync::mpsc::channel::<Vec<M::Item>>(buffer);
 
             let cancel_clone = cancel.clone();
             let writer_handle = tokio::spawn(async move {
                 let mut input = input;
-                let batch_delay = batch.max_delay;
-                let mut writer = BatchWriter::new(batch_tx, batch);
+                let batch_delay = batch_config.max_delay;
+                let mut writer = BatchWriter::new(batch_tx, batch_config);
                 let result = std::panic::AssertUnwindSafe(async {
                     loop {
                         if writer.buffered_count() > 0 {

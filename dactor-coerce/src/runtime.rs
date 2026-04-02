@@ -207,14 +207,14 @@ impl<A: Actor + 'static> ActorRef<A> for CoerceActorRef<A> {
         &self,
         msg: M,
         buffer: usize,
-        batch: BatchConfig,
+        batch_config: BatchConfig,
         cancel: Option<CancellationToken>,
     ) -> Result<BoxStream<M::Reply>, ActorSendError>
     where
         A: StreamHandler<M>,
         M: Message,
     {
-        self.inner.stream_batched(msg, buffer, batch, cancel)
+        self.inner.stream_batched(msg, buffer, batch_config, cancel)
     }
 
     fn feed_batched<M>(
@@ -222,13 +222,13 @@ impl<A: Actor + 'static> ActorRef<A> for CoerceActorRef<A> {
         msg: M,
         input: BoxStream<M::Item>,
         buffer: usize,
-        batch: BatchConfig,
+        batch_config: BatchConfig,
         cancel: Option<CancellationToken>,
     ) -> Result<AskReply<M::Reply>, ActorSendError>
     where
         A: FeedHandler<M>,
         M: FeedMessage,
     {
-        self.inner.feed_batched(msg, input, buffer, batch, cancel)
+        self.inner.feed_batched(msg, input, buffer, batch_config, cancel)
     }
 }

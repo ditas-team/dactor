@@ -329,8 +329,27 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
         let dispatch: BoxedDispatch<A> = Box::new(StreamDispatch { msg, sender, cancel });
         self.sender.send(Some(dispatch))?;
 
+        // Wrap the stream to call on_stream_item for each reply item
+        let interceptors = self.outbound_interceptors.clone();
+        let target_id = self.id.clone();
+        let target_name = self.name.clone();
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-        Ok(Box::pin(stream))
+        let intercepted = futures::StreamExt::scan(stream, 0u64, move |seq, item| {
+            let octx = OutboundContext {
+                target_id: target_id.clone(),
+                target_name: &target_name,
+                message_type: std::any::type_name::<M>(),
+                send_mode: SendMode::Stream,
+                remote: false,
+            };
+            let item_headers = Headers::new();
+            for interceptor in interceptors.iter() {
+                interceptor.on_stream_item(&octx, &item_headers, *seq, &item as &dyn Any);
+            }
+            *seq += 1;
+            std::future::ready(Some(item))
+        });
+        Ok(Box::pin(intercepted))
     }
 
     fn feed<M>(
@@ -395,14 +414,15 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
         self.sender.send(Some(dispatch))?;
 
         // Spawn a drain task: pulls items from the input BoxStream and pushes to item_tx.
-        // The task terminates naturally when either:
-        // - The input stream is exhausted (all items consumed)
-        // - The actor drops the StreamReceiver (item_tx.send returns Err)
-        // - The cancellation token fires (drops item_tx, closing the channel)
-        // Panics in the input stream are caught to avoid leaving the actor hanging.
+        // Each item goes through outbound on_stream_item() for per-item observation.
+        let interceptors = self.outbound_interceptors.clone();
+        let target_id = self.id.clone();
+        let target_name = self.name.clone();
         tokio::spawn(async move {
             use futures::{FutureExt, StreamExt};
             let mut input = input;
+            let mut seq: u64 = 0;
+            let item_headers = Headers::new();
             let result = std::panic::AssertUnwindSafe(async {
                 loop {
                     if let Some(ref token) = cancel {
@@ -412,6 +432,17 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
                             item = input.next() => {
                                 match item {
                                     Some(item) => {
+                                        let octx = OutboundContext {
+                                            target_id: target_id.clone(),
+                                            target_name: &target_name,
+                                            message_type: std::any::type_name::<M>(),
+                                            send_mode: SendMode::Feed,
+                                            remote: false,
+                                        };
+                                        for interceptor in interceptors.iter() {
+                                            interceptor.on_stream_item(&octx, &item_headers, seq, &item as &dyn Any);
+                                        }
+                                        seq += 1;
                                         if item_tx.send(item).await.is_err() {
                                             break; // actor dropped the receiver
                                         }
@@ -423,6 +454,17 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
                     } else {
                         match input.next().await {
                             Some(item) => {
+                                let octx = OutboundContext {
+                                    target_id: target_id.clone(),
+                                    target_name: &target_name,
+                                    message_type: std::any::type_name::<M>(),
+                                    send_mode: SendMode::Feed,
+                                    remote: false,
+                                };
+                                for interceptor in interceptors.iter() {
+                                    interceptor.on_stream_item(&octx, &item_headers, seq, &item as &dyn Any);
+                                }
+                                seq += 1;
                                 if item_tx.send(item).await.is_err() {
                                     break; // actor dropped the receiver
                                 }
@@ -448,7 +490,7 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
         &self,
         msg: M,
         buffer: usize,
-        batch: BatchConfig,
+        batch_config: BatchConfig,
         cancel: Option<CancellationToken>,
     ) -> Result<BoxStream<M::Reply>, ActorSendError>
     where
@@ -495,9 +537,9 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
         let reader = BatchReader::new(batch_rx);
 
         // Drain task: reads individual items, batches them via BatchWriter
-        let batch_delay = batch.max_delay;
+        let batch_delay = batch_config.max_delay;
         tokio::spawn(async move {
-            let mut writer = BatchWriter::new(batch_tx, batch);
+            let mut writer = BatchWriter::new(batch_tx, batch_config);
             loop {
                 // If we have buffered items, wait for more up to the deadline
                 if writer.buffered_count() > 0 {
@@ -528,7 +570,26 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
             let _ = writer.flush().await;
         });
 
-        Ok(reader.into_stream())
+        // Wrap the output stream to call on_stream_item for each reply item
+        let interceptors = self.outbound_interceptors.clone();
+        let target_id = self.id.clone();
+        let target_name = self.name.clone();
+        let intercepted = futures::StreamExt::scan(reader.into_stream(), 0u64, move |seq, item| {
+            let octx = OutboundContext {
+                target_id: target_id.clone(),
+                target_name: &target_name,
+                message_type: std::any::type_name::<M>(),
+                send_mode: SendMode::Stream,
+                remote: false,
+            };
+            let item_headers = Headers::new();
+            for interceptor in interceptors.iter() {
+                interceptor.on_stream_item(&octx, &item_headers, *seq, &item as &dyn Any);
+            }
+            *seq += 1;
+            std::future::ready(Some(item))
+        });
+        Ok(Box::pin(intercepted))
     }
 
     fn feed_batched<M>(
@@ -536,7 +597,7 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
         msg: M,
         input: BoxStream<M::Item>,
         buffer: usize,
-        batch: BatchConfig,
+        batch_config: BatchConfig,
         cancel: Option<CancellationToken>,
     ) -> Result<AskReply<M::Reply>, ActorSendError>
     where
@@ -599,8 +660,29 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
         self.sender.send(Some(dispatch))?;
 
         // Spawn a batching drain task: batch input items, then unbatch into item_tx
+        let interceptors = self.outbound_interceptors.clone();
+        let target_id = self.id.clone();
+        let target_name = self.name.clone();
         tokio::spawn(async move {
             use futures::{FutureExt, StreamExt};
+
+            // Wrap input stream with per-item outbound interception
+            let mut seq: u64 = 0;
+            let input: BoxStream<M::Item> = Box::pin(input.map(move |item| {
+                let octx = OutboundContext {
+                    target_id: target_id.clone(),
+                    target_name: &target_name,
+                    message_type: std::any::type_name::<M>(),
+                    send_mode: SendMode::Feed,
+                    remote: false,
+                };
+                let item_headers = Headers::new();
+                for interceptor in interceptors.iter() {
+                    interceptor.on_stream_item(&octx, &item_headers, seq, &item as &dyn Any);
+                }
+                seq += 1;
+                item
+            }));
 
             // Batched channel
             let (batch_tx, mut batch_rx) = tokio::sync::mpsc::channel::<Vec<M::Item>>(buffer);
@@ -609,8 +691,8 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
             let cancel_clone = cancel.clone();
             let writer_handle = tokio::spawn(async move {
                 let mut input = input;
-                let batch_delay = batch.max_delay;
-                let mut writer = BatchWriter::new(batch_tx, batch);
+                let batch_delay = batch_config.max_delay;
+                let mut writer = BatchWriter::new(batch_tx, batch_config);
                 let result = std::panic::AssertUnwindSafe(async {
                     loop {
                         if writer.buffered_count() > 0 {
@@ -3527,8 +3609,8 @@ mod tests {
                 vec!["a".into(), "b".into(), "c".into(), "d".into(), "e".into()],
             );
 
-            let batch = BatchConfig::new(2, Duration::from_secs(10));
-            let mut stream = server.stream_batched(GetLogs, 16, batch, None).unwrap();
+            let batch_config = BatchConfig::new(2, Duration::from_secs(10));
+            let mut stream = server.stream_batched(GetLogs, 16, batch_config, None).unwrap();
             let mut items = Vec::new();
             while let Some(item) = stream.next().await {
                 items.push(item);
@@ -3575,9 +3657,9 @@ mod tests {
             let actor = runtime.spawn::<Summer>("sum-batched", ());
 
             let input = futures::stream::iter(vec![10u64, 20, 30, 40, 50]);
-            let batch = BatchConfig::new(3, Duration::from_secs(10));
+            let batch_config = BatchConfig::new(3, Duration::from_secs(10));
             let total = actor
-                .feed_batched(SumItems, Box::pin(input), 8, batch, None)
+                .feed_batched(SumItems, Box::pin(input), 8, batch_config, None)
                 .unwrap()
                 .await
                 .unwrap();

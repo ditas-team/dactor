@@ -133,6 +133,28 @@ pub trait InboundInterceptor: Send + Sync + 'static {
     ) {
         let _ = (ctx, runtime_headers, headers, outcome);
     }
+
+    /// Called for each item in a stream or feed.
+    ///
+    /// - **Stream (server-streaming):** called when the handler emits each
+    ///   reply item via `StreamSender::send()`.
+    /// - **Feed (client-streaming):** called when each input item is
+    ///   delivered to the actor via `StreamReceiver`.
+    ///
+    /// `seq` is a zero-based sequence number within this stream/feed.
+    /// The item is type-erased; downcast if you know the concrete type.
+    ///
+    /// This is an observation hook. For per-item rejection, cancel the
+    /// stream via [`CancellationToken`](tokio_util::sync::CancellationToken).
+    fn on_stream_item(
+        &self,
+        ctx: &InboundContext<'_>,
+        headers: &Headers,
+        seq: u64,
+        item: &dyn Any,
+    ) {
+        let _ = (ctx, headers, seq, item);
+    }
 }
 
 /// Metadata about an outbound message, provided to outbound interceptors.
@@ -187,6 +209,28 @@ pub trait OutboundInterceptor: Send + Sync + 'static {
         outcome: &Outcome<'_>,
     ) {
         let _ = (ctx, runtime_headers, headers, outcome);
+    }
+
+    /// Called for each item flowing through a stream or feed on the sender side.
+    ///
+    /// - **Stream (server-streaming):** called when each reply item arrives
+    ///   back at the caller.
+    /// - **Feed (client-streaming):** called when each input item is about
+    ///   to be sent to the target actor. This is where throttling
+    ///   interceptors can observe per-item byte sizes via the
+    ///   `ContentLength` header (stamped by the transport layer for
+    ///   remote actors).
+    ///
+    /// `seq` is a zero-based sequence number within this stream/feed.
+    /// The item is type-erased; downcast if you know the concrete type.
+    fn on_stream_item(
+        &self,
+        ctx: &OutboundContext<'_>,
+        headers: &Headers,
+        seq: u64,
+        item: &dyn Any,
+    ) {
+        let _ = (ctx, headers, seq, item);
     }
 }
 

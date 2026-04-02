@@ -91,14 +91,14 @@ async fn main() {
     println!("=== Batch Streaming Example ===\n");
 
     let runtime = TestRuntime::new();
-    let batch = BatchConfig::new(4, std::time::Duration::from_millis(5));
+    let batch_config = BatchConfig::new(4, std::time::Duration::from_millis(5));
 
     // --- Batched server-streaming ---
     println!("--- stream_batched: NumberServer (10 items, batch=4) ---");
     let server = runtime.spawn::<NumberServer>("numbers", 10);
 
     let mut stream = server
-        .stream_batched(GetNumbers, 16, batch.clone(), None)
+        .stream_batched(GetNumbers, 16, batch_config.clone(), None)
         .unwrap();
 
     let mut items = Vec::new();
@@ -113,9 +113,9 @@ async fn main() {
     let aggregator = runtime.spawn::<Aggregator>("aggregator", ());
 
     let input = futures::stream::iter(vec![10u64, 20, 30, 40, 50]);
-    let batch = BatchConfig::new(4, std::time::Duration::from_millis(5));
+    let batch_config = BatchConfig::new(4, std::time::Duration::from_millis(5));
     let total = aggregator
-        .feed_batched(SumItems, Box::pin(input), 8, batch, None)
+        .feed_batched(SumItems, Box::pin(input), 8, batch_config, None)
         .unwrap()
         .await
         .unwrap();

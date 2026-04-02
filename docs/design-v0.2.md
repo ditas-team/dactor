@@ -1797,10 +1797,23 @@ the provider's transport. The `FeedMessage` initial request travels as a
 `WireEnvelope`, and stream items follow as a sequence of serialized payloads
 on the same logical channel.
 
-**Interceptor visibility:** Both `InboundInterceptor` and `OutboundInterceptor`
-see the initial `FeedMessage` as a regular message. Individual stream items
-are **not** intercepted (same as `stream()` — see §5.2, §5.3). The final
-reply is visible to `OutboundInterceptor::on_reply`.
+**Interceptor visibility:** The outbound `on_send()` hook sees the initial
+`FeedMessage` as a type tag (it carries no data — only `type Item` and
+`type Reply` associated types). The **real interception** happens per-Item
+via `on_stream_item()`:
+
+- **Outbound `on_stream_item()`:** called on the caller side for each Item
+  *before* it is sent to the actor. This is where throttling interceptors
+  can observe per-item byte sizes (via the `ContentLength` header, stamped
+  by the transport layer for remote actors) and make rate-limiting decisions.
+- **Inbound `on_stream_item()`:** called on the actor side as each Item
+  is delivered from the `StreamReceiver`.
+
+For remote actors, each Item is serialized once by the transport layer. The
+serialized bytes provide both the `ContentLength` header value and the
+wire payload — no double serialization.
+
+The final reply is visible to `OutboundInterceptor::on_reply`.
 
 > **Note:** Bidirectional streaming (stream in + stream out) can be composed
 > from `feed()` + actor-internal `stream()`, or by having the `FeedHandler`
@@ -2771,13 +2784,16 @@ pub enum SendMode {
 /// ### `Feed` (client-streaming)
 /// ```text
 /// on_receive(initial FeedMessage) → handler starts consuming StreamReceiver
-///                                 → on_complete(outcome=Replied)         if handler returns Ok
-///                                 → on_complete(outcome=HandlerError)    if handler fails
-///                                 → on_complete(outcome=StreamCancelled) if cancel token fires
+///   → on_stream_item per input item   (as items arrive from caller)
+///   → on_complete(outcome=Replied)         if handler returns Ok
+///   → on_complete(outcome=HandlerError)    if handler fails
+///   → on_complete(outcome=StreamCancelled) if cancel token fires
 /// ```
-/// **Note:** Individual stream items fed into the actor are **not**
-/// intercepted (same as `stream()` — only the initial `FeedMessage`
-/// triggers `on_receive`). The final reply is visible in `on_complete`.
+/// **Note:** The initial `FeedMessage` is a type tag carrying no data
+/// (only `type Item` and `type Reply`). The real interception happens
+/// per-Item via `on_stream_item`. On the outbound (caller) side,
+/// `OutboundInterceptor::on_stream_item` fires for each Item *before*
+/// it is sent to the actor — enabling per-item throttling and metrics.
 pub trait InboundInterceptor: Send + Sync + 'static {
     /// Human-readable name for this interceptor (e.g., "auth-check",
     /// "rate-limiter", "circuit-breaker"). Included in `Rejected` errors
