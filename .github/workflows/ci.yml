@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check core
+        run: cargo check -p dactor --all-features
+      - name: Check adapters
+        run: |
+          cargo check -p dactor-ractor
+          cargo check -p dactor-kameo
+          cargo check -p dactor-coerce
+          cargo check -p dactor-mock
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test core
+        run: cargo test -p dactor --features test-support
+      - name: Test ractor adapter
+        run: cargo test -p dactor-ractor
+      - name: Test kameo adapter
+        run: cargo test -p dactor-kameo
+      - name: Test coerce adapter
+        run: cargo test -p dactor-coerce
+      - name: Test mock cluster
+        run: cargo test -p dactor-mock
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy core
+        run: cargo clippy -p dactor --features test-support -- -D warnings
+      - name: Clippy ractor
+        run: cargo clippy -p dactor-ractor -- -D warnings
+      - name: Clippy kameo
+        run: cargo clippy -p dactor-kameo -- -D warnings
+      - name: Clippy coerce
+        run: cargo clippy -p dactor-coerce -- -D warnings
+      - name: Clippy mock
+        run: cargo clippy -p dactor-mock -- -D warnings
+
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build docs
+        run: cargo doc -p dactor --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -Dwarnings
+
+  examples:
+    name: Examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build examples
+        run: cargo build -p dactor --examples --features test-support
