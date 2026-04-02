@@ -6,7 +6,7 @@ description = "Multi-process integration test harness for dactor actor framework
 license = "MIT"
 repository = "https://github.com/Yaming-Hub/dactor"
 homepage = "https://github.com/Yaming-Hub/dactor"
-readme = "../README.md"
+readme = "README.md"
 keywords = ["actor", "distributed", "testing", "harness", "integration"]
 categories = ["concurrency", "development-tools::testing"]
 

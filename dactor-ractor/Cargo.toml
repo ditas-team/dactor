@@ -6,7 +6,7 @@ description = "Ractor adapter for the dactor distributed actor framework"
 license = "MIT"
 repository = "https://github.com/Yaming-Hub/dactor"
 homepage = "https://github.com/Yaming-Hub/dactor"
-readme = "../README.md"
+readme = "README.md"
 keywords = ["actor", "distributed", "ractor", "framework", "runtime"]
 categories = ["concurrency", "network-programming"]
 
