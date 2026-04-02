@@ -170,6 +170,17 @@ impl BatchConfig {
 ///
 /// Flushes when any condition is met: `max_items` reached, `max_delay`
 /// elapsed, or `max_bytes` exceeded (if configured).
+///
+/// # Serialization-once architecture
+///
+/// For **local** actors, `T` is the typed message (e.g., `M::Reply`) and
+/// `push()` is used — no serialization, no byte counting.
+///
+/// For **remote** actors (future transport layer), the transport serializes
+/// each item once to `Vec<u8>`, then uses `BatchWriter<Vec<u8>>` with
+/// `push_with_size(bytes.clone(), bytes.len())`. The serialized bytes ARE
+/// the batch items — no double serialization occurs. The `ContentLength`
+/// header is stamped from the same byte length.
 pub struct BatchWriter<T: Send + 'static> {
     sender: tokio::sync::mpsc::Sender<Vec<T>>,
     config: BatchConfig,

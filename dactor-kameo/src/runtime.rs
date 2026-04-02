@@ -28,7 +28,7 @@ use dactor::interceptor::{
 };
 use dactor::message::{Headers, Message, RuntimeHeaders};
 use dactor::node::{ActorId, NodeId};
-use dactor::stream::{BatchConfig, BoxStream, StreamReceiver, StreamSender};
+use dactor::stream::{BatchConfig, BatchReader, BatchWriter, BoxStream, StreamReceiver, StreamSender};
 
 use crate::cluster::KameoClusterEvents;
 
@@ -612,15 +612,89 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
         &self,
         msg: M,
         buffer: usize,
-        _batch: BatchConfig,
+        batch: BatchConfig,
         cancel: Option<CancellationToken>,
     ) -> Result<BoxStream<M::Reply>, ActorSendError>
     where
         A: StreamHandler<M>,
         M: Message,
     {
-        // Local adapter: skip batching, delegate to unbatched stream
-        self.stream(msg, buffer, cancel)
+        // Run outbound interceptors (same as stream())
+        let runtime_headers = RuntimeHeaders::new();
+        let mut headers = Headers::new();
+        let octx = OutboundContext {
+            target_id: self.id.clone(),
+            target_name: &self.name,
+            message_type: std::any::type_name::<M>(),
+            send_mode: SendMode::Stream,
+            remote: false,
+        };
+
+        for interceptor in self.outbound_interceptors.iter() {
+            match interceptor.on_send(&octx, &runtime_headers, &mut headers, &msg as &dyn Any) {
+                Disposition::Continue => {}
+                Disposition::Delay(_) => {}
+                Disposition::Drop => {
+                    return Err(ActorSendError(
+                        "stream dropped by outbound interceptor".into(),
+                    ));
+                }
+                Disposition::Reject(reason) => {
+                    return Err(ActorSendError(format!("stream rejected: {}", reason)));
+                }
+                Disposition::Retry(_) => {
+                    return Err(ActorSendError(
+                        "stream retry requested by interceptor".into(),
+                    ));
+                }
+            }
+        }
+
+        let buffer = buffer.max(1);
+        // Unbatched channel: handler pushes individual items
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<M::Reply>(buffer);
+        let sender = StreamSender::new(tx);
+        let dispatch: Box<dyn Dispatch<A>> = Box::new(StreamDispatch { msg, sender, cancel });
+        self.inner
+            .tell(DactorMsg(dispatch))
+            .try_send()
+            .map_err(|e| ActorSendError(e.to_string()))?;
+
+        // Batched channel: drain task batches items for the caller
+        let (batch_tx, batch_rx) = tokio::sync::mpsc::channel::<Vec<M::Reply>>(buffer);
+        let reader = BatchReader::new(batch_rx);
+
+        let batch_delay = batch.max_delay;
+        tokio::spawn(async move {
+            let mut writer = BatchWriter::new(batch_tx, batch);
+            loop {
+                if writer.buffered_count() > 0 {
+                    let deadline = tokio::time::Instant::now() + batch_delay;
+                    tokio::select! {
+                        biased;
+                        item = rx.recv() => match item {
+                            Some(item) => {
+                                if writer.push(item).await.is_err() { break; }
+                            }
+                            None => break,
+                        },
+                        _ = tokio::time::sleep_until(deadline) => {
+                            if writer.check_deadline().await.is_err() { break; }
+                        }
+                    }
+                } else {
+                    match rx.recv().await {
+                        Some(item) => {
+                            if writer.push(item).await.is_err() { break; }
+                        }
+                        None => break,
+                    }
+                }
+            }
+            let _ = writer.flush().await;
+        });
+
+        Ok(reader.into_stream())
     }
 
     fn feed_batched<M>(
@@ -628,15 +702,160 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
         msg: M,
         input: BoxStream<M::Item>,
         buffer: usize,
-        _batch: BatchConfig,
+        batch: BatchConfig,
         cancel: Option<CancellationToken>,
     ) -> Result<AskReply<M::Reply>, ActorSendError>
     where
         A: FeedHandler<M>,
         M: FeedMessage,
     {
-        // Local adapter: skip batching, delegate to unbatched feed
-        self.feed(msg, input, buffer, cancel)
+        // Run outbound interceptors (same as feed())
+        let runtime_headers = RuntimeHeaders::new();
+        let mut headers = Headers::new();
+        let octx = OutboundContext {
+            target_id: self.id.clone(),
+            target_name: &self.name,
+            message_type: std::any::type_name::<M>(),
+            send_mode: SendMode::Feed,
+            remote: false,
+        };
+
+        for interceptor in self.outbound_interceptors.iter() {
+            match interceptor.on_send(&octx, &runtime_headers, &mut headers, &msg as &dyn Any) {
+                Disposition::Continue => {}
+                Disposition::Delay(_) => {}
+                Disposition::Drop => {
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let _ = tx.send(Err(RuntimeError::ActorNotFound(
+                        "message dropped by outbound interceptor".into(),
+                    )));
+                    return Ok(AskReply::new(rx));
+                }
+                Disposition::Reject(reason) => {
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let name = interceptor.name().to_string();
+                    let _ = tx.send(Err(RuntimeError::Rejected {
+                        interceptor: name,
+                        reason,
+                    }));
+                    return Ok(AskReply::new(rx));
+                }
+                Disposition::Retry(retry_after) => {
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let name = interceptor.name().to_string();
+                    let _ = tx.send(Err(RuntimeError::RetryAfter {
+                        interceptor: name,
+                        retry_after,
+                    }));
+                    return Ok(AskReply::new(rx));
+                }
+            }
+        }
+
+        let buffer = buffer.max(1);
+        let (item_tx, item_rx) = tokio::sync::mpsc::channel(buffer);
+        let receiver = StreamReceiver::new(item_rx);
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        let dispatch: Box<dyn Dispatch<A>> = Box::new(FeedDispatch {
+            msg,
+            receiver,
+            reply_tx,
+            cancel: cancel.clone(),
+        });
+        self.inner
+            .tell(DactorMsg(dispatch))
+            .try_send()
+            .map_err(|e| ActorSendError(e.to_string()))?;
+
+        // Drain task: batch input items, then unbatch into item_tx
+        tokio::spawn(async move {
+            use futures::StreamExt;
+
+            let (batch_tx, mut batch_rx) = tokio::sync::mpsc::channel::<Vec<M::Item>>(buffer);
+
+            let cancel_clone = cancel.clone();
+            let writer_handle = tokio::spawn(async move {
+                let mut input = input;
+                let batch_delay = batch.max_delay;
+                let mut writer = BatchWriter::new(batch_tx, batch);
+                let result = std::panic::AssertUnwindSafe(async {
+                    loop {
+                        if writer.buffered_count() > 0 {
+                            let deadline = tokio::time::Instant::now() + batch_delay;
+                            if let Some(ref token) = cancel_clone {
+                                tokio::select! {
+                                    biased;
+                                    _ = token.cancelled() => break,
+                                    item = input.next() => match item {
+                                        Some(item) => {
+                                            if writer.push(item).await.is_err() { break; }
+                                        }
+                                        None => break,
+                                    },
+                                    _ = tokio::time::sleep_until(deadline) => {
+                                        if writer.check_deadline().await.is_err() { break; }
+                                    }
+                                }
+                            } else {
+                                tokio::select! {
+                                    biased;
+                                    item = input.next() => match item {
+                                        Some(item) => {
+                                            if writer.push(item).await.is_err() { break; }
+                                        }
+                                        None => break,
+                                    },
+                                    _ = tokio::time::sleep_until(deadline) => {
+                                        if writer.check_deadline().await.is_err() { break; }
+                                    }
+                                }
+                            }
+                        } else if let Some(ref token) = cancel_clone {
+                            tokio::select! {
+                                biased;
+                                _ = token.cancelled() => break,
+                                item = input.next() => match item {
+                                    Some(item) => {
+                                        if writer.push(item).await.is_err() { break; }
+                                    }
+                                    None => break,
+                                }
+                            }
+                        } else {
+                            match input.next().await {
+                                Some(item) => {
+                                    if writer.push(item).await.is_err() { break; }
+                                }
+                                None => break,
+                            }
+                        }
+                    }
+                    let _ = writer.flush().await;
+                })
+                .catch_unwind()
+                .await;
+
+                if result.is_err() {
+                    tracing::error!("feed_batched drain task panicked");
+                }
+            });
+
+            // Reader side: unbatch and forward to actor
+            let mut send_failed = false;
+            while let Some(batch) = batch_rx.recv().await {
+                for item in batch {
+                    if item_tx.send(item).await.is_err() {
+                        send_failed = true;
+                        break;
+                    }
+                }
+                if send_failed { break; }
+            }
+
+            let _ = writer_handle.await;
+        });
+
+        Ok(AskReply::new(reply_rx))
     }
 }
 
