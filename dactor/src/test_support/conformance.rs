@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use crate::actor::{
     Actor, ActorContext, ActorError, ActorRef, FeedHandler, FeedMessage, Handler, StreamHandler,
 };
-use crate::errors::ErrorAction;
+use crate::errors::{ErrorAction, RuntimeError};
 use crate::message::Message;
 use crate::stream::{BoxStream, StreamReceiver, StreamSender};
 
@@ -409,6 +409,11 @@ where
     let actor = spawn("conf-cancel-counter", 0);
     let result = actor.ask(GetCount, Some(token)).unwrap().await;
     assert!(result.is_err(), "ask with cancelled token should fail");
+    // Pre-cancelled token should produce Cancelled error specifically
+    assert!(
+        matches!(result.unwrap_err(), RuntimeError::Cancelled),
+        "expected RuntimeError::Cancelled for pre-cancelled token"
+    );
 }
 
 // ══════════════════════════════════════════════════════
