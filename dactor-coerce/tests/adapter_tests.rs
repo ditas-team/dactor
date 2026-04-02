@@ -44,6 +44,42 @@ async fn conformance_actor_name() {
     test_actor_name(|name, init| runtime.spawn::<ConformanceCounter>(name, init)).await;
 }
 
+#[tokio::test]
+async fn conformance_stream_items() {
+    let runtime = CoerceRuntime::new();
+    test_stream_items(|name, args| runtime.spawn::<ConformanceStreamer>(name, args)).await;
+}
+
+#[tokio::test]
+async fn conformance_stream_empty() {
+    let runtime = CoerceRuntime::new();
+    test_stream_empty(|name, args| runtime.spawn::<ConformanceStreamer>(name, args)).await;
+}
+
+#[tokio::test]
+async fn conformance_feed_sum() {
+    let runtime = CoerceRuntime::new();
+    test_feed_sum(|name, args| runtime.spawn::<ConformanceAggregator>(name, args)).await;
+}
+
+#[tokio::test]
+async fn conformance_lifecycle_ordering() {
+    let runtime = CoerceRuntime::new();
+    test_lifecycle_ordering(|name, args| runtime.spawn::<ConformanceLifecycle>(name, args)).await;
+}
+
+#[tokio::test]
+async fn conformance_cancel_ask() {
+    let runtime = CoerceRuntime::new();
+    test_cancel_ask(|name, init| runtime.spawn::<ConformanceCounter>(name, init)).await;
+}
+
+#[tokio::test]
+async fn conformance_on_error_resume() {
+    let runtime = CoerceRuntime::new();
+    test_on_error_resume(|name, args| runtime.spawn::<ConformanceResumeActor>(name, args)).await;
+}
+
 // ---------------------------------------------------------------------------
 // Coerce-specific tests
 // ---------------------------------------------------------------------------

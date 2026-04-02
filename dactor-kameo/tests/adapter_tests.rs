@@ -46,6 +46,42 @@ async fn conformance_actor_name() {
     test_actor_name(|name, init| runtime.spawn::<ConformanceCounter>(name, init)).await;
 }
 
+#[tokio::test]
+async fn conformance_stream_items() {
+    let runtime = KameoRuntime::new();
+    test_stream_items(|name, init| runtime.spawn::<ConformanceStreamer>(name, init)).await;
+}
+
+#[tokio::test]
+async fn conformance_stream_empty() {
+    let runtime = KameoRuntime::new();
+    test_stream_empty(|name, init| runtime.spawn::<ConformanceStreamer>(name, init)).await;
+}
+
+#[tokio::test]
+async fn conformance_feed_sum() {
+    let runtime = KameoRuntime::new();
+    test_feed_sum(|name, init| runtime.spawn::<ConformanceAggregator>(name, init)).await;
+}
+
+#[tokio::test]
+async fn conformance_lifecycle_ordering() {
+    let runtime = KameoRuntime::new();
+    test_lifecycle_ordering(|name, init| runtime.spawn::<ConformanceLifecycle>(name, init)).await;
+}
+
+#[tokio::test]
+async fn conformance_cancel_ask() {
+    let runtime = KameoRuntime::new();
+    test_cancel_ask(|name, init| runtime.spawn::<ConformanceCounter>(name, init)).await;
+}
+
+#[tokio::test]
+async fn conformance_on_error_resume() {
+    let runtime = KameoRuntime::new();
+    test_on_error_resume(|name, init| runtime.spawn::<ConformanceResumeActor>(name, init)).await;
+}
+
 // ---------------------------------------------------------------------------
 // Kameo-specific: re-exports & default
 // ---------------------------------------------------------------------------

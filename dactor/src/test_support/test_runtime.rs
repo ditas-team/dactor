@@ -3197,5 +3197,59 @@ mod tests {
             })
             .await;
         }
+
+        #[tokio::test]
+        async fn conformance_stream_items() {
+            let runtime = TestRuntime::new();
+            conformance::test_stream_items(|name, init| {
+                runtime.spawn::<conformance::ConformanceStreamer>(name, init)
+            })
+            .await;
+        }
+
+        #[tokio::test]
+        async fn conformance_stream_empty() {
+            let runtime = TestRuntime::new();
+            conformance::test_stream_empty(|name, init| {
+                runtime.spawn::<conformance::ConformanceStreamer>(name, init)
+            })
+            .await;
+        }
+
+        #[tokio::test]
+        async fn conformance_feed_sum() {
+            let runtime = TestRuntime::new();
+            conformance::test_feed_sum(|name, init| {
+                runtime.spawn::<conformance::ConformanceAggregator>(name, init)
+            })
+            .await;
+        }
+
+        #[tokio::test]
+        async fn conformance_lifecycle_ordering() {
+            let runtime = TestRuntime::new();
+            conformance::test_lifecycle_ordering(|name, init| {
+                runtime.spawn::<conformance::ConformanceLifecycle>(name, init)
+            })
+            .await;
+        }
+
+        #[tokio::test]
+        async fn conformance_cancel_ask() {
+            let runtime = TestRuntime::new();
+            conformance::test_cancel_ask(|name, init| {
+                runtime.spawn::<conformance::ConformanceCounter>(name, init)
+            })
+            .await;
+        }
+
+        #[tokio::test]
+        async fn conformance_on_error_resume() {
+            let runtime = TestRuntime::new();
+            conformance::test_on_error_resume(|name, init| {
+                runtime.spawn::<conformance::ConformanceResumeActor>(name, init)
+            })
+            .await;
+        }
     }
 }
