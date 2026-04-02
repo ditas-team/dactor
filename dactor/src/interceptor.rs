@@ -146,7 +146,7 @@ pub fn notify_drop(
 
 /// Run outbound interceptors' `on_stream_item` for a single item.
 /// Returns the first non-Continue disposition with the interceptor name.
-pub fn run_outbound_stream_item(
+pub fn intercept_outbound_stream_item(
     interceptors: &[Box<dyn OutboundInterceptor>],
     ctx: &OutboundContext<'_>,
     headers: &Headers,
