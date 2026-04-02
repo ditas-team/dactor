@@ -72,6 +72,62 @@ pub enum Disposition {
     Retry(Duration),
 }
 
+/// Result of running an interceptor pipeline. Pairs the final [`Disposition`]
+/// with the name of the interceptor that produced it (empty for `Continue`).
+///
+/// Used by runtimes to log/route dropped messages to the dead letter handler
+/// with the interceptor's identity.
+pub struct InterceptResult {
+    pub disposition: Disposition,
+    /// Name of the interceptor that produced a non-Continue disposition.
+    /// Empty string if all interceptors returned Continue.
+    pub interceptor_name: &'static str,
+}
+
+impl InterceptResult {
+    /// All interceptors returned Continue.
+    pub fn continued() -> Self {
+        Self { disposition: Disposition::Continue, interceptor_name: "" }
+    }
+
+    /// Whether the disposition is `Continue`.
+    pub fn is_continue(&self) -> bool {
+        matches!(self.disposition, Disposition::Continue)
+    }
+
+    /// Log a warning if the disposition is `Drop`. Call this at every site
+    /// where a Drop disposition is handled so drops are never silent.
+    pub fn log_if_dropped(&self, target_name: &str, message_type: &str, context: &str) {
+        if matches!(self.disposition, Disposition::Drop) {
+            tracing::warn!(
+                target_name = target_name,
+                message_type = message_type,
+                interceptor = self.interceptor_name,
+                context = context,
+                "message/item dropped by interceptor"
+            );
+        }
+    }
+}
+
+/// Run outbound interceptors' `on_stream_item` for a single item.
+/// Returns the first non-Continue disposition with the interceptor name.
+pub fn run_outbound_stream_item(
+    interceptors: &[Box<dyn OutboundInterceptor>],
+    ctx: &OutboundContext<'_>,
+    headers: &Headers,
+    seq: u64,
+    item: &dyn Any,
+) -> InterceptResult {
+    for interceptor in interceptors {
+        let d = interceptor.on_stream_item(ctx, headers, seq, item);
+        if !matches!(d, Disposition::Continue) {
+            return InterceptResult { disposition: d, interceptor_name: interceptor.name() };
+        }
+    }
+    InterceptResult::continued()
+}
+
 /// Result reported to interceptors after handler execution completes.
 ///
 /// The reply (for ask) is type-erased — interceptors can downcast via
@@ -144,16 +200,21 @@ pub trait InboundInterceptor: Send + Sync + 'static {
     /// `seq` is a zero-based sequence number within this stream/feed.
     /// The item is type-erased; downcast if you know the concrete type.
     ///
-    /// This is an observation hook. For per-item rejection, cancel the
-    /// stream via [`CancellationToken`](tokio_util::sync::CancellationToken).
+    /// Returns [`Disposition`] to control per-item flow:
+    /// - `Continue` — deliver/forward the item normally.
+    /// - `Drop` — silently skip this item.
+    /// - `Delay(d)` — pause for `d` before forwarding (backpressure).
+    /// - `Reject(reason)` — terminate the stream with an error.
+    /// - `Retry(d)` — not meaningful for stream items; treated as `Drop`.
     fn on_stream_item(
         &self,
         ctx: &InboundContext<'_>,
         headers: &Headers,
         seq: u64,
         item: &dyn Any,
-    ) {
+    ) -> Disposition {
         let _ = (ctx, headers, seq, item);
+        Disposition::Continue
     }
 }
 
@@ -223,14 +284,22 @@ pub trait OutboundInterceptor: Send + Sync + 'static {
     ///
     /// `seq` is a zero-based sequence number within this stream/feed.
     /// The item is type-erased; downcast if you know the concrete type.
+    ///
+    /// Returns [`Disposition`] to control per-item flow:
+    /// - `Continue` — deliver/forward the item normally.
+    /// - `Drop` — silently skip this item.
+    /// - `Delay(d)` — pause for `d` before forwarding (backpressure).
+    /// - `Reject(reason)` — terminate the stream with an error.
+    /// - `Retry(d)` — not meaningful for stream items; treated as `Drop`.
     fn on_stream_item(
         &self,
         ctx: &OutboundContext<'_>,
         headers: &Headers,
         seq: u64,
         item: &dyn Any,
-    ) {
+    ) -> Disposition {
         let _ = (ctx, headers, seq, item);
+        Disposition::Continue
     }
 }
 

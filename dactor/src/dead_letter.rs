@@ -11,7 +11,7 @@ pub enum DeadLetterReason {
     ActorNotFound,
     /// The mailbox was full and overflow strategy rejected the message.
     MailboxFull,
-    /// An interceptor dropped the message.
+    /// An interceptor dropped the message or stream item.
     DroppedByInterceptor { interceptor: String },
 }
 

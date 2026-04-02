@@ -333,23 +333,41 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
         let interceptors = self.outbound_interceptors.clone();
         let target_id = self.id.clone();
         let target_name = self.name.clone();
-        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-        let intercepted = futures::StreamExt::scan(stream, 0u64, move |seq, item| {
-            let octx = OutboundContext {
-                target_id: target_id.clone(),
-                target_name: &target_name,
-                message_type: std::any::type_name::<M>(),
-                send_mode: SendMode::Stream,
-                remote: false,
-            };
+        let (out_tx, out_rx) = tokio::sync::mpsc::channel::<M::Reply>(buffer);
+        tokio::spawn(async move {
+            use tokio_stream::StreamExt;
+            let mut stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+            let mut seq: u64 = 0;
             let item_headers = Headers::new();
-            for interceptor in interceptors.iter() {
-                interceptor.on_stream_item(&octx, &item_headers, *seq, &item as &dyn Any);
+            while let Some(item) = stream.next().await {
+                let octx = OutboundContext {
+                    target_id: target_id.clone(),
+                    target_name: &target_name,
+                    message_type: std::any::type_name::<M>(),
+                    send_mode: SendMode::Stream,
+                    remote: false,
+                };
+                let result = crate::interceptor::run_outbound_stream_item(
+                    &interceptors, &octx, &item_headers, seq, &item as &dyn Any,
+                );
+                seq += 1;
+                match result.disposition {
+                    Disposition::Continue => {
+                        if out_tx.send(item).await.is_err() { break; }
+                    }
+                    Disposition::Drop => {
+                        result.log_if_dropped(&target_name, std::any::type_name::<M>(), "stream reply");
+                        continue;
+                    }
+                    Disposition::Delay(d) => {
+                        tokio::time::sleep(d).await;
+                        if out_tx.send(item).await.is_err() { break; }
+                    }
+                    Disposition::Reject(_) | Disposition::Retry(_) => break,
+                }
             }
-            *seq += 1;
-            std::future::ready(Some(item))
         });
-        Ok(Box::pin(intercepted))
+        Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(out_rx)))
     }
 
     fn feed<M>(
@@ -380,7 +398,7 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
         self.sender.send(Some(dispatch))?;
 
         // Spawn a drain task: pulls items from the input BoxStream and pushes to item_tx.
-        // Each item goes through outbound on_stream_item() for per-item observation.
+        // Each item goes through outbound on_stream_item() for per-item interception.
         let interceptors = self.outbound_interceptors.clone();
         let target_id = self.id.clone();
         let target_name = self.name.clone();
@@ -391,52 +409,43 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
             let item_headers = Headers::new();
             let result = std::panic::AssertUnwindSafe(async {
                 loop {
-                    if let Some(ref token) = cancel {
+                    let next_item = if let Some(ref token) = cancel {
                         tokio::select! {
                             biased;
                             _ = token.cancelled() => break,
-                            item = input.next() => {
-                                match item {
-                                    Some(item) => {
-                                        let octx = OutboundContext {
-                                            target_id: target_id.clone(),
-                                            target_name: &target_name,
-                                            message_type: std::any::type_name::<M>(),
-                                            send_mode: SendMode::Feed,
-                                            remote: false,
-                                        };
-                                        for interceptor in interceptors.iter() {
-                                            interceptor.on_stream_item(&octx, &item_headers, seq, &item as &dyn Any);
-                                        }
-                                        seq += 1;
-                                        if item_tx.send(item).await.is_err() {
-                                            break; // actor dropped the receiver
-                                        }
-                                    }
-                                    None => break, // stream exhausted
-                                }
-                            }
+                            item = input.next() => item,
                         }
                     } else {
-                        match input.next().await {
-                            Some(item) => {
-                                let octx = OutboundContext {
-                                    target_id: target_id.clone(),
-                                    target_name: &target_name,
-                                    message_type: std::any::type_name::<M>(),
-                                    send_mode: SendMode::Feed,
-                                    remote: false,
-                                };
-                                for interceptor in interceptors.iter() {
-                                    interceptor.on_stream_item(&octx, &item_headers, seq, &item as &dyn Any);
-                                }
-                                seq += 1;
-                                if item_tx.send(item).await.is_err() {
-                                    break; // actor dropped the receiver
-                                }
+                        input.next().await
+                    };
+                    match next_item {
+                        Some(item) => {
+                            let octx = OutboundContext {
+                                target_id: target_id.clone(),
+                                target_name: &target_name,
+                                message_type: std::any::type_name::<M>(),
+                                send_mode: SendMode::Feed,
+                                remote: false,
+                            };
+                            let mut disposition = Disposition::Continue;
+                            for interceptor in interceptors.iter() {
+                                disposition = interceptor.on_stream_item(&octx, &item_headers, seq, &item as &dyn Any);
+                                if !matches!(disposition, Disposition::Continue) { break; }
                             }
-                            None => break, // stream exhausted
+                            seq += 1;
+                            match disposition {
+                                Disposition::Continue => {
+                                    if item_tx.send(item).await.is_err() { break; }
+                                }
+                                Disposition::Drop => continue,
+                                Disposition::Delay(d) => {
+                                    tokio::time::sleep(d).await;
+                                    if item_tx.send(item).await.is_err() { break; }
+                                }
+                                Disposition::Reject(_) | Disposition::Retry(_) => break,
+                            }
                         }
+                        None => break,
                     }
                 }
             })
@@ -540,22 +549,40 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
         let interceptors = self.outbound_interceptors.clone();
         let target_id = self.id.clone();
         let target_name = self.name.clone();
-        let intercepted = futures::StreamExt::scan(reader.into_stream(), 0u64, move |seq, item| {
-            let octx = OutboundContext {
-                target_id: target_id.clone(),
-                target_name: &target_name,
-                message_type: std::any::type_name::<M>(),
-                send_mode: SendMode::Stream,
-                remote: false,
-            };
-            let item_headers = Headers::new();
-            for interceptor in interceptors.iter() {
-                interceptor.on_stream_item(&octx, &item_headers, *seq, &item as &dyn Any);
+        let (out_tx, out_rx) = tokio::sync::mpsc::channel::<M::Reply>(buffer);
+        tokio::spawn(async move {
+            use tokio_stream::StreamExt;
+            let mut stream = reader.into_stream();
+            let mut seq: u64 = 0;
+            while let Some(item) = stream.next().await {
+                let octx = OutboundContext {
+                    target_id: target_id.clone(),
+                    target_name: &target_name,
+                    message_type: std::any::type_name::<M>(),
+                    send_mode: SendMode::Stream,
+                    remote: false,
+                };
+                let item_headers = Headers::new();
+                let mut disposition = Disposition::Continue;
+                for interceptor in interceptors.iter() {
+                    disposition = interceptor.on_stream_item(&octx, &item_headers, seq, &item as &dyn Any);
+                    if !matches!(disposition, Disposition::Continue) { break; }
+                }
+                seq += 1;
+                match disposition {
+                    Disposition::Continue => {
+                        if out_tx.send(item).await.is_err() { break; }
+                    }
+                    Disposition::Drop => continue,
+                    Disposition::Delay(d) => {
+                        tokio::time::sleep(d).await;
+                        if out_tx.send(item).await.is_err() { break; }
+                    }
+                    Disposition::Reject(_) | Disposition::Retry(_) => break,
+                }
             }
-            *seq += 1;
-            std::future::ready(Some(item))
         });
-        Ok(Box::pin(intercepted))
+        Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(out_rx)))
     }
 
     fn feed_batched<M>(
@@ -598,94 +625,85 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
         tokio::spawn(async move {
             use futures::{FutureExt, StreamExt};
 
-            // Wrap input stream with per-item outbound interception
-            let mut seq: u64 = 0;
-            let input: BoxStream<M::Item> = Box::pin(input.map(move |item| {
-                let octx = OutboundContext {
-                    target_id: target_id.clone(),
-                    target_name: &target_name,
-                    message_type: std::any::type_name::<M>(),
-                    send_mode: SendMode::Feed,
-                    remote: false,
-                };
-                let item_headers = Headers::new();
-                for interceptor in interceptors.iter() {
-                    interceptor.on_stream_item(&octx, &item_headers, seq, &item as &dyn Any);
+            // Intercept input stream: run on_stream_item per item, handle Disposition
+            let (intercepted_tx, intercepted_rx) = tokio::sync::mpsc::channel::<M::Item>(buffer);
+            let intercept_handle = tokio::spawn({
+                let cancel = cancel.clone();
+                async move {
+                    let mut input = input;
+                    let mut seq: u64 = 0;
+                    let item_headers = Headers::new();
+                    loop {
+                        let next_item = if let Some(ref token) = cancel {
+                            tokio::select! {
+                                biased;
+                                _ = token.cancelled() => break,
+                                item = input.next() => item,
+                            }
+                        } else {
+                            input.next().await
+                        };
+                        match next_item {
+                            Some(item) => {
+                                let octx = OutboundContext {
+                                    target_id: target_id.clone(),
+                                    target_name: &target_name,
+                                    message_type: std::any::type_name::<M>(),
+                                    send_mode: SendMode::Feed,
+                                    remote: false,
+                                };
+                                let mut disposition = Disposition::Continue;
+                                for interceptor in interceptors.iter() {
+                                    disposition = interceptor.on_stream_item(&octx, &item_headers, seq, &item as &dyn Any);
+                                    if !matches!(disposition, Disposition::Continue) { break; }
+                                }
+                                seq += 1;
+                                match disposition {
+                                    Disposition::Continue => {
+                                        if intercepted_tx.send(item).await.is_err() { break; }
+                                    }
+                                    Disposition::Drop => continue,
+                                    Disposition::Delay(d) => {
+                                        tokio::time::sleep(d).await;
+                                        if intercepted_tx.send(item).await.is_err() { break; }
+                                    }
+                                    Disposition::Reject(_) | Disposition::Retry(_) => break,
+                                }
+                            }
+                            None => break,
+                        }
+                    }
                 }
-                seq += 1;
-                item
-            }));
+            });
 
             // Batched channel
             let (batch_tx, mut batch_rx) = tokio::sync::mpsc::channel::<Vec<M::Item>>(buffer);
 
-            // Writer task: batch items from input stream
-            let cancel_clone = cancel.clone();
+            // Writer task: batch intercepted items
             let writer_handle = tokio::spawn(async move {
-                let mut input = input;
+                let mut intercepted_rx = intercepted_rx;
                 let batch_delay = batch_config.max_delay;
                 let mut writer = BatchWriter::new(batch_tx, batch_config);
                 let result = std::panic::AssertUnwindSafe(async {
                     loop {
                         if writer.buffered_count() > 0 {
                             let deadline = tokio::time::Instant::now() + batch_delay;
-                            if let Some(ref token) = cancel_clone {
-                                tokio::select! {
-                                    biased;
-                                    _ = token.cancelled() => break,
-                                    item = input.next() => {
-                                        match item {
-                                            Some(item) => {
-                                                if writer.push(item).await.is_err() {
-                                                    break;
-                                                }
-                                            }
-                                            None => break,
-                                        }
-                                    }
-                                    _ = tokio::time::sleep_until(deadline) => {
-                                        if writer.check_deadline().await.is_err() { break; }
-                                    }
-                                }
-                            } else {
-                                tokio::select! {
-                                    biased;
-                                    item = input.next() => {
-                                        match item {
-                                            Some(item) => {
-                                                if writer.push(item).await.is_err() {
-                                                    break;
-                                                }
-                                            }
-                                            None => break,
-                                        }
-                                    }
-                                    _ = tokio::time::sleep_until(deadline) => {
-                                        if writer.check_deadline().await.is_err() { break; }
-                                    }
-                                }
-                            }
-                        } else if let Some(ref token) = cancel_clone {
                             tokio::select! {
                                 biased;
-                                _ = token.cancelled() => break,
-                                item = input.next() => {
-                                    match item {
-                                        Some(item) => {
-                                            if writer.push(item).await.is_err() {
-                                                break;
-                                            }
-                                        }
-                                        None => break,
+                                item = intercepted_rx.recv() => match item {
+                                    Some(item) => {
+                                        if writer.push(item).await.is_err() { break; }
                                     }
+                                    None => break,
+                                },
+                                _ = tokio::time::sleep_until(deadline) => {
+                                    if writer.check_deadline().await.is_err() { break; }
                                 }
                             }
                         } else {
-                            match input.next().await {
+                            match intercepted_rx.recv().await {
                                 Some(item) => {
-                                    if writer.push(item).await.is_err() {
-                                        break;
-                                    }
+                                    if writer.push(item).await.is_err() { break; }
                                 }
                                 None => break,
                             }
@@ -714,6 +732,7 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
             }
 
             let _ = writer_handle.await;
+            let _ = intercept_handle.await;
             // item_tx drops here, closing the channel
         });
 
