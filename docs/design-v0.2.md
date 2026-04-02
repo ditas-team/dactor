@@ -1522,10 +1522,27 @@ sequenceDiagram
 ```
 
 The batch writer accumulates items and flushes when either `max_items` is
-reached or `max_delay` elapses — whichever comes first. On the receiving
-end, the batch reader unpacks items and delivers them individually to the
-`StreamReceiver` or `StreamSender`. The application code sees single items
-as usual.
+reached, `max_delay` elapses, or `max_bytes` is exceeded — whichever comes
+first. On the receiving end, the batch reader unpacks items and delivers
+them individually to the `StreamReceiver` or `StreamSender`. The
+application code sees single items as usual.
+
+**Byte-aware batching and serialization avoidance:**
+
+When `max_bytes` is set, items are added via `push_with_size(item, byte_len)`
+where `byte_len` is the pre-computed serialized size. The key invariant is:
+*serialization has already happened* at the point the item is pushed (the
+transport layer serialized the item to get the wire bytes and knows the
+length). The batch writer only uses the length for its decision — it never
+serializes internally, avoiding double serialization.
+
+The decision logic checks **before** adding:
+
+1. If the buffer is non-empty and `buffered_bytes + item_bytes > max_bytes`,
+   the current batch is flushed first, and the new item starts a fresh batch.
+2. After adding, if `buffered_bytes >= max_bytes`, the batch is flushed.
+3. If a single item exceeds `max_bytes`, it is still accepted and sent
+   immediately as a **batch of one** — never dropped or rejected.
 
 **Trade-offs:**
 

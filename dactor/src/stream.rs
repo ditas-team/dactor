@@ -195,17 +195,44 @@ impl<T: Send + 'static> BatchWriter<T> {
         self.push_with_size(item, 0).await
     }
 
-    /// Add an item with an estimated byte size.
-    /// Flushes if batch is full by count OR by accumulated bytes.
+    /// Add an item with its pre-computed byte size.
+    ///
+    /// The caller should have already serialized the item (e.g., for wire
+    /// transport) and pass the serialized byte length here. This avoids
+    /// double-serialization: the caller keeps the serialized bytes for
+    /// sending, and the batch writer uses only the length for its decision.
+    ///
+    /// **Decision logic (checked before adding):**
+    /// - If the current batch is non-empty and adding `item_bytes` would
+    ///   exceed `max_bytes`, the current batch is flushed first, and the
+    ///   item goes into a fresh batch.
+    /// - If a single item exceeds `max_bytes`, it is still accepted and
+    ///   sent immediately as a batch of one (never dropped).
+    ///
+    /// **After adding:**
+    /// - If `max_items` is reached, the batch is flushed.
+    /// - If `max_bytes` is reached (including oversized single items),
+    ///   the batch is flushed.
     pub async fn push_with_size(&mut self, item: T, item_bytes: usize) -> Result<(), StreamSendError> {
+        // Pre-check: would adding this item overflow the byte budget?
+        // If so, flush the current batch first so this item starts a new one.
+        if let Some(max_bytes) = self.config.max_bytes {
+            if !self.buffer.is_empty() && self.buffered_bytes + item_bytes > max_bytes {
+                self.flush().await?;
+            }
+        }
+
         self.buffer.push(item);
         self.buffered_bytes += item_bytes;
+
         if self.flush_deadline.is_none() {
             self.flush_deadline = Some(tokio::time::Instant::now() + self.config.max_delay);
         }
-        let should_flush = self.buffer.len() >= self.config.max_items
-            || self.config.max_bytes.map_or(false, |max| self.buffered_bytes >= max);
-        if should_flush {
+
+        // Post-check: count-full or byte-full (handles oversized single items).
+        let count_full = self.buffer.len() >= self.config.max_items;
+        let bytes_full = self.config.max_bytes.map_or(false, |max| self.buffered_bytes >= max);
+        if count_full || bytes_full {
             self.flush().await?;
         }
         Ok(())
@@ -415,5 +442,110 @@ mod tests {
         // but the empty batch is consumed as "end"). This is an edge case that callers
         // shouldn't trigger (BatchWriter never sends empty batches).
         assert_eq!(item, None);
+    }
+
+    #[tokio::test]
+    async fn test_batch_max_bytes_pre_flush() {
+        // max_bytes=100: items of 60 bytes each should NOT share a batch.
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let config = BatchConfig::new(10, Duration::from_secs(10)).with_max_bytes(100);
+        let mut writer = BatchWriter::new(tx, config);
+
+        // First item (60 bytes) — buffered
+        writer.push_with_size(1, 60).await.unwrap();
+        assert_eq!(writer.buffered_count(), 1);
+
+        // Second item (60 bytes) — would exceed 100, so current batch flushes first
+        writer.push_with_size(2, 60).await.unwrap();
+
+        // First batch should contain only item 1
+        let batch1 = rx.try_recv().unwrap();
+        assert_eq!(batch1, vec![1]);
+
+        // Item 2 is buffered in the new batch
+        assert_eq!(writer.buffered_count(), 1);
+        assert_eq!(writer.buffered_bytes(), 60);
+
+        writer.flush().await.unwrap();
+        let batch2 = rx.try_recv().unwrap();
+        assert_eq!(batch2, vec![2]);
+    }
+
+    #[tokio::test]
+    async fn test_batch_oversized_single_item() {
+        // max_bytes=50, but a single item is 200 bytes — must still be sent as batch of 1.
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let config = BatchConfig::new(10, Duration::from_secs(10)).with_max_bytes(50);
+        let mut writer = BatchWriter::new(tx, config);
+
+        writer.push_with_size(99, 200).await.unwrap();
+
+        // Oversized item flushed immediately as batch of 1
+        assert_eq!(writer.buffered_count(), 0);
+        let batch = rx.try_recv().unwrap();
+        assert_eq!(batch, vec![99]);
+    }
+
+    #[tokio::test]
+    async fn test_batch_max_bytes_exact_boundary() {
+        // max_bytes=100: two items of exactly 50 bytes each fill the budget exactly.
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let config = BatchConfig::new(10, Duration::from_secs(10)).with_max_bytes(100);
+        let mut writer = BatchWriter::new(tx, config);
+
+        writer.push_with_size(1, 50).await.unwrap();
+        assert_eq!(writer.buffered_count(), 1);
+
+        // Second item brings total to exactly 100 → flush (>= max_bytes)
+        writer.push_with_size(2, 50).await.unwrap();
+        assert_eq!(writer.buffered_count(), 0);
+
+        let batch = rx.try_recv().unwrap();
+        assert_eq!(batch, vec![1, 2]);
+    }
+
+    #[tokio::test]
+    async fn test_batch_max_bytes_multiple_small_items() {
+        // max_bytes=100: many small items (10 bytes each) fit in one batch.
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let config = BatchConfig::new(100, Duration::from_secs(10)).with_max_bytes(100);
+        let mut writer = BatchWriter::new(tx, config);
+
+        for i in 0..9 {
+            writer.push_with_size(i, 10).await.unwrap();
+        }
+        assert_eq!(writer.buffered_count(), 9);
+        assert_eq!(writer.buffered_bytes(), 90);
+
+        // 10th item brings total to 100 → flush
+        writer.push_with_size(9, 10).await.unwrap();
+        assert_eq!(writer.buffered_count(), 0);
+
+        let batch = rx.try_recv().unwrap();
+        assert_eq!(batch, (0..10).collect::<Vec<_>>());
+    }
+
+    #[tokio::test]
+    async fn test_batch_oversized_after_buffered_items() {
+        // Buffered items exist, then an oversized item arrives.
+        // Current batch should flush first, then oversized goes alone.
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let config = BatchConfig::new(100, Duration::from_secs(10)).with_max_bytes(50);
+        let mut writer = BatchWriter::new(tx, config);
+
+        writer.push_with_size(1, 20).await.unwrap();
+        writer.push_with_size(2, 20).await.unwrap();
+        assert_eq!(writer.buffered_count(), 2);
+
+        // Oversized item (200 bytes) — flush [1,2] first, then send [3] alone
+        writer.push_with_size(3, 200).await.unwrap();
+
+        let batch1 = rx.try_recv().unwrap();
+        assert_eq!(batch1, vec![1, 2]);
+
+        let batch2 = rx.try_recv().unwrap();
+        assert_eq!(batch2, vec![3]);
+
+        assert_eq!(writer.buffered_count(), 0);
     }
 }
