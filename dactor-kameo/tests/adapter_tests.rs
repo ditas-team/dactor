@@ -300,6 +300,7 @@ mod interceptor_tests {
         let (interceptor, receive_count, complete_count) = LoggingInterceptor::new();
         let options = SpawnOptions {
             interceptors: vec![Box::new(interceptor)],
+            ..Default::default()
         };
 
         let runtime = KameoRuntime::new();
@@ -337,6 +338,7 @@ mod interceptor_tests {
             interceptors: vec![Box::new(RejectInterceptor {
                 reason: "forbidden".into(),
             })],
+            ..Default::default()
         };
 
         let runtime = KameoRuntime::new();
@@ -361,6 +363,7 @@ mod interceptor_tests {
         let (outcome_capture, ask_count, tell_count) = OutcomeCapture::new();
         let options = SpawnOptions {
             interceptors: vec![Box::new(outcome_capture)],
+            ..Default::default()
         };
 
         let runtime = KameoRuntime::new();
@@ -409,6 +412,7 @@ mod interceptor_tests {
 
         let options = SpawnOptions {
             interceptors: vec![Box::new(inbound)],
+            ..Default::default()
         };
         let actor = runtime.spawn_with_options::<Echo>("echo-both-pipelines", (), options);
 
@@ -427,6 +431,7 @@ mod interceptor_tests {
             interceptors: vec![Box::new(RejectInterceptor {
                 reason: "nope".into(),
             })],
+            ..Default::default()
         };
 
         let runtime = KameoRuntime::new();
@@ -853,5 +858,159 @@ mod cancellation_tests {
 
         let reply = actor.ask(QuickPing, None).unwrap().await.unwrap();
         assert_eq!(reply, "quick");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Watch / Unwatch (DeathWatch) tests
+// ---------------------------------------------------------------------------
+
+mod watch_tests {
+    use dactor::actor::{Actor, ActorContext, ActorRef, Handler};
+    use dactor::message::Message;
+    use dactor::supervision::ChildTerminated;
+    use dactor_kameo::KameoRuntime;
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    // -- Watcher actor: sets a flag when it receives ChildTerminated ----------
+
+    struct Watcher {
+        terminated: Arc<AtomicBool>,
+    }
+
+    impl Actor for Watcher {
+        type Args = Arc<AtomicBool>;
+        type Deps = ();
+        fn create(terminated: Arc<AtomicBool>, _: ()) -> Self {
+            Watcher { terminated }
+        }
+    }
+
+    #[async_trait]
+    impl Handler<ChildTerminated> for Watcher {
+        async fn handle(&mut self, _msg: ChildTerminated, _ctx: &mut ActorContext) {
+            self.terminated.store(true, Ordering::SeqCst);
+        }
+    }
+
+    // -- Worker actor: minimal, stoppable -------------------------------------
+
+    struct Worker;
+
+    impl Actor for Worker {
+        type Args = ();
+        type Deps = ();
+        fn create(_: (), _: ()) -> Self { Worker }
+    }
+
+    struct Ping;
+    impl Message for Ping { type Reply = (); }
+
+    #[async_trait]
+    impl Handler<Ping> for Worker {
+        async fn handle(&mut self, _: Ping, _ctx: &mut ActorContext) {}
+    }
+
+    #[tokio::test]
+    async fn test_watch_receives_child_terminated() {
+        let runtime = KameoRuntime::new();
+        let terminated = Arc::new(AtomicBool::new(false));
+
+        let watcher = runtime.spawn::<Watcher>("watch-watcher-1", terminated.clone());
+        let worker = runtime.spawn::<Worker>("watch-worker-1", ());
+
+        runtime.watch(&watcher, worker.id());
+
+        // Give actors time to fully start
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        worker.stop();
+
+        // Wait for the ChildTerminated notification to be delivered
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        assert!(
+            terminated.load(Ordering::SeqCst),
+            "watcher should have received ChildTerminated",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unwatch_stops_notifications() {
+        let runtime = KameoRuntime::new();
+        let terminated = Arc::new(AtomicBool::new(false));
+
+        let watcher = runtime.spawn::<Watcher>("unwatch-watcher-1", terminated.clone());
+        let worker = runtime.spawn::<Worker>("unwatch-worker-1", ());
+
+        let watcher_id = watcher.id();
+        let worker_id = worker.id();
+        runtime.watch(&watcher, worker_id.clone());
+        runtime.unwatch(&watcher_id, &worker_id);
+
+        // Give actors time to fully start
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        worker.stop();
+
+        // Wait long enough to be confident no notification arrived
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        assert!(
+            !terminated.load(Ordering::SeqCst),
+            "watcher should NOT have received ChildTerminated after unwatch",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bounded mailbox fallback
+// ---------------------------------------------------------------------------
+
+mod mailbox_tests {
+    use dactor::actor::{Actor, ActorContext, ActorRef, Handler};
+    use dactor::mailbox::{MailboxConfig, OverflowStrategy};
+    use dactor::message::Message;
+    use dactor_kameo::{KameoRuntime, SpawnOptions};
+    use async_trait::async_trait;
+    use std::time::Duration;
+
+    struct Worker;
+
+    impl Actor for Worker {
+        type Args = ();
+        type Deps = ();
+        fn create(_: (), _: ()) -> Self { Worker }
+    }
+
+    struct Ping;
+    impl Message for Ping { type Reply = (); }
+
+    #[async_trait]
+    impl Handler<Ping> for Worker {
+        async fn handle(&mut self, _: Ping, _ctx: &mut ActorContext) {}
+    }
+
+    #[tokio::test]
+    async fn test_bounded_mailbox_falls_back_to_unbounded() {
+        let runtime = KameoRuntime::new();
+        let options = SpawnOptions {
+            interceptors: Vec::new(),
+            mailbox: MailboxConfig::bounded(10, OverflowStrategy::RejectWithError),
+        };
+
+        // Should still work — bounded config is accepted with a warning
+        let actor = runtime.spawn_with_options::<Worker>("bounded-worker", (), options);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(actor.is_alive(), "actor should be alive despite bounded mailbox config");
+
+        actor.tell(Ping).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        actor.stop();
     }
 }

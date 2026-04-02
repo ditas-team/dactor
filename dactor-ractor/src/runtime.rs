@@ -228,7 +228,6 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
                 dispatch_result.send_reply();
             }
             Err(_panic) => {
-                state.stop_reason = Some("handler panicked".into());
                 let error = ActorError::internal("handler panicked");
                 let action = state.actor.on_error(&error);
 
@@ -239,9 +238,10 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
 
                 match action {
                     ErrorAction::Resume => {
-                        // Continue processing next message
+                        // Actor resumes — do NOT set stop_reason
                     }
                     ErrorAction::Stop | ErrorAction::Escalate => {
+                        state.stop_reason = Some("handler panicked".into());
                         myself.stop(None);
                     }
                     ErrorAction::Restart => {

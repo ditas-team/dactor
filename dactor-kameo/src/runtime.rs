@@ -4,8 +4,9 @@
 //! single-message-type `kameo::Actor` trait using type-erased dispatch.
 
 use std::any::Any;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::FutureExt;
@@ -19,6 +20,8 @@ use dactor::dispatch::{
     AskDispatch, Dispatch, FeedDispatch, StreamDispatch, TypedDispatch,
 };
 use dactor::errors::{ActorSendError, ErrorAction, RuntimeError};
+use dactor::mailbox::MailboxConfig;
+use dactor::supervision::ChildTerminated;
 use dactor::interceptor::{
     Disposition, InboundContext, InboundInterceptor, OutboundContext, OutboundInterceptor, Outcome,
     SendMode,
@@ -28,6 +31,20 @@ use dactor::node::{ActorId, NodeId};
 use dactor::stream::{BoxStream, StreamReceiver, StreamSender};
 
 use crate::cluster::KameoClusterEvents;
+
+// ---------------------------------------------------------------------------
+// Watch registry
+// ---------------------------------------------------------------------------
+
+/// A type-erased entry in the watch registry.
+struct WatchEntry {
+    watcher_id: ActorId,
+    /// Closure that delivers a [`ChildTerminated`] to the watcher actor.
+    notify: Box<dyn Fn(ChildTerminated) + Send + Sync>,
+}
+
+/// Shared watch registry mapping watched actor ID → list of watcher entries.
+type WatcherMap = Arc<Mutex<HashMap<ActorId, Vec<WatchEntry>>>>;
 
 // ---------------------------------------------------------------------------
 // Kameo wrapper actor
@@ -41,6 +58,8 @@ struct KameoDactorActor<A: Actor> {
     actor: A,
     ctx: ActorContext,
     interceptors: Vec<Box<dyn InboundInterceptor>>,
+    watchers: WatcherMap,
+    stop_reason: Option<String>,
 }
 
 /// Arguments passed to the kameo actor at spawn time.
@@ -50,6 +69,7 @@ struct KameoSpawnArgs<A: Actor> {
     actor_id: ActorId,
     actor_name: String,
     interceptors: Vec<Box<dyn InboundInterceptor>>,
+    watchers: WatcherMap,
 }
 
 impl<A: Actor + 'static> kameo::Actor for KameoDactorActor<A> {
@@ -67,6 +87,8 @@ impl<A: Actor + 'static> kameo::Actor for KameoDactorActor<A> {
             actor,
             ctx,
             interceptors: args.interceptors,
+            watchers: args.watchers,
+            stop_reason: None,
         })
     }
 
@@ -75,10 +97,37 @@ impl<A: Actor + 'static> kameo::Actor for KameoDactorActor<A> {
         _actor_ref: kameo::actor::WeakActorRef<Self>,
         _reason: kameo::error::ActorStopReason,
     ) -> Result<(), Self::Error> {
+        // Reset context to lifecycle semantics before on_stop
         self.ctx.send_mode = None;
         self.ctx.headers = Headers::new();
         self.ctx.set_cancellation_token(None);
         self.actor.on_stop().await;
+
+        // Notify all watchers that this actor has terminated.
+        let actor_id = self.ctx.actor_id.clone();
+        let actor_name = self.ctx.actor_name.clone();
+        let entries = {
+            let mut watchers = self.watchers.lock().unwrap();
+            // Remove entries where this actor is the TARGET (watchers of this actor)
+            let target_entries = watchers.remove(&actor_id).unwrap_or_default();
+            // Also clean up entries where this actor is the WATCHER (prevent leak)
+            for entries in watchers.values_mut() {
+                entries.retain(|e| e.watcher_id != actor_id);
+            }
+            watchers.retain(|_, v| !v.is_empty());
+            target_entries
+        };
+        if !entries.is_empty() {
+            let notification = ChildTerminated {
+                child_id: actor_id,
+                child_name: actor_name,
+                reason: self.stop_reason.clone(),
+            };
+            for entry in &entries {
+                (entry.notify)(notification.clone());
+            }
+        }
+
         Ok(())
     }
 }
@@ -223,9 +272,10 @@ impl<A: Actor + 'static> kameo::message::Message<DactorMsg<A>> for KameoDactorAc
 
                 match action {
                     ErrorAction::Resume => {
-                        // Continue processing next message
+                        // Actor resumes — do NOT set stop_reason (graceful lifecycle continues)
                     }
                     ErrorAction::Stop | ErrorAction::Escalate => {
+                        self.stop_reason = Some("handler panicked".into());
                         // Signal kameo to stop via the context — but we don't
                         // have access to the kameo Context here since we
                         // consumed it in the signature. Instead, use kill on
@@ -564,15 +614,22 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
 // ---------------------------------------------------------------------------
 
 /// Options for spawning an actor, including the inbound interceptor pipeline.
+/// Use `..Default::default()` to future-proof against new fields.
 pub struct SpawnOptions {
     /// Inbound interceptors to attach to the actor.
     pub interceptors: Vec<Box<dyn InboundInterceptor>>,
+    /// Mailbox capacity configuration.
+    ///
+    /// **Note:** The kameo adapter currently only supports unbounded mailboxes.
+    /// Setting `Bounded` will log a warning and fall back to unbounded.
+    pub mailbox: MailboxConfig,
 }
 
 impl Default for SpawnOptions {
     fn default() -> Self {
         Self {
             interceptors: Vec::new(),
+            mailbox: MailboxConfig::Unbounded,
         }
     }
 }
@@ -595,6 +652,7 @@ pub struct KameoRuntime {
     next_local: AtomicU64,
     cluster_events: KameoClusterEvents,
     outbound_interceptors: Arc<Vec<Box<dyn OutboundInterceptor>>>,
+    watchers: WatcherMap,
 }
 
 impl KameoRuntime {
@@ -605,6 +663,7 @@ impl KameoRuntime {
             next_local: AtomicU64::new(1),
             cluster_events: KameoClusterEvents::new(),
             outbound_interceptors: Arc::new(Vec::new()),
+            watchers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -659,6 +718,9 @@ impl KameoRuntime {
     where
         A: Actor<Deps = ()> + 'static,
     {
+        if !matches!(options.mailbox, MailboxConfig::Unbounded) {
+            tracing::warn!("kameo adapter: bounded mailbox not yet implemented, using unbounded");
+        }
         self.spawn_internal::<A>(name, args, (), options.interceptors)
     }
 
@@ -687,6 +749,7 @@ impl KameoRuntime {
             actor_id: actor_id.clone(),
             actor_name: actor_name.clone(),
             interceptors,
+            watchers: self.watchers.clone(),
         };
 
         // kameo's Spawn::spawn_with_mailbox is synchronous (internally calls tokio::spawn)
@@ -700,6 +763,41 @@ impl KameoRuntime {
             name: actor_name,
             inner: actor_ref,
             outbound_interceptors: self.outbound_interceptors.clone(),
+        }
+    }
+    /// Register actor `watcher` to be notified when `target_id` terminates.
+    ///
+    /// The watcher must implement `Handler<ChildTerminated>`. When the target
+    /// stops, the runtime delivers a [`ChildTerminated`] message to the watcher.
+    pub fn watch<W>(&self, watcher: &KameoActorRef<W>, target_id: ActorId)
+    where
+        W: Actor + Handler<ChildTerminated> + 'static,
+    {
+        let watcher_id = watcher.id();
+        let watcher_inner = watcher.inner.clone();
+
+        let entry = WatchEntry {
+            watcher_id,
+            notify: Box::new(move |msg: ChildTerminated| {
+                let dispatch: Box<dyn Dispatch<W>> = Box::new(TypedDispatch { msg });
+                if watcher_inner.tell(DactorMsg(dispatch)).try_send().is_err() {
+                    tracing::debug!("watch notification dropped — watcher may have stopped");
+                }
+            }),
+        };
+
+        let mut watchers = self.watchers.lock().unwrap();
+        watchers.entry(target_id).or_default().push(entry);
+    }
+
+    /// Unregister `watcher_id` from notifications about `target_id`.
+    pub fn unwatch(&self, watcher_id: &ActorId, target_id: &ActorId) {
+        let mut watchers = self.watchers.lock().unwrap();
+        if let Some(entries) = watchers.get_mut(target_id) {
+            entries.retain(|e| &e.watcher_id != watcher_id);
+            if entries.is_empty() {
+                watchers.remove(target_id);
+            }
         }
     }
 }
