@@ -5,6 +5,10 @@ edition = "2021"
 description = "Coerce adapter for the dactor distributed actor framework"
 license = "MIT"
 repository = "https://github.com/Yaming-Hub/dactor"
+homepage = "https://github.com/Yaming-Hub/dactor"
+readme = "../README.md"
+keywords = ["actor", "distributed", "coerce", "framework", "runtime"]
+categories = ["concurrency", "network-programming"]
 
 [dependencies]
 dactor = { version = "0.2.0", path = "../dactor", features = ["test-support"] }

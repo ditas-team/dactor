@@ -1,12 +1,12 @@
 [package]
 name = "dactor-kameo"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Kameo adapter for the dactor distributed actor framework"
 license = "MIT"
 repository = "https://github.com/Yaming-Hub/dactor"
 homepage = "https://github.com/Yaming-Hub/dactor"
-readme = "README.md"
+readme = "../README.md"
 keywords = ["actor", "distributed", "kameo", "framework", "runtime"]
 categories = ["concurrency", "network-programming"]
 
