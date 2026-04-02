@@ -79,7 +79,7 @@ pub use throttle::ActorRateLimiter;
 pub use metrics::{MetricsInterceptor, MetricsStore, ActorMetrics};
 pub use mailbox::{MailboxConfig, OverflowStrategy};
 pub use stream::{BoxStream, StreamSendError, StreamSender};
-pub use stream::{StreamReceiver, BatchConfig, BatchWriter, BatchReader};
+pub use stream::{StreamReceiver, BatchConfig};
 pub use remote::{
     RemoteMessage, MessageSerializer, SerializationError,
     WireEnvelope, WireHeaders, MessageVersionHandler,

@@ -170,7 +170,7 @@ impl BatchConfig {
 ///
 /// Flushes when any condition is met: `max_items` reached, `max_delay`
 /// elapsed, or `max_bytes` exceeded (if configured).
-pub struct BatchWriter<T: Send + 'static> {
+pub(crate) struct BatchWriter<T: Send + 'static> {
     sender: tokio::sync::mpsc::Sender<Vec<T>>,
     config: BatchConfig,
     buffer: Vec<T>,
@@ -280,7 +280,7 @@ impl<T: Send + 'static> BatchWriter<T> {
 }
 
 /// Batching reader: receives `Vec<T>` batches, yields individual items.
-pub struct BatchReader<T: Send + 'static> {
+pub(crate) struct BatchReader<T: Send + 'static> {
     receiver: tokio::sync::mpsc::Receiver<Vec<T>>,
     current_batch: VecDeque<T>,
 }
