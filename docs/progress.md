@@ -56,15 +56,15 @@
 | R1 | Ractor adapter v0.2 — spawn, tell, ask, stream, feed | impl/ractor-v2 | ✅ PR #25 | Full v0.2 adapter |
 | R2 | Ractor — inbound + outbound interceptor pipelines | impl/ractor-interceptors | ✅ PR #26 | Interceptor wiring |
 | R3 | Ractor — comprehensive adapter tests | impl/ractor-tests | ✅ PR #27 | Adapter test coverage |
-| R4 | Ractor — watch/unwatch + mailbox config | impl/ractor-watch-mailbox | ✅ PR #34 | DeathWatch + MailboxConfig |
+| R4 | Ractor — watch/unwatch + mailbox config | impl/ractor-watch-mailbox | ✅ PR #35 | DeathWatch + MailboxConfig |
 | K1 | Kameo adapter v0.2 — full implementation | impl/kameo-v2 | ✅ PR #28 | Full v0.2 adapter |
-| K2 | Kameo — watch/unwatch + mailbox config | impl/kameo-watch-mailbox | ✅ PR #35 | DeathWatch + MailboxConfig |
+| K2 | Kameo — watch/unwatch + mailbox config | impl/kameo-watch-mailbox | ✅ PR #36 | DeathWatch + MailboxConfig |
 | M1 | dactor-mock — MockCluster, MockNode, MockNetwork | impl/mock-cluster | ✅ PR #29 | Multi-node simulation |
 | C1 | dactor-coerce adapter crate (stub) | impl/coerce-stub | ✅ PR #30 | Stub, no runtime wired |
 | — | Remove V2 prefix and old v0.1 API | impl/cleanup-v2-prefix | ✅ PR #31 | Naming cleanup |
 | — | Refactor: Extract shared dispatch module | impl/dispatch-extract | ✅ PR #32 | Shared dispatch module |
-| — | Comprehensive README | impl/readme | ✅ PR #33 | Full project documentation |
-| M2 | Mock cluster — node fault injection + delivery checks | impl/mock-faults | ✅ PR #34 | Fault injection |
+| — | Comprehensive README | impl/readme | ✅ PR #34 | Full project documentation |
+| M2 | Mock cluster — node fault injection + delivery checks | impl/mock-faults | ✅ PR #33 | Fault injection |
 
 ---
 
@@ -74,10 +74,10 @@
 |-------|--------|---------|
 | Core unit tests | ~150 | 155 |
 | Adapter unit tests | ~80 | 60 (30 ractor + 30 kameo) |
-| Mock tests | ~50 | 14 |
+| Mock tests | ~50 | 16 |
 | Coerce stub tests | — | 10 |
 | Integration tests | ~30 | 5 (harness) |
-| **Total** | **~310** | **~244** |
+| **Total** | **~310** | **~246** |
 
 ---
 
