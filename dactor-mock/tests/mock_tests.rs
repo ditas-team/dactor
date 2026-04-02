@@ -1,7 +1,12 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
-use dactor::actor::ActorRef;
+use async_trait::async_trait;
+use dactor::actor::{Actor, ActorContext, ActorRef, Handler};
+use dactor::message::Message;
 use dactor::node::NodeId;
+use dactor::supervision::ChildTerminated;
 use dactor::test_support::conformance::*;
 use dactor_mock::MockCluster;
 
@@ -189,4 +194,83 @@ async fn test_cluster_state() {
     let state = cluster.state().expect("cluster should not be empty");
     assert_eq!(state.node_count(), 3);
     assert!(state.contains(&NodeId("node-2".into())));
+}
+
+// --- Watch/unwatch test actors ---
+
+struct Watcher {
+    terminated: Arc<AtomicBool>,
+}
+
+impl Actor for Watcher {
+    type Args = Arc<AtomicBool>;
+    type Deps = ();
+    fn create(terminated: Arc<AtomicBool>, _: ()) -> Self {
+        Watcher { terminated }
+    }
+}
+
+#[async_trait]
+impl Handler<ChildTerminated> for Watcher {
+    async fn handle(&mut self, _msg: ChildTerminated, _ctx: &mut ActorContext) {
+        self.terminated.store(true, Ordering::SeqCst);
+    }
+}
+
+struct Worker;
+
+impl Actor for Worker {
+    type Args = ();
+    type Deps = ();
+    fn create(_: (), _: ()) -> Self {
+        Worker
+    }
+}
+
+struct WorkerMsg;
+impl Message for WorkerMsg {
+    type Reply = ();
+}
+
+#[async_trait]
+impl Handler<WorkerMsg> for Worker {
+    async fn handle(&mut self, _: WorkerMsg, _: &mut ActorContext) {}
+}
+
+#[tokio::test]
+async fn test_mock_cluster_watch() {
+    let cluster = MockCluster::new(&["node-1"]);
+    let node = cluster.node("node-1");
+
+    let terminated = Arc::new(AtomicBool::new(false));
+    let watcher = node.runtime.spawn::<Watcher>("watcher", terminated.clone());
+    let worker = node.runtime.spawn::<Worker>("worker", ());
+
+    let worker_id = worker.id();
+    cluster.watch("node-1", &watcher, worker_id.clone());
+
+    worker.stop();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(terminated.load(Ordering::SeqCst), "watcher should receive ChildTerminated");
+}
+
+#[tokio::test]
+async fn test_mock_cluster_unwatch() {
+    let cluster = MockCluster::new(&["node-1"]);
+    let node = cluster.node("node-1");
+
+    let terminated = Arc::new(AtomicBool::new(false));
+    let watcher = node.runtime.spawn::<Watcher>("watcher", terminated.clone());
+    let worker = node.runtime.spawn::<Worker>("worker", ());
+
+    let worker_id = worker.id();
+    let watcher_id = watcher.id();
+    cluster.watch("node-1", &watcher, worker_id.clone());
+    cluster.unwatch("node-1", &watcher_id, &worker_id);
+
+    worker.stop();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(!terminated.load(Ordering::SeqCst), "unwatch should prevent notification");
 }

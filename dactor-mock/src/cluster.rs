@@ -1,8 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dactor::node::NodeId;
+use dactor::actor::{Actor, Handler};
+use dactor::node::{ActorId, NodeId};
 use dactor::remote::ClusterState;
+use dactor::supervision::ChildTerminated;
+use dactor::test_support::test_runtime::TestActorRef;
 
 use crate::network::MockNetwork;
 use crate::node::MockNode;
@@ -88,6 +91,27 @@ impl MockCluster {
     /// The node is re-inserted using its original `node_id`.
     pub fn unfreeze_node(&mut self, node: MockNode) {
         self.nodes.insert(node.node_id.clone(), node);
+    }
+
+    /// Watch an actor from a watcher on the same node.
+    /// Both watcher and target must be on nodes in this cluster.
+    pub fn watch<W>(
+        &self,
+        watcher_node: &str,
+        watcher: &TestActorRef<W>,
+        target_id: ActorId,
+    )
+    where
+        W: Actor + Handler<ChildTerminated> + 'static,
+    {
+        let node = self.node(watcher_node);
+        node.runtime.watch(watcher, target_id);
+    }
+
+    /// Unwatch an actor.
+    pub fn unwatch(&self, node_id: &str, watcher_id: &ActorId, target_id: &ActorId) {
+        let node = self.node(node_id);
+        node.runtime.unwatch(watcher_id, target_id);
     }
 
     /// Get a ClusterState snapshot. Returns `None` if the cluster is empty.

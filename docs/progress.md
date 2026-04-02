@@ -14,11 +14,12 @@
 | v0.2.0-beta.1 — Streaming & Cancellation | PR 12–15 | ✅ Complete |
 | v0.2.0-beta.2 — Error Model & Persistence | PR 16–18 | ✅ Complete |
 | v0.2.0-rc.1 — Observability & Remote | PR 19–21 | ✅ Complete |
-| Adapter — dactor-ractor | PR R1–R3 | ✅ Complete |
-| Adapter — dactor-kameo | PR K1 | ✅ Complete |
+| Adapter — dactor-ractor | PR R1–R4 | ✅ Complete |
+| Adapter — dactor-kameo | PR K1–K2 | ✅ Complete |
 | Adapter — dactor-mock | PR M1–M2 | ✅ Complete |
 | Adapter — dactor-coerce | PR C1 | ✅ Complete (stub) |
 | Cleanup — dispatch extraction, V2 prefix removal | cleanup | ✅ Complete |
+| Docs — comprehensive README | docs | ✅ Complete |
 
 ---
 
@@ -55,11 +56,14 @@
 | R1 | Ractor adapter v0.2 — spawn, tell, ask, stream, feed | impl/ractor-v2 | ✅ PR #25 | Full v0.2 adapter |
 | R2 | Ractor — inbound + outbound interceptor pipelines | impl/ractor-interceptors | ✅ PR #26 | Interceptor wiring |
 | R3 | Ractor — comprehensive adapter tests | impl/ractor-tests | ✅ PR #27 | Adapter test coverage |
+| R4 | Ractor — watch/unwatch + mailbox config | impl/ractor-watch-mailbox | ✅ PR #35 | DeathWatch + MailboxConfig |
 | K1 | Kameo adapter v0.2 — full implementation | impl/kameo-v2 | ✅ PR #28 | Full v0.2 adapter |
+| K2 | Kameo — watch/unwatch + mailbox config | impl/kameo-watch-mailbox | ✅ PR #36 | DeathWatch + MailboxConfig |
 | M1 | dactor-mock — MockCluster, MockNode, MockNetwork | impl/mock-cluster | ✅ PR #29 | Multi-node simulation |
 | C1 | dactor-coerce adapter crate (stub) | impl/coerce-stub | ✅ PR #30 | Stub, no runtime wired |
 | — | Remove V2 prefix and old v0.1 API | impl/cleanup-v2-prefix | ✅ PR #31 | Naming cleanup |
 | — | Refactor: Extract shared dispatch module | impl/dispatch-extract | ✅ PR #32 | Shared dispatch module |
+| — | Comprehensive README | impl/readme | ✅ PR #34 | Full project documentation |
 | M2 | Mock cluster — node fault injection + delivery checks | impl/mock-faults | ✅ PR #33 | Fault injection |
 
 ---
@@ -68,11 +72,12 @@
 
 | Layer | Target | Current |
 |-------|--------|---------|
-| Core unit tests | ~150 | 157 |
-| Adapter unit tests | ~80 | 44 (ractor + kameo) |
-| Conformance tests | ~50 | 6 |
-| Integration tests | ~30 | 0 |
-| **Total** | **~310** | **201+** |
+| Core unit tests | ~150 | 155 |
+| Adapter unit tests | ~80 | 60 (30 ractor + 30 kameo) |
+| Mock tests | ~50 | 16 |
+| Coerce stub tests | — | 10 |
+| Integration tests | ~30 | 5 (harness) |
+| **Total** | **~310** | **~246** |
 
 ---
 
@@ -109,4 +114,7 @@
 | 2026-04-01 | PR C1 | dactor-coerce stub crate |
 | 2026-04-01 | cleanup | Remove V2 prefix from all types, drop old v0.1 API |
 | 2026-04-01 | cleanup | Extract shared dispatch module from test_runtime |
+| 2026-04-01 | docs | Comprehensive README |
 | 2026-04-01 | PR M2 | Mock cluster: node fault injection, delivery checks |
+| 2026-04-01 | PR R4 | Ractor watch/unwatch + mailbox config |
+| 2026-04-01 | PR K2 | Kameo watch/unwatch + mailbox config |
