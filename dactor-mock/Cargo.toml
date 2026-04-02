@@ -5,6 +5,10 @@ edition = "2021"
 description = "Mock multi-node cluster for testing dactor actor systems"
 license = "MIT"
 repository = "https://github.com/Yaming-Hub/dactor"
+homepage = "https://github.com/Yaming-Hub/dactor"
+readme = "README.md"
+keywords = ["actor", "distributed", "mock", "testing", "framework"]
+categories = ["concurrency", "development-tools::testing"]
 
 [dependencies]
 dactor = { version = "0.2.0", path = "../dactor", features = ["test-support"] }

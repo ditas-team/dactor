@@ -8,8 +8,8 @@ This crate implements the `ActorRuntime` trait from `dactor` using [ractor](http
 
 ```toml
 [dependencies]
-dactor = "0.1"
-dactor-ractor = "0.1"
+dactor = "0.2"
+dactor-ractor = "0.2"
 ```
 
 See the [dactor repository](https://github.com/Yaming-Hub/dactor) for full documentation and examples.

@@ -5,6 +5,10 @@ edition = "2021"
 description = "Multi-process integration test harness for dactor actor framework"
 license = "MIT"
 repository = "https://github.com/Yaming-Hub/dactor"
+homepage = "https://github.com/Yaming-Hub/dactor"
+readme = "README.md"
+keywords = ["actor", "distributed", "testing", "harness", "integration"]
+categories = ["concurrency", "development-tools::testing"]
 
 [dependencies]
 dactor = { version = "0.2.0", path = "../dactor" }
