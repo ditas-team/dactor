@@ -118,3 +118,80 @@
 | 2026-04-01 | PR M2 | Mock cluster: node fault injection, delivery checks |
 | 2026-04-01 | PR R4 | Ractor watch/unwatch + mailbox config |
 | 2026-04-01 | PR K2 | Kameo watch/unwatch + mailbox config |
+
+---
+
+## Phase 3: Feature Completion & E2E Testing
+
+Based on design spec audit (§4-§17 vs implementation), the following work items remain:
+
+### 3.1 Missing Features from Design Spec
+
+| # | Feature | Design Section | Priority | Status |
+|---|---------|----------------|----------|--------|
+| F1 | Stream/Feed batching (BatchConfig) | §4.11.1 | High | 🔲 Not started |
+| F2 | Actor Pool (PoolRef, routing) | §4.14 | Medium | 🔲 Not started |
+| F3 | EventSourced/DurableState actor traits | §6.3.2-6.3.4 | Medium | 🔲 Types only |
+| F4 | Supervision strategies (OneForOne, etc.) | §6.1 | Low | 🔲 Design only |
+| F5 | Priority mailbox scheduling | §5.7-5.9 | Low | 🔲 Priority header exists |
+| F6 | on_reply wiring for outbound interceptors | §5.3 | Low | 🔲 Trait exists, not wired |
+| F7 | Timer methods (send_after, send_interval) | §4.5 | Low | 🔲 TimerHandle trait only |
+
+### 3.2 Sample Code for All Key Features
+
+| # | Example | Feature | Status |
+|---|---------|---------|--------|
+| E1 | basic_counter | tell/ask | ✅ Done |
+| E2 | streaming | stream/feed | ✅ Done |
+| E3 | interceptors | inbound/outbound | ✅ Done |
+| E4 | supervision | watch/ChildTerminated | ✅ Done |
+| E5 | bounded_mailbox | MailboxConfig | ✅ Done |
+| E6 | persistence | JournalStorage/SnapshotStorage | ✅ Done |
+| E7 | cancellation | CancellationToken/cancel_after | 🔲 Not started |
+| E8 | error_handling | ErrorCode/error chains | 🔲 Not started |
+| E9 | metrics | MetricsInterceptor | 🔲 Not started |
+| E10 | dead_letters | DeadLetterHandler | 🔲 Not started |
+| E11 | rate_limiting | ActorRateLimiter | 🔲 Not started |
+| E12 | batch_streaming | BatchConfig (after F1) | 🔲 Not started |
+
+### 3.3 E2E Integration Tests (Test Harness)
+
+Real multi-process cluster tests using dactor-test-harness with gRPC control:
+
+| # | Test | Provider | Status |
+|---|------|----------|--------|
+| T1 | Ractor 2-node: spawn + tell/ask cross-check | ractor | 🔲 Not started |
+| T2 | Ractor 3-node: crash node + watch notification | ractor | 🔲 Not started |
+| T3 | Ractor: partition + heal + verify recovery | ractor | 🔲 Not started |
+| T4 | Kameo 2-node: spawn + tell/ask | kameo | 🔲 Not started |
+| T5 | Kameo 3-node: crash + restart | kameo | 🔲 Not started |
+| T6 | Coerce 2-node: spawn + tell/ask | coerce | 🔲 Not started |
+| T7 | Happy path: 100 messages in order across nodes | all | 🔲 Not started |
+| T8 | Corner case: send to stopped actor | all | 🔲 Not started |
+| T9 | Corner case: concurrent asks from multiple callers | all | 🔲 Not started |
+| T10 | Corner case: stream with slow consumer | all | 🔲 Not started |
+
+### 3.4 Stream/Feed Message Batching
+
+Reduce message overhead in streaming by batching multiple values:
+
+| # | Item | Description | Status |
+|---|------|-------------|--------|
+| B1 | BatchConfig struct | max_items + max_delay configuration | 🔲 Not started |
+| B2 | BatchWriter | Accumulates items, flushes on count or timeout | 🔲 Not started |
+| B3 | BatchReader | Unpacks batched items into individual items | 🔲 Not started |
+| B4 | stream_batched() | ActorRef method with BatchConfig param | 🔲 Not started |
+| B5 | feed_batched() | ActorRef method with BatchConfig param | 🔲 Not started |
+| B6 | Tests | Verify batching reduces message count | 🔲 Not started |
+| B7 | Example | Demonstrate batch streaming | 🔲 Not started |
+
+### Recommended Execution Order
+
+1. **F1 + B1-B7**: Stream batching (highest user-requested priority)
+2. **E7-E11**: Sample code for remaining features
+3. **T1-T3**: Ractor E2E tests (validates real multi-process)
+4. **T4-T6**: Kameo/Coerce E2E tests
+5. **F3**: EventSourced/DurableState actor integration
+6. **F2**: Actor Pool
+7. **T7-T10**: Cross-adapter corner case tests
+8. **F4-F7**: Remaining design features
