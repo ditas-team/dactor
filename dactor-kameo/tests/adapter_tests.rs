@@ -82,6 +82,51 @@ async fn conformance_on_error_resume() {
     test_on_error_resume(|name, init| runtime.spawn::<ConformanceResumeActor>(name, init)).await;
 }
 
+#[tokio::test]
+async fn conformance_batched_stream() {
+    let runtime = KameoRuntime::new();
+    test_batched_stream(|name, init| runtime.spawn::<ConformanceStreamer>(name, init)).await;
+}
+
+#[tokio::test]
+async fn conformance_batched_feed() {
+    let runtime = KameoRuntime::new();
+    test_batched_feed(|name, init| runtime.spawn::<ConformanceAggregator>(name, init)).await;
+}
+
+#[tokio::test]
+async fn conformance_stream_with_none_batch() {
+    let runtime = KameoRuntime::new();
+    test_stream_with_none_batch(|name, init| runtime.spawn::<ConformanceStreamer>(name, init))
+        .await;
+}
+
+#[tokio::test]
+async fn conformance_feed_with_none_batch() {
+    let runtime = KameoRuntime::new();
+    test_feed_with_none_batch(|name, init| runtime.spawn::<ConformanceAggregator>(name, init))
+        .await;
+}
+
+#[tokio::test]
+async fn conformance_tell_after_stop() {
+    let runtime = KameoRuntime::new();
+    test_tell_after_stop(|name, init| runtime.spawn::<ConformanceCounter>(name, init)).await;
+}
+
+#[tokio::test]
+async fn conformance_ask_after_stop() {
+    let runtime = KameoRuntime::new();
+    test_ask_after_stop(|name, init| runtime.spawn::<ConformanceCounter>(name, init)).await;
+}
+
+#[tokio::test]
+async fn conformance_multiple_handlers() {
+    let runtime = KameoRuntime::new();
+    test_multiple_handlers(|name, init| runtime.spawn::<ConformanceMultiHandler>(name, init))
+        .await;
+}
+
 // ---------------------------------------------------------------------------
 // Kameo-specific: re-exports & default
 // ---------------------------------------------------------------------------

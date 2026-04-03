@@ -132,10 +132,10 @@ Based on design spec audit (§4-§17 vs implementation), the following work item
 | F1 | Stream/Feed batching (BatchConfig) | §4.11.1 | High | ✅ PR #42 |
 | F2 | Actor Pool (PoolRef, routing) | §4.14 | Medium | ✅ PR #45 (local) |
 | F3 | EventSourced/DurableState actor traits | §6.3.2-6.3.4 | Medium | ✅ PR #44 |
-| F4 | Supervision strategies (OneForOne, etc.) | §6.1 | Low | 🔲 Design only |
-| F5 | Priority mailbox scheduling | §5.7-5.9 | Low | 🔲 Priority header exists |
-| F6 | on_reply wiring for outbound interceptors | §5.3 | Low | 🔲 Trait exists, not wired |
-| F7 | Timer methods (send_after, send_interval) | §4.5 | Low | 🔲 TimerHandle trait only |
+| F4 | Supervision strategies (OneForOne, etc.) | §6.1 | Low | ✅ PR #46 |
+| F5 | Priority mailbox scheduling | §5.7-5.9 | Low | ✅ PR #46 |
+| F6 | on_reply wiring for outbound interceptors | §5.3 | Low | ✅ PR #46 |
+| F7 | Timer methods (send_after, send_interval) | §4.5 | Low | ✅ PR #46 |
 
 ### 3.2 Sample Code for All Key Features
 
@@ -147,11 +147,11 @@ Based on design spec audit (§4-§17 vs implementation), the following work item
 | E4 | supervision | watch/ChildTerminated | ✅ Done |
 | E5 | bounded_mailbox | MailboxConfig | ✅ Done |
 | E6 | persistence | JournalStorage/SnapshotStorage | ✅ Done |
-| E7 | cancellation | CancellationToken/cancel_after | 🔲 Not started |
-| E8 | error_handling | ErrorCode/error chains | 🔲 Not started |
-| E9 | metrics | MetricsInterceptor | 🔲 Not started |
-| E10 | dead_letters | DeadLetterHandler | 🔲 Not started |
-| E11 | rate_limiting | ActorRateLimiter | 🔲 Not started |
+| E7 | cancellation | CancellationToken/cancel_after | ✅ PR #43 |
+| E8 | error_handling | ErrorCode/error chains | ✅ PR #43 |
+| E9 | metrics | MetricsInterceptor | ✅ PR #43 |
+| E10 | dead_letters | DeadLetterHandler | ✅ PR #43 |
+| E11 | rate_limiting | ActorRateLimiter | ✅ PR #43 |
 | E12 | batch_streaming | BatchConfig | ✅ Done |
 
 ### 3.3 E2E Integration Tests (Test Harness)
@@ -192,12 +192,13 @@ Real multi-process cluster tests using dactor-test-harness with gRPC control:
 
 1. ~~**F1 + B1-B12**: Stream batching~~ ✅ Complete (PR #42)
 2. ~~**E7-E11**: Sample code for remaining features~~ ✅ Complete (PR #43)
-3. **T1-T3**: Ractor E2E tests (validates real multi-process)
-4. **T4-T6**: Kameo/Coerce E2E tests
+3. **T1-T3**: Ractor E2E tests (validates real multi-process) — ⚠️ Blocked by protoc permission issue
+4. **T4-T6**: Kameo/Coerce E2E tests — ⚠️ Blocked by protoc permission issue
 5. ~~**F3**: EventSourced/DurableState actor integration~~ ✅ Complete (PR #44)
 6. ~~**F2**: Actor Pool~~ ✅ Complete (PR #45, local)
-7. **T7-T10**: Cross-adapter corner case tests
-8. **F4-F7**: Remaining design features
+7. **T7-T10**: Cross-adapter corner case tests — ⚠️ Blocked by protoc permission issue
+8. ~~**F4-F7**: Remaining design features~~ ✅ Complete (PR #46)
+9. ~~**Design doc cleanup**~~ ✅ Complete (PR #47)
 
 ---
 
