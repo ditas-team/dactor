@@ -93,6 +93,9 @@ pub use persistence::{
     SnapshotConfig, SaveConfig,
     JournalStorage, SnapshotStorage, StateStorage,
     InMemoryStorage,
+    PersistentActor, EventSourced, DurableState,
+    StorageProvider, InMemoryStorageProvider,
+    recover_event_sourced, recover_durable_state,
 };
 
 // Backward-compatible re-export of TestClock (feature-gated)
