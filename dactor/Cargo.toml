@@ -59,3 +59,23 @@ required-features = ["test-support"]
 [[example]]
 name = "readme_quickstart"
 required-features = ["test-support"]
+
+[[example]]
+name = "cancellation"
+required-features = ["test-support"]
+
+[[example]]
+name = "error_handling"
+required-features = ["test-support"]
+
+[[example]]
+name = "metrics"
+required-features = ["test-support"]
+
+[[example]]
+name = "dead_letters"
+required-features = ["test-support"]
+
+[[example]]
+name = "rate_limiting"
+required-features = ["test-support"]
