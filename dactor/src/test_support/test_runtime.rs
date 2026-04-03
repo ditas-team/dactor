@@ -264,7 +264,32 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
             cancel,
         });
         self.sender.send(Some(dispatch))?;
-        Ok(AskReply::new(rx))
+
+        // Wrap the reply channel so that outbound interceptors' on_reply()
+        // is called when the reply arrives on the sender side.
+        if self.outbound_interceptors.is_empty() {
+            Ok(AskReply::new(rx))
+        } else {
+            let message_type = std::any::type_name::<M>();
+            let (wrapped_tx, wrapped_rx) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                match rx.await {
+                    Ok(Ok(reply)) => {
+                        pipeline.run_on_reply(message_type, &Outcome::AskSuccess { reply: &reply as &dyn std::any::Any });
+                        let _ = wrapped_tx.send(Ok(reply));
+                    }
+                    Ok(Err(e)) => {
+                        let _ = wrapped_tx.send(Err(e));
+                    }
+                    Err(_) => {
+                        let _ = wrapped_tx.send(Err(RuntimeError::ActorNotFound(
+                            "reply channel closed".into(),
+                        )));
+                    }
+                }
+            });
+            Ok(AskReply::new(wrapped_rx))
+        }
     }
 
     fn stream<M>(
@@ -3228,5 +3253,51 @@ mod tests {
 
             assert_eq!(total, 150);
         }
+    }
+
+    // -- F6: on_reply wiring test -------------------------------------------
+
+    #[tokio::test]
+    async fn test_outbound_on_reply_called_for_ask() {
+        use std::sync::atomic::AtomicU64;
+
+        struct ReplyObserver {
+            call_count: Arc<AtomicU64>,
+        }
+        impl OutboundInterceptor for ReplyObserver {
+            fn name(&self) -> &'static str { "reply-observer" }
+            fn on_reply(
+                &self,
+                _ctx: &OutboundContext<'_>,
+                _rh: &RuntimeHeaders,
+                _headers: &Headers,
+                outcome: &Outcome<'_>,
+            ) {
+                if matches!(outcome, Outcome::AskSuccess { .. }) {
+                    self.call_count.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }
+
+        let call_count = Arc::new(AtomicU64::new(0));
+        let mut runtime = TestRuntime::new();
+        runtime.add_outbound_interceptor(Box::new(ReplyObserver {
+            call_count: call_count.clone(),
+        }));
+
+        let actor = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        actor.tell(Increment(42)).unwrap();
+
+        let count = actor.ask(GetCount, None).unwrap().await.unwrap();
+        assert_eq!(count, 42);
+        // on_reply should have been called exactly once
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Second ask
+        let count2 = actor.ask(GetCount, None).unwrap().await.unwrap();
+        assert_eq!(count2, 42);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
     }
 }

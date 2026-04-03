@@ -68,9 +68,11 @@ pub use errors::{ActorSendError, ClusterError, GroupError, RuntimeError};
 pub use errors::{ErrorAction, ErrorCode, NotSupportedError};
 pub use cluster::{ClusterEvent, ClusterEvents, SubscriptionId};
 pub use timer::TimerHandle;
+pub use timer::{send_after, send_interval};
 pub use clock::{Clock, SystemClock};
 pub use node::{NodeId, ActorId};
 pub use supervision::ChildTerminated;
+pub use supervision::{SupervisionAction, SupervisionStrategy, OneForOne, AllForOne, RestForOne};
 pub use interceptor::{InboundInterceptor, InboundContext, Disposition, Outcome, SendMode, InterceptResult, intercept_outbound_stream_item};
 pub use interceptor::{OutboundInterceptor, OutboundContext};
 pub use interceptor::{DropObserver, DropNotice, notify_drop};
@@ -81,7 +83,7 @@ pub use dead_letter::{
 pub use throttle::ActorRateLimiter;
 pub use pool::{PoolRouting, PoolConfig, PoolRef, Keyed};
 pub use metrics::{MetricsInterceptor, MetricsStore, ActorMetrics};
-pub use mailbox::{MailboxConfig, OverflowStrategy};
+pub use mailbox::{MailboxConfig, OverflowStrategy, MessageComparer, StrictPriorityComparer};
 pub use stream::{BoxStream, StreamSendError, StreamSender};
 pub use stream::{StreamReceiver, BatchConfig, BatchWriter, BatchReader};
 pub use remote::{

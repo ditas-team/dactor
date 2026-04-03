@@ -10,7 +10,7 @@ use futures::{FutureExt, StreamExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::interceptor::{
-    Disposition, DropNotice, DropObserver, InterceptResult, OutboundContext,
+    Disposition, DropNotice, DropObserver, InterceptResult, Outcome, OutboundContext,
     OutboundInterceptor, SendMode, notify_drop, intercept_outbound_stream_item,
 };
 use crate::message::{Headers, RuntimeHeaders};
@@ -76,6 +76,29 @@ impl OutboundPipeline {
             context,
             seq: Some(seq),
         });
+    }
+
+    /// Run `on_reply` on all outbound interceptors.
+    ///
+    /// Called by runtimes after an ask() reply is received, so that outbound
+    /// interceptors can observe (log, measure, audit) the reply on the sender
+    /// side.
+    pub fn run_on_reply(&self, message_type: &'static str, outcome: &Outcome<'_>) {
+        if self.interceptors.is_empty() {
+            return;
+        }
+        let runtime_headers = RuntimeHeaders::new();
+        let headers = Headers::new();
+        let octx = OutboundContext {
+            target_id: self.target_id.clone(),
+            target_name: &self.target_name,
+            message_type,
+            send_mode: SendMode::Ask,
+            remote: false,
+        };
+        for interceptor in self.interceptors.iter() {
+            interceptor.on_reply(&octx, &runtime_headers, &headers, outcome);
+        }
     }
 }
 
