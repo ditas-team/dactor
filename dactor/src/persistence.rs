@@ -437,8 +437,9 @@ pub trait EventSourced: PersistentActor {
     /// The event type for this actor. Must be serializable for storage.
     type Event: Send + Sync + 'static;
 
-    /// Apply an event to the actor's state. Must be deterministic —
-    /// the same sequence of events must always produce the same state.
+    /// Apply an event to the actor's state. Must be **deterministic** and
+    /// **infallible** — the same sequence of events must always produce the
+    /// same state. Panicking in `apply()` is a programming error.
     fn apply(&mut self, event: &Self::Event);
 
     /// Deserialize an event from raw bytes (used during replay).
@@ -449,7 +450,8 @@ pub trait EventSourced: PersistentActor {
 
     /// Persist an event to the journal, then apply it to the state.
     /// The event is first written to storage, then applied via `apply()`.
-    /// If storage fails, the `persist_failure_policy()` determines behavior.
+    /// Returns Err on storage/serialization failure; the caller (runtime)
+    /// should consult `persist_failure_policy()` to decide next action.
     async fn persist(
         &mut self,
         event: Self::Event,
@@ -609,7 +611,50 @@ impl StorageProvider for InMemoryStorageProvider {
 
 /// Recover an event-sourced actor by loading the latest snapshot and
 /// replaying journal events that occurred after it.
+///
+/// Events are deserialized in full before any are applied. This ensures
+/// that a deserialization failure on event N doesn't leave the actor in
+/// a partially-recovered state (livelock on retry).
+///
+/// Consults `actor.recovery_failure_policy()` on error:
+/// - `Stop` — propagate the error (default).
+/// - `Retry { max_attempts, initial_delay }` — retry with backoff.
+/// - `SkipAndStart` — skip recovery and start fresh.
 pub async fn recover_event_sourced<A: EventSourced>(
+    actor: &mut A,
+    journal: &dyn JournalStorage,
+    snapshots: &dyn SnapshotStorage,
+) -> Result<(), PersistError> {
+    let policy = actor.recovery_failure_policy();
+
+    match recover_event_sourced_inner(actor, journal, snapshots).await {
+        Ok(()) => Ok(()),
+        Err(e) => match policy {
+            RecoveryFailurePolicy::Stop => Err(e),
+            RecoveryFailurePolicy::Retry { max_attempts, initial_delay } => {
+                let attempts = max_attempts.unwrap_or(3);
+                let mut delay = initial_delay;
+                for _ in 1..attempts {
+                    tokio::time::sleep(delay).await;
+                    delay = std::time::Duration::from_millis(
+                        (delay.as_millis() as u64).saturating_mul(2).min(30_000),
+                    );
+                    match recover_event_sourced_inner(actor, journal, snapshots).await {
+                        Ok(()) => return Ok(()),
+                        Err(_) => continue,
+                    }
+                }
+                Err(e)
+            }
+            RecoveryFailurePolicy::SkipAndStart => {
+                actor.post_recovery();
+                Ok(())
+            }
+        },
+    }
+}
+
+async fn recover_event_sourced_inner<A: EventSourced>(
     actor: &mut A,
     journal: &dyn JournalStorage,
     snapshots: &dyn SnapshotStorage,
@@ -623,13 +668,22 @@ pub async fn recover_event_sourced<A: EventSourced>(
         actor.set_last_sequence_id(snap.sequence_id);
     }
 
-    // Replay events after the snapshot
+    // Replay events after the snapshot.
+    // Deserialize ALL events first to avoid partial apply on failure.
     let start = actor.last_sequence_id().next();
     let entries = journal.read_events(&pid, start).await?;
-    for entry in &entries {
-        let event = actor.deserialize_event(&entry.payload)?;
-        actor.apply(&event);
-        actor.set_last_sequence_id(entry.sequence_id);
+    let deserialized: Vec<(SequenceId, A::Event)> = entries
+        .iter()
+        .map(|entry| {
+            let event = actor.deserialize_event(&entry.payload)?;
+            Ok((entry.sequence_id, event))
+        })
+        .collect::<Result<Vec<_>, PersistError>>()?;
+
+    // All deserialized successfully — now apply. apply() is infallible.
+    for (seq, event) in &deserialized {
+        actor.apply(event);
+        actor.set_last_sequence_id(*seq);
     }
 
     actor.post_recovery();
@@ -637,7 +691,45 @@ pub async fn recover_event_sourced<A: EventSourced>(
 }
 
 /// Recover a durable-state actor by loading its stored state.
+///
+/// Consults `actor.recovery_failure_policy()` on error:
+/// - `Stop` — propagate the error (default).
+/// - `Retry { max_attempts, initial_delay }` — retry with backoff.
+/// - `SkipAndStart` — skip recovery and start fresh.
 pub async fn recover_durable_state<A: DurableState>(
+    actor: &mut A,
+    storage: &dyn StateStorage,
+) -> Result<(), PersistError> {
+    let policy = actor.recovery_failure_policy();
+
+    match recover_durable_state_inner(actor, storage).await {
+        Ok(()) => Ok(()),
+        Err(e) => match policy {
+            RecoveryFailurePolicy::Stop => Err(e),
+            RecoveryFailurePolicy::Retry { max_attempts, initial_delay } => {
+                let attempts = max_attempts.unwrap_or(3);
+                let mut delay = initial_delay;
+                for _ in 1..attempts {
+                    tokio::time::sleep(delay).await;
+                    delay = std::time::Duration::from_millis(
+                        (delay.as_millis() as u64).saturating_mul(2).min(30_000),
+                    );
+                    match recover_durable_state_inner(actor, storage).await {
+                        Ok(()) => return Ok(()),
+                        Err(_) => continue,
+                    }
+                }
+                Err(e)
+            }
+            RecoveryFailurePolicy::SkipAndStart => {
+                actor.post_recovery();
+                Ok(())
+            }
+        },
+    }
+}
+
+async fn recover_durable_state_inner<A: DurableState>(
     actor: &mut A,
     storage: &dyn StateStorage,
 ) -> Result<(), PersistError> {
