@@ -35,6 +35,7 @@ pub mod runtime_support;
 pub mod stream;
 pub mod supervision;
 pub mod metrics;
+pub mod pool;
 pub mod throttle;
 pub mod timer;
 pub mod clock;
@@ -78,6 +79,7 @@ pub use dead_letter::{
     LoggingDeadLetterHandler, CollectingDeadLetterHandler, DeadLetterInfo,
 };
 pub use throttle::ActorRateLimiter;
+pub use pool::{PoolRouting, PoolConfig, PoolRef, Keyed};
 pub use metrics::{MetricsInterceptor, MetricsStore, ActorMetrics};
 pub use mailbox::{MailboxConfig, OverflowStrategy};
 pub use stream::{BoxStream, StreamSendError, StreamSender};

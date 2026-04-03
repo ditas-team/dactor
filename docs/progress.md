@@ -129,9 +129,9 @@ Based on design spec audit (§4-§17 vs implementation), the following work item
 
 | # | Feature | Design Section | Priority | Status |
 |---|---------|----------------|----------|--------|
-| F1 | Stream/Feed batching (BatchConfig) | §4.11.1 | High | ✅ PR #42 (in review) |
-| F2 | Actor Pool (PoolRef, routing) | §4.14 | Medium | 🔲 Not started |
-| F3 | EventSourced/DurableState actor traits | §6.3.2-6.3.4 | Medium | 🔲 Types only |
+| F1 | Stream/Feed batching (BatchConfig) | §4.11.1 | High | ✅ PR #42 |
+| F2 | Actor Pool (PoolRef, routing) | §4.14 | Medium | ✅ PR #45 (local) |
+| F3 | EventSourced/DurableState actor traits | §6.3.2-6.3.4 | Medium | ✅ PR #44 |
 | F4 | Supervision strategies (OneForOne, etc.) | §6.1 | Low | 🔲 Design only |
 | F5 | Priority mailbox scheduling | §5.7-5.9 | Low | 🔲 Priority header exists |
 | F6 | on_reply wiring for outbound interceptors | §5.3 | Low | 🔲 Trait exists, not wired |
@@ -191,11 +191,11 @@ Real multi-process cluster tests using dactor-test-harness with gRPC control:
 ### Recommended Execution Order (Phase 3)
 
 1. ~~**F1 + B1-B12**: Stream batching~~ ✅ Complete (PR #42)
-2. **E7-E11**: Sample code for remaining features
+2. ~~**E7-E11**: Sample code for remaining features~~ ✅ Complete (PR #43)
 3. **T1-T3**: Ractor E2E tests (validates real multi-process)
 4. **T4-T6**: Kameo/Coerce E2E tests
-5. **F3**: EventSourced/DurableState actor integration
-6. **F2**: Actor Pool
+5. ~~**F3**: EventSourced/DurableState actor integration~~ ✅ Complete (PR #44)
+6. ~~**F2**: Actor Pool~~ ✅ Complete (PR #45, local)
 7. **T7-T10**: Cross-adapter corner case tests
 8. **F4-F7**: Remaining design features
 
@@ -213,8 +213,7 @@ Wire format, cross-node communication, and system actors for remote operations.
 | R2 | WireEnvelope send/receive | §9.1 | Serialize messages → WireEnvelope → transport → deserialize |
 | R3 | RemoteActorRef | §9.3 | ActorRef impl that serializes + sends via transport |
 | R4 | Connection management | §10.2 | AdapterCluster: connect(), disconnect(), reconnect |
-| R5 | Batched remote sends | §4.11.1 | BatchWriter\<Vec\<u8\>\>::push_bytes() for wire batching |
-| R6 | ContentLength stamping | §5.1 | Stamp ContentLength header after serialization |
+| R5 | Batched remote sends | §4.11.1 | BatchWriter batches items → single WireEnvelope per batch |
 
 ### 4.2 System Actors
 
@@ -263,26 +262,26 @@ Wire persistence traits into actor lifecycle (recovery, snapshots, durable state
 
 | # | Feature | Design Section | Description |
 |---|---------|----------------|-------------|
-| ES1 | PersistentActor trait | §6.3.2 | persistence_id(), pre_recovery(), post_recovery() |
-| ES2 | EventSourced trait | §6.3.3 | apply(), persist(), persist_batch(), snapshot() |
-| ES3 | SnapshotConfig | §6.3.5 | Automatic snapshotting rules |
-| ES4 | Recovery pipeline | §6.3.7 | Load snapshot → replay events → post_recovery |
-| ES5 | RecoveryFailurePolicy | §6.3.8 | Stop, Retry, SkipAndStart |
-| ES6 | PersistFailurePolicy | §6.3.8 | Stop, ReturnError, Retry |
+| ES1 | PersistentActor trait | §6.3.2 | persistence_id(), pre_recovery(), post_recovery() | ✅ PR #44 |
+| ES2 | EventSourced trait | §6.3.3 | apply(), persist(), persist_batch(), snapshot() | ✅ PR #44 |
+| ES3 | SnapshotConfig | §6.3.5 | Automatic snapshotting rules | ✅ Exists |
+| ES4 | Recovery pipeline | §6.3.7 | Load snapshot → replay events → post_recovery | ✅ PR #44 |
+| ES5 | RecoveryFailurePolicy | §6.3.8 | Stop, Retry, SkipAndStart | ✅ PR #44 |
+| ES6 | PersistFailurePolicy | §6.3.8 | Stop, ReturnError, Retry | ✅ Exists |
 
 ### 5.2 Durable State
 
 | # | Feature | Design Section | Description |
 |---|---------|----------------|-------------|
-| DS1 | DurableState trait | §6.3.4 | save_state(), automatic save via SaveConfig |
-| DS2 | SaveConfig | §6.3.5 | Rules for automatic state persistence |
+| DS1 | DurableState trait | §6.3.4 | save_state(), automatic save via SaveConfig | ✅ PR #44 |
+| DS2 | SaveConfig | §6.3.5 | Rules for automatic state persistence | ✅ Exists |
 
 ### 5.3 Storage Backends
 
 | # | Feature | Design Section | Description |
 |---|---------|----------------|-------------|
-| SB1 | StorageProvider trait | §6.3.6 | Pluggable storage backend abstraction |
-| SB2 | InMemoryStorage | §6.3.6 | ✅ Types exist (testing/dev) |
+| SB1 | StorageProvider trait | §6.3.6 | Pluggable storage backend abstraction | ✅ PR #44 |
+| SB2 | InMemoryStorage | §6.3.6 | ✅ Done (testing/dev) | ✅ |
 | SB3 | dactor-sqlite crate | §6.3.6 | SQLite storage for single-node production |
 | SB4 | dactor-postgres crate | §6.3.6 | PostgreSQL storage for multi-node production |
 
@@ -292,13 +291,15 @@ Wire persistence traits into actor lifecycle (recovery, snapshots, durable state
 
 ### 6.1 Actor Pool
 
-| # | Feature | Design Section | Description |
-|---|---------|----------------|-------------|
-| AP1 | PoolRef\<A\> | §4.14 | Handle to a pool of worker actors |
-| AP2 | PoolConfig | §4.14 | Pool size, routing strategy, per-worker spawn config |
-| AP3 | PoolRouting | §4.14 | RoundRobin, LeastLoaded, Random, KeyBased |
-| AP4 | Keyed trait | §4.14 | Extract routing keys for key-based routing |
-| AP5 | spawn_pool() | §4.14 | Runtime method to create worker pools |
+| # | Feature | Design Section | Description | Status |
+|---|---------|----------------|-------------|--------|
+| AP1 | PoolRef\<A, R\> (local) | §4.14 | Handle to a local pool of worker actors | ✅ PR #45 |
+| AP2 | PoolConfig | §4.14 | Pool size, routing strategy | ✅ PR #45 |
+| AP3 | PoolRouting | §4.14 | RoundRobin, Random, KeyBased | ✅ PR #45 |
+| AP4 | Keyed trait | §4.14 | Extract routing keys for key-based routing | ✅ PR #45 |
+| AP5 | TestRuntime::spawn_pool() | §4.14 | Spawn N local workers | ✅ PR #45 |
+| AP6 | LeastLoaded routing | §4.14 | Route to worker with fewest queued messages | 🔲 Needs per-worker load tracking |
+| AP7 | Distributed pool | §4.14 | Workers across nodes via remote ActorRef (Phase 4) | 🔲 Depends on R3 |
 
 ### 6.2 Supervision Strategies
 
