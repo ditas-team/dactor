@@ -479,6 +479,9 @@ pub struct TestRuntime {
     dead_letter_handler: Arc<Option<Arc<dyn DeadLetterHandler>>>,
     /// Watch registry — maps watched actor ID to list of watcher entries.
     watchers: Arc<Mutex<HashMap<ActorId, Vec<WatchEntry>>>>,
+    /// Optional shared metrics store. When set, a [`MetricsInterceptor`] is
+    /// automatically prepended to every spawned actor's inbound interceptor list.
+    metrics_store: Option<crate::metrics::MetricsStore>,
 }
 
 impl TestRuntime {
@@ -490,6 +493,7 @@ impl TestRuntime {
             drop_observer: Arc::new(None),
             dead_letter_handler: Arc::new(None),
             watchers: Arc::new(Mutex::new(HashMap::new())),
+            metrics_store: None,
         }
     }
 
@@ -502,7 +506,25 @@ impl TestRuntime {
             drop_observer: Arc::new(None),
             dead_letter_handler: Arc::new(None),
             watchers: Arc::new(Mutex::new(HashMap::new())),
+            metrics_store: None,
         }
+    }
+
+    /// Enable built-in metrics collection.
+    ///
+    /// Creates a shared [`MetricsStore`](crate::metrics::MetricsStore) and
+    /// automatically prepends a [`MetricsInterceptor`](crate::metrics::MetricsInterceptor)
+    /// to every subsequently spawned actor's inbound interceptor pipeline.
+    ///
+    /// **Must be called before any actors are spawned.**
+    pub fn enable_metrics(&mut self) {
+        self.metrics_store = Some(crate::metrics::MetricsStore::default());
+    }
+
+    /// Return a reference to the shared [`MetricsStore`](crate::metrics::MetricsStore),
+    /// or `None` if metrics have not been enabled.
+    pub fn metrics(&self) -> Option<&crate::metrics::MetricsStore> {
+        self.metrics_store.as_ref()
     }
 
     /// Add a global outbound interceptor.
@@ -607,6 +629,17 @@ impl TestRuntime {
     where
         A: Actor + 'static,
     {
+        // Prepend a MetricsInterceptor when metrics are enabled so it sees
+        // every message regardless of what the caller passes in SpawnOptions.
+        let interceptors = if let Some(ref store) = self.metrics_store {
+            let mut combined = Vec::with_capacity(1 + interceptors.len());
+            combined.push(Box::new(crate::metrics::MetricsInterceptor::new(store.clone())) as Box<dyn InboundInterceptor>);
+            combined.extend(interceptors);
+            combined
+        } else {
+            interceptors
+        };
+
         let local = self.next_local.fetch_add(1, Ordering::SeqCst);
         let actor_id = ActorId {
             node: self.node_id.clone(),
@@ -3488,5 +3521,77 @@ mod tests {
 
         collector.clear();
         assert_eq!(collector.count(), 0);
+    }
+
+    // -- Built-in metrics integration tests --------------------------------
+
+    #[tokio::test]
+    async fn test_metrics_enabled_tracks_messages() {
+        let mut runtime = TestRuntime::new();
+        runtime.enable_metrics();
+
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        counter.tell(Increment(1)).unwrap();
+        counter.tell(Increment(2)).unwrap();
+        let _ = counter.ask(GetCount, None).unwrap().await.unwrap();
+
+        let store = runtime.metrics().unwrap();
+        assert_eq!(store.total_messages(), 3);
+        assert_eq!(store.total_errors(), 0);
+        assert_eq!(store.actor_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_metrics_shared_across_actors() {
+        let mut runtime = TestRuntime::new();
+        runtime.enable_metrics();
+
+        let a = runtime.spawn::<Counter>("a", Counter { count: 0 });
+        let b = runtime.spawn::<Counter>("b", Counter { count: 0 });
+
+        a.tell(Increment(1)).unwrap();
+        b.tell(Increment(1)).unwrap();
+        b.tell(Increment(2)).unwrap();
+
+        // Wait for messages to be processed
+        let _ = a.ask(GetCount, None).unwrap().await.unwrap();
+        let _ = b.ask(GetCount, None).unwrap().await.unwrap();
+
+        let store = runtime.metrics().unwrap();
+        // 3 tells + 2 asks = 5 total messages, 2 actors
+        assert_eq!(store.total_messages(), 5);
+        assert_eq!(store.actor_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_runtime_metrics_snapshot() {
+        use crate::metrics::RuntimeMetrics;
+
+        let mut runtime = TestRuntime::new();
+        runtime.enable_metrics();
+
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        counter.tell(Increment(1)).unwrap();
+        let _ = counter.ask(GetCount, None).unwrap().await.unwrap();
+
+        let snapshot = runtime.metrics().unwrap().runtime_metrics();
+        assert_eq!(snapshot, RuntimeMetrics {
+            actor_count: 1,
+            total_messages: 2,
+            total_errors: 0,
+        });
+    }
+
+    #[tokio::test]
+    async fn test_metrics_not_tracked_when_disabled() {
+        let runtime = TestRuntime::new();
+        assert!(runtime.metrics().is_none());
+
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        counter.tell(Increment(1)).unwrap();
+        let _ = counter.ask(GetCount, None).unwrap().await.unwrap();
+
+        // No metrics store — nothing to query
+        assert!(runtime.metrics().is_none());
     }
 }

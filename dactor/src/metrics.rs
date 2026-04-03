@@ -13,6 +13,17 @@ use crate::interceptor::*;
 use crate::message::{Headers, RuntimeHeaders};
 use crate::node::ActorId;
 
+/// System-level runtime metrics snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeMetrics {
+    /// Total actors tracked (that have received at least one message).
+    pub actor_count: usize,
+    /// Total messages processed across all actors.
+    pub total_messages: u64,
+    /// Total errors across all actors.
+    pub total_errors: u64,
+}
+
 /// Per-actor metrics.
 #[derive(Debug, Clone)]
 pub struct ActorMetrics {
@@ -124,6 +135,15 @@ impl MetricsStore {
     /// Number of actors with recorded metrics.
     pub fn actor_count(&self) -> usize {
         self.inner.lock().unwrap().len()
+    }
+
+    /// Return a point-in-time snapshot of system-level metrics.
+    pub fn runtime_metrics(&self) -> RuntimeMetrics {
+        RuntimeMetrics {
+            actor_count: self.actor_count(),
+            total_messages: self.total_messages(),
+            total_errors: self.total_errors(),
+        }
     }
 
     fn record_message(&self, actor_id: &ActorId, message_type: &str) {

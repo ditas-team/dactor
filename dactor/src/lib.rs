@@ -82,7 +82,7 @@ pub use dead_letter::{
 };
 pub use throttle::ActorRateLimiter;
 pub use pool::{PoolRouting, PoolConfig, PoolRef, Keyed};
-pub use metrics::{MetricsInterceptor, MetricsStore, ActorMetrics};
+pub use metrics::{MetricsInterceptor, MetricsStore, ActorMetrics, RuntimeMetrics};
 pub use mailbox::{MailboxConfig, OverflowStrategy, MessageComparer, StrictPriorityComparer};
 pub use stream::{BoxStream, StreamSendError, StreamSender};
 pub use stream::{StreamReceiver, BatchConfig, BatchWriter, BatchReader};
