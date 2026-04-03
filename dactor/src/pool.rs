@@ -4,6 +4,13 @@
 //! to them according to a [`PoolRouting`] strategy. It implements
 //! [`ActorRef<A>`] so callers can use it as a drop-in replacement for a
 //! single actor reference.
+//!
+//! # Local only
+//!
+//! The current pool is **local** — all workers are spawned on the same node.
+//! For distributed pools (workers across nodes), the transport layer (Phase 4)
+//! must provide remote `ActorRef` implementations. The pool architecture will
+//! then support a mix of local and remote worker refs.
 
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
