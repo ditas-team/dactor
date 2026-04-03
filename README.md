@@ -197,7 +197,7 @@ dactor/                  Workspace root
 ├── dactor/              Core library — traits, types, test support
 │   ├── src/
 │   │   ├── actor.rs         Actor, Handler, StreamHandler, FeedHandler, ActorRef
-│   │   ├── message.rs       Message, Headers, Priority, Envelope
+│   │   ├── message.rs       Message, Headers, Priority
 │   │   ├── interceptor.rs   InboundInterceptor, OutboundInterceptor, Disposition,
 │   │   │                    DropObserver, on_stream_item, on_reply
 │   │   ├── mailbox.rs       MailboxConfig, OverflowStrategy
