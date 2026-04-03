@@ -59,7 +59,6 @@ async fn main() {
 
     println!("--- Sending 8 rapid asks (limit: 3/sec) ---");
     let mut delivered = 0u32;
-    let mut delayed = 0u32;
     let mut rejected = 0u32;
 
     for i in 1..=8 {
@@ -75,13 +74,6 @@ async fn main() {
                         println!("  [{}] rejected by {}: {}", i, interceptor, reason);
                         rejected += 1;
                     }
-                    Err(RuntimeError::RetryAfter { interceptor, retry_after }) => {
-                        println!(
-                            "  [{}] delayed by {} — retry after {:?}",
-                            i, interceptor, retry_after
-                        );
-                        delayed += 1;
-                    }
                     Err(e) => {
                         println!("  [{}] error: {}", i, e);
                     }
@@ -95,15 +87,16 @@ async fn main() {
 
     println!("\n--- Summary ---");
     println!("  delivered: {}", delivered);
-    println!("  delayed:   {}", delayed);
     println!("  rejected:  {}", rejected);
 
-    // First 3 should be delivered, 4–6 delayed, 7+ rejected
+    // ActorRateLimiter: max_rate=3, so:
+    //   Messages 1-3: Continue (under limit)
+    //   Messages 4-6: Delay (over limit but ≤2×) — TestRuntime treats
+    //     Delay as Continue (no async sleep in outbound pipeline), so
+    //     these are delivered immediately.
+    //   Messages 7-8: Reject (>2× limit)
     assert!(delivered >= 3, "at least 3 messages should be delivered");
-    assert!(
-        delayed + rejected > 0,
-        "some messages should be delayed or rejected"
-    );
+    assert!(rejected > 0, "some messages should be rejected");
     println!("  ✓ rate limiting enforced");
 
     println!("\n=== Done ===");
