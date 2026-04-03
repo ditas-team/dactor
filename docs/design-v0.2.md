@@ -130,6 +130,8 @@ A unified error enum encompasses all runtime errors:
 
 ### 2.4 Capability Introspection
 
+> **Design only — not yet implemented.**
+
 Callers can pre-flight requirements at startup via `ActorRuntime::is_supported()`:
 
 ```rust
@@ -139,7 +141,11 @@ Callers can pre-flight requirements at startup via `ActorRuntime::is_supported()
 pub enum RuntimeCapability {
     Ask,
     Stream,
+    Feed,
     Watch,
+    Pool,
+    Timers,
+    Cluster,
     BoundedMailbox,
     PriorityMailbox,
     InboundInterceptors,
@@ -843,6 +849,8 @@ impl<A: Actor> Sync for ActorRef<A> {}
 
 ### 4.5 ActorRuntime Trait
 
+> **Design only — not yet implemented.**
+
 ```rust
 pub trait ActorRuntime: Send + Sync + 'static {
     type Events: ClusterEvents;
@@ -899,7 +907,7 @@ pub trait ActorRuntime: Send + Sync + 'static {
 
     // ── Registries ──────────────────────────────────────
     fn register_remote_actor<A: Actor>(&self) where A::Args: Serialize + DeserializeOwned;
-    fn register_error_codec(&self, codec: Box<dyn ErasedErrorCodec>);
+    fn register_error_codec(&self, codec: Box<dyn ErrorCodec>);
     fn set_message_serializer(&self, serializer: Box<dyn MessageSerializer>);
     fn set_dead_letter_handler(&self, handler: Box<dyn DeadLetterHandler>);
 
@@ -1323,8 +1331,29 @@ impl<A: Actor> ActorRef<A> {
         cancel: Option<CancellationToken>,
     ) -> Result<BoxStream<M::Reply>, RuntimeError>
     where
-        A: Handler<M>,
+        A: StreamHandler<M>,
         M: Message;
+}
+```
+
+**`StreamHandler` trait:**
+
+Actors that produce a stream of responses implement `StreamHandler<M>` instead
+of `Handler<M>`. The handler receives a `StreamSender` to push items into;
+the caller receives them as a `BoxStream` on the other end:
+
+```rust
+/// Implemented by actors that respond to a request with a stream of items.
+/// The handler receives a `StreamSender<M::Reply>` to push items into.
+/// When the handler returns (or drops the sender), the stream closes.
+#[async_trait]
+pub trait StreamHandler<M: Message>: Actor {
+    async fn handle_stream(
+        &mut self,
+        msg: M,
+        sender: StreamSender<M::Reply>,
+        ctx: &mut ActorContext,
+    );
 }
 ```
 
@@ -2048,11 +2077,22 @@ impl<A: Actor> PoolRef<A> {
     pub fn tell<M>(&self, msg: M) -> Result<(), ActorSendError>
     where A: Handler<M>, M: Message<Reply = ()> { ... }
 
+    /// Fire-and-forget a keyed message, routing by `Keyed::routing_key`.
+    /// All messages with the same key are routed to the same worker.
+    pub fn tell_keyed<M>(&self, msg: M) -> Result<(), ActorSendError>
+    where A: Handler<M>, M: Message<Reply = ()> + Keyed { ... }
+
     /// Request-reply: route a message to a pool worker and await the reply.
-    pub async fn ask<M>(
+    pub fn ask<M>(
         &self, msg: M, cancel: Option<CancellationToken>,
-    ) -> Result<M::Reply, RuntimeError>
+    ) -> Result<AskReply<M::Reply>, ActorSendError>
     where A: Handler<M>, M: Message { ... }
+
+    /// Request-reply with a keyed message, routing by `Keyed::routing_key`.
+    pub fn ask_keyed<M>(
+        &self, msg: M, cancel: Option<CancellationToken>,
+    ) -> Result<AskReply<M::Reply>, ActorSendError>
+    where A: Handler<M>, M: Message + Keyed { ... }
 
     /// Request-stream: route a message to a pool worker and receive a stream.
     pub fn stream<M>(
@@ -2255,6 +2295,10 @@ design**: typed access locally, string-keyed bytes on the wire.
 pub trait HeaderValue: Send + Sync + 'static {
     /// Stable, unique name for this header type (e.g., "dcontext.TraceContext").
     /// Used as the key when serializing headers for remote transport.
+    ///
+    /// **Must be unique across all header types.** If two header types
+    /// return the same name, inserting one will overwrite the other
+    /// during remote serialization/deserialization.
     fn header_name(&self) -> &'static str;
 
     /// Serialize this header to bytes for remote transport.
@@ -2516,8 +2560,8 @@ sequenceDiagram
     participant I2 as Inbound Interceptor 2
     participant A as Actor Handler
     
-    S->>I1: on_receive(ctx, headers)
-    I1->>I2: Continue → on_receive(ctx, headers)
+    S->>I1: on_receive(ctx, runtime_headers, headers, msg)
+    I1->>I2: Continue → on_receive(ctx, runtime_headers, headers, msg)
     I2->>A: Continue → deliver message
     A->>A: handle(msg, ctx)
     A->>I2: on_complete(ctx, outcome)
@@ -2585,7 +2629,7 @@ pub enum Disposition {
 // Inside the runtime's interceptor pipeline execution:
 let mut total_delay = Duration::ZERO;
 for interceptor in &interceptors {
-    match interceptor.on_receive(&ctx, &mut headers) {
+    match interceptor.on_receive(&ctx, &runtime_headers, &mut headers, &*msg) {
         Disposition::Continue => continue,
         Disposition::Delay(duration) => {
             total_delay += duration;  // cumulative
@@ -2707,15 +2751,18 @@ pub trait InboundInterceptor: Send + Sync + 'static {
     fn name(&self) -> &'static str;
 
     /// Called before the message is delivered to the actor's handler.
-    /// The message body is provided as `&dyn Any` — interceptors can
-    /// downcast to the concrete type for content-based decisions.
+    /// The message body is provided as `&dyn Any` (shared reference) —
+    /// interceptors can downcast to the concrete type for content-based
+    /// decisions but **cannot mutate the message body**. To carry
+    /// per-message data through the pipeline, use mutable `headers`.
     fn on_receive(
         &self,
         ctx: &InboundContext<'_>,
+        runtime_headers: &RuntimeHeaders,
         headers: &mut Headers,
         message: &dyn Any,
     ) -> Disposition {
-        let _ = (ctx, message);
+        let _ = (ctx, runtime_headers, message);
         Disposition::Continue
     }
 
@@ -2805,7 +2852,7 @@ impl InboundInterceptor for RequestReplyLogger {
     fn name(&self) -> &'static str { "request-reply-logger" }
 
     fn on_receive(
-        &self, ctx: &InboundContext<'_>, headers: &mut Headers, _msg: &dyn Any,
+        &self, ctx: &InboundContext<'_>, _runtime_headers: &RuntimeHeaders, headers: &mut Headers, _msg: &dyn Any,
     ) -> Disposition {
         // Stash request info in headers for on_complete to read
         headers.insert(RequestInfo {
@@ -2849,7 +2896,7 @@ impl InboundInterceptor for RequestReplyLogger {
 
 | Callback | Sees request message? | Sees reply/items? | When called |
 |---|---|---|---|
-| `on_receive(msg)` | ✅ `message: &dyn Any` | ❌ | Before handler runs |
+| `on_receive(ctx, runtime_headers, headers, msg)` | ✅ `message: &dyn Any` | ❌ | Before handler runs |
 | `on_complete(outcome)` | ❌ (stash in headers) | ✅ `AskSuccess { reply: &dyn Any }` | After handler finishes |
 | `on_stream_item(item)` | ❌ (stash in headers) | ✅ `item: &dyn Any` | Per stream item |
 
@@ -2866,7 +2913,7 @@ struct LoggingInterceptor;
 impl InboundInterceptor for LoggingInterceptor {
     fn name(&self) -> &'static str { "logging" }
     fn on_receive(
-        &self, ctx: &InboundContext<'_>, headers: &mut Headers, _message: &dyn Any,
+        &self, ctx: &InboundContext<'_>, _runtime_headers: &RuntimeHeaders, headers: &mut Headers, _message: &dyn Any,
     ) -> Disposition {
         let cid = headers.get::<CorrelationId>().map(|c| c.0.as_str()).unwrap_or("-");
         tracing::info!(
@@ -2900,6 +2947,7 @@ impl InboundInterceptor for TransferAuditInterceptor {
     fn on_receive(
         &self,
         ctx: &InboundContext<'_>,
+        _runtime_headers: &RuntimeHeaders,
         _headers: &mut Headers,
         message: &dyn Any,
     ) -> Disposition {
@@ -3003,7 +3051,7 @@ impl InboundInterceptor for RateLimiter {
     fn name(&self) -> &'static str { "rate-limiter" }
 
     fn on_receive(
-        &self, ctx: &InboundContext<'_>, _headers: &mut Headers, _msg: &dyn Any,
+        &self, ctx: &InboundContext<'_>, _runtime_headers: &RuntimeHeaders, _headers: &mut Headers, _msg: &dyn Any,
     ) -> Disposition {
         let count = self.counts
             .entry(ctx.actor_id.clone())
@@ -3057,10 +3105,10 @@ impl InboundInterceptor for ToggleableInterceptor {
     fn name(&self) -> &'static str { self.inner.name() }
 
     fn on_receive(
-        &self, ctx: &InboundContext<'_>, headers: &mut Headers, msg: &dyn Any,
+        &self, ctx: &InboundContext<'_>, runtime_headers: &RuntimeHeaders, headers: &mut Headers, msg: &dyn Any,
     ) -> Disposition {
         if self.enabled.load(Ordering::Relaxed) {
-            self.inner.on_receive(ctx, headers, msg)
+            self.inner.on_receive(ctx, runtime_headers, headers, msg)
         } else {
             Disposition::Continue
         }
@@ -3301,6 +3349,15 @@ pub enum DeadLetterReason {
     NetworkFailure { detail: String },
 }
 ```
+
+**Execution context:** The `DeadLetterHandler::on_dead_letter()` method is
+called **synchronously on the task that detected the lost message** — this
+may be the actor's own task (for `MailboxOverflow`), the interceptor pipeline
+task (for `InterceptorDrop`/`InterceptorReject`), or the runtime's network
+I/O task (for `NetworkFailure`). Implementations **must not block** — if
+expensive work is needed (e.g., writing to a database), spawn a background
+task or send to a dedicated actor. The runtime does not spawn a separate
+task for dead letter handling.
 
 **Registration:**
 
@@ -3655,6 +3712,9 @@ pub struct QueuedMessageMeta {
     /// The priority header value (default: `Priority::NORMAL`).
     pub priority: Priority,
     /// How long this message has been waiting in the queue.
+    /// Recalculated each time a message is dequeued for comparison —
+    /// this is a computed value (`Instant::now() - enqueue_time`),
+    /// not a fixed timestamp stored at enqueue time.
     pub age: Duration,
     /// Rust type name of the message.
     pub message_type: &'static str,
@@ -4678,6 +4738,8 @@ pub struct ErrorDetail {
 
 **`ErrorCodec` — bidirectional error translation:**
 
+> **Design only — not yet implemented.**
+
 The runtime provides an `ErrorCodec` trait that applications implement to
 translate between their custom error types and `ActorError`. The codec works
 in both directions:
@@ -4688,11 +4750,12 @@ in both directions:
   the original custom error type
 
 ```rust
-/// Object-safe, type-erased error codec for the runtime registry.
+/// Object-safe error codec for bidirectional error translation.
 ///
-/// The generic `ErrorCodec<E>` trait (below) is user-facing; this
-/// erased version is what the runtime stores in its registry.
-pub trait ErasedErrorCodec: Send + Sync + 'static {
+/// Implementations translate between application error types and `ActorError`.
+/// Uses `&dyn Any` / `Box<dyn Any>` for object safety — implementations
+/// downcast internally to their concrete error type.
+pub trait ErrorCodec: Send + Sync + 'static {
     /// Stable type name for wire identification.
     fn type_name(&self) -> &'static str;
 
@@ -4704,36 +4767,6 @@ pub trait ErasedErrorCodec: Send + Sync + 'static {
     /// Returns `None` if the payload_type doesn't match.
     fn try_decode(&self, error: &ActorError) -> Option<Box<dyn Any + Send>>;
 }
-
-/// User-facing generic error codec. Implement this for your error type,
-/// then wrap in `TypedErrorCodec` for registration.
-pub trait ErrorCodec<E: Send + 'static>: Send + Sync + 'static {
-    fn type_name(&self) -> &'static str;
-    fn encode(&self, error: &E) -> ActorError;
-    fn decode(&self, error: &ActorError) -> Option<E>;
-}
-
-/// Wrapper that erases the generic type for registry storage.
-/// Automatically implements `ErasedErrorCodec` for any `ErrorCodec<E>`.
-pub struct TypedErrorCodec<E, C: ErrorCodec<E>> { codec: C, _phantom: PhantomData<E> }
-
-impl<E: Send + 'static, C: ErrorCodec<E>> ErasedErrorCodec for TypedErrorCodec<E, C> {
-    fn type_name(&self) -> &'static str { self.codec.type_name() }
-    fn try_encode(&self, error: &dyn Any) -> Option<ActorError> {
-        error.downcast_ref::<E>().map(|e| self.codec.encode(e))
-    }
-    fn try_decode(&self, error: &ActorError) -> Option<Box<dyn Any + Send>> {
-        self.codec.decode(error).map(|e| Box::new(e) as Box<dyn Any + Send>)
-    }
-}
-
-// Convenience: wrap a typed codec for registration
-pub fn erased<E: Send + 'static, C: ErrorCodec<E>>(codec: C) -> Box<dyn ErasedErrorCodec> {
-    Box::new(TypedErrorCodec { codec, _phantom: PhantomData })
-}
-
-// Registration:
-// runtime.register_error_codec(erased(ValidationErrorCodec));
 ```
 
 **Example: ValidationErrors codec**
@@ -4753,21 +4786,20 @@ struct FieldError {
 
 struct ValidationErrorCodec;
 
-impl ErrorCodec<ValidationErrors> for ValidationErrorCodec {
+impl ErrorCodec for ValidationErrorCodec {
     fn type_name(&self) -> &'static str { "myapp.ValidationErrors" }
 
-    fn encode(&self, error: &ValidationErrors) -> ActorError {
-        ActorError::new(ErrorCode::InvalidArgument, "validation failed")
-            .with_payload(
-                self.type_name(),
-                bincode::serialize(error).unwrap(),
-            )
+    fn try_encode(&self, error: &dyn Any) -> Option<ActorError> {
+        let ve = error.downcast_ref::<ValidationErrors>()?;
+        Some(ActorError::new(ErrorCode::InvalidArgument, "validation failed")
+            .with_details(format!("{:?}", ve)))
     }
 
-    fn decode(&self, error: &ActorError) -> Option<ValidationErrors> {
-        let payload = error.payload.as_ref()?;
-        if payload.type_name != self.type_name() { return None; }
-        bincode::deserialize(&payload.data).ok()
+    fn try_decode(&self, error: &ActorError) -> Option<Box<dyn Any + Send>> {
+        let details = error.details.as_ref()?;
+        // In a real codec you'd parse the details string back into the error type.
+        // This is a simplified example.
+        Some(Box::new(ve))
     }
 }
 ```
@@ -4775,8 +4807,8 @@ impl ErrorCodec<ValidationErrors> for ValidationErrorCodec {
 **Registration:**
 
 ```rust
-// Wrap with erased() for object-safe registry storage
-runtime.register_error_codec(erased(ValidationErrorCodec));
+// Register directly — ErrorCodec is object-safe, no wrapper needed
+runtime.register_error_codec(Box::new(ValidationErrorCodec));
 ```
 
 **Handler side — returning custom errors:**
@@ -4855,15 +4887,12 @@ sequenceDiagram
   consistent error creation, but the payload doesn't need to be
   serialized/deserialized within the same process
 
-**How `ActorError` builds with payload:**
+**How `ActorError` builds with details:**
 
 ```rust
 impl ActorError {
-    pub fn with_payload(mut self, type_name: &str, data: Vec<u8>) -> Self {
-        self.payload = Some(ErrorPayload {
-            type_name: type_name.to_string(),
-            data,
-        });
+    pub fn with_details(mut self, details: impl Into<String>) -> Self {
+        self.details = Some(details.into());
         self
     }
 }
@@ -5587,7 +5616,7 @@ let config = SpawnConfig {
     target_node: Some(NodeId("node-3".into())),
     ..Default::default()
 };
-let actor = runtime.spawn_with_config("counter", Counter { count: 0 }, (), config)?;
+let actor = runtime.spawn_with_config::<Counter>("counter", CounterArgs { initial: 0 }, (), config)?;
 // actor is an ActorRef<Counter> — location-transparent
 // tell/ask work identically, adapter handles network transport
 ```
@@ -5604,9 +5633,9 @@ impl Handler<ScaleOut> for Coordinator {
                 target_node: Some(*node_id),
                 ..Default::default()
             };
-            let worker = ctx.spawn_with_config(
+            let worker = ctx.spawn_with_config::<Worker>(
                 &format!("worker-{}", node_id.0),
-                Worker { task: msg.task.clone() },
+                WorkerArgs { task: msg.task.clone() },
                 (),
                 config,
             )?;
@@ -5626,8 +5655,8 @@ sequenceDiagram
     participant R2 as Runtime (Node 3)
     participant A as Actor (Node 3)
 
-    C->>R: spawn_with_config("counter", actor, {target_node: 3})
-    R->>N: serialize actor state + SpawnConfig
+    C->>R: spawn_with_config("counter", CounterArgs{initial:0}, {target_node: 3})
+    R->>N: serialize Args + SpawnConfig
     N->>R2: deliver spawn request
     R2->>A: create actor, run on_start()
     R2->>N: return ActorId (node=3, local=42)
@@ -5638,8 +5667,8 @@ sequenceDiagram
 
 **Requirements for remote spawn:**
 
-- The **actor struct** must implement `Serialize + Deserialize` so its
-  initial state can be transferred to the remote node
+- The actor's **`Args` type** must implement `Serialize + DeserializeOwned` so
+  the construction arguments can be transferred to the remote node
 - All **message types** the actor handles must also implement
   `RemoteMessage` (i.e., `Serialize + Deserialize`)
 - The remote node must have the **same actor type** compiled in (same
@@ -5648,11 +5677,11 @@ sequenceDiagram
 **How serialization actually works:**
 
 Remote spawn involves two challenges that remote *messaging* does not:
-(1) the actor's initial state must be serialized and sent, and (2) the remote
+(1) the actor's construction arguments must be serialized and sent, and (2) the remote
 node must know how to reconstruct the actor and register all its `Handler<M>`
 impls — which are Rust trait impls, not data.
 
-The solution is a **type registry** combined with serialized state:
+The solution is a **type registry** combined with serialized `Args`:
 
 ```mermaid
 sequenceDiagram
@@ -5663,18 +5692,18 @@ sequenceDiagram
     participant TR as Type Registry (Node 3)
     participant A as Actor Instance
 
-    Note over C: spawn_with_config("counter", Counter{count:0}, {node:3})
+    Note over C: spawn_with_config("counter", CounterArgs{initial:0}, {node:3})
 
-    R->>R: 1. Serialize Counter{count:0} via serde → bytes
-    R->>R: 2. Build SpawnRequest:<br/>  type_name: "my_crate::Counter"<br/>  actor_bytes: [serialized state]<br/>  name: "counter"<br/>  config: SpawnConfig
+    R->>R: 1. Serialize CounterArgs{initial:0} via serde → bytes
+    R->>R: 2. Build SpawnRequest:<br/>  type_name: "my_crate::Counter"<br/>  args_bytes: [serialized Args]<br/>  name: "counter"<br/>  config: SpawnConfig
     R->>N: 3. Send SpawnRequest over network
 
     N->>R2: 4. Receive SpawnRequest
     R2->>TR: 5. Lookup "my_crate::Counter" in type registry
     TR-->>R2: 6. Returns ActorFactory<Counter>
 
-    R2->>R2: 7. factory.deserialize(actor_bytes) → Counter{count:0}
-    R2->>A: 8. Local spawn(Counter{count:0}) — same as local spawn
+    R2->>R2: 7. factory.create_from_bytes(args_bytes) → Counter
+    R2->>A: 8. Local spawn — same as local spawn
     A->>A: 9. on_start() runs
 
     R2->>N: 10. Return ActorId{node:3, local:42}
@@ -5684,10 +5713,10 @@ sequenceDiagram
 
 **Step-by-step:**
 
-1. **Serialize the actor struct** — the local runtime calls `serde` to
-   serialize the `Counter { count: 0 }` struct into bytes. The codec is
+1. **Serialize the actor's `Args`** — the local runtime calls `serde` to
+   serialize `CounterArgs { initial: 0 }` into bytes. The codec is
    configurable (default: `bincode` for speed, or `serde_json` for
-   debuggability). Only the struct's data fields are serialized — `Handler`
+   debuggability). Only the `Args` struct is serialized — `Handler`
    trait impls are not data and cannot be serialized.
 
 2. **Build a `SpawnRequest`** — a wire message containing:
@@ -5697,8 +5726,8 @@ sequenceDiagram
        /// Fully-qualified Rust type name (e.g., "my_crate::Counter").
        /// Used to look up the factory on the remote node.
        type_name: String,
-       /// Serialized actor initial state.
-       actor_bytes: Vec<u8>,
+       /// Serialized actor Args (construction arguments).
+       args_bytes: Vec<u8>,
        /// Actor name.
        name: String,
        /// Spawn configuration (mailbox, interceptors are NOT serialized —
@@ -5726,11 +5755,12 @@ sequenceDiagram
        factories: HashMap<String, Box<dyn ErasedActorFactory>>,
    }
 
-   /// Factory that can reconstruct an actor from serialized bytes.
+   /// Factory that can reconstruct an actor from serialized Args bytes.
    /// One per actor type — registered at startup.
    pub trait ActorFactory<A: Actor>: Send + Sync + 'static {
-       /// Deserialize actor state from bytes.
-       fn deserialize(&self, bytes: &[u8]) -> Result<A, ActorError>;
+       /// Deserialize Args from bytes and create the actor via
+       /// `Actor::create(args, deps)` with locally-resolved deps.
+       fn create_from_bytes(&self, args_bytes: &[u8], deps: A::Deps) -> Result<A, ActorError>;
    }
 
    // Registration at startup:
@@ -5739,14 +5769,14 @@ sequenceDiagram
    ```
 
    The `register_remote_actor::<A>()` call generates a factory that knows
-   how to `bincode::deserialize::<A>(bytes)` and how to wire up all the
-   `Handler<M>` impls — because the Rust type `A` with all its trait impls
-   is compiled into the binary on both nodes.
+   how to `bincode::deserialize::<A::Args>(bytes)` and call
+   `A::create(args, deps)` — because the Rust type `A` with all its trait
+   impls is compiled into the binary on both nodes.
 
-4. **Reconstruct and spawn locally** — the factory deserializes the bytes
-   back into a `Counter { count: 0 }` and calls the normal local
-   `runtime.spawn("counter", counter)`. From this point, the actor is a
-   regular local actor on the remote node.
+4. **Reconstruct and spawn locally** — the factory deserializes the Args
+   bytes, resolves `Deps` locally on the remote node, and calls
+   `Actor::create(args, deps)` followed by the normal local spawn.
+   From this point, the actor is a regular local actor on the remote node.
 
 5. **Return the `ActorId`** — the remote node sends back the assigned
    `ActorId { node: 3, local: 42 }`, and the caller wraps it in a remote
@@ -5756,7 +5786,8 @@ sequenceDiagram
 
 | Component | Serialized? | Why |
 |---|:---:|---|
-| Actor struct fields (`count`, `label`, etc.) | ✅ | Data — serde handles this |
+| Actor `Args` (`initial_count`, `config`, etc.) | ✅ | Data — serde handles this |
+| Actor `Deps` (actor refs, DB pools, etc.) | ❌ | Local — re-resolved on target node |
 | `Handler<M>` trait impls | ❌ | Code — compiled into both binaries |
 | `Actor` lifecycle hooks | ❌ | Code — compiled into both binaries |
 | `Interceptors` in SpawnConfig | ❌ | Per-node config — not portable |
@@ -5764,21 +5795,25 @@ sequenceDiagram
 
 **Key insight:** The remote node must have the **same Rust binary** (or at
 least the same actor types compiled in). Remote spawn is not "send arbitrary
-code" — it's "send initial state to a node that already knows how to run
-this actor type." This is the same model used by Erlang (both nodes must
-have the same module loaded) and Akka (both nodes must have the same class
-on the classpath).
+code" — it's "send construction arguments to a node that already knows how
+to run this actor type." This is the same model used by Erlang (both nodes
+must have the same module loaded) and Akka (both nodes must have the same
+class on the classpath).
 
 **Actor trait bound for remote-spawnable actors:**
 
 ```rust
 /// Marker for actors that can be spawned on remote nodes.
-/// Requires the actor state to be serializable.
-pub trait RemoteActor: Actor + Serialize + DeserializeOwned {}
+/// Requires the actor's Args to be serializable.
+pub trait RemoteActor: Actor
+where
+    Self::Args: Serialize + DeserializeOwned,
+{}
 
 impl<A> RemoteActor for A
 where
-    A: Actor + Serialize + DeserializeOwned,
+    A: Actor,
+    A::Args: Serialize + DeserializeOwned,
 {}
 ```
 
@@ -6541,7 +6576,7 @@ impl MetricsInterceptor {
 
 impl InboundInterceptor for MetricsInterceptor {
     fn name(&self) -> &'static str { "metrics" }
-    fn on_receive(&self, ctx: &InboundContext<'_>, headers: &mut Headers, _message: &dyn Any) -> Disposition {
+    fn on_receive(&self, ctx: &InboundContext<'_>, _runtime_headers: &RuntimeHeaders, headers: &mut Headers, _message: &dyn Any) -> Disposition {
         self.inner.record_receive(ctx);
         Disposition::Continue
     }
@@ -6644,7 +6679,7 @@ struct MessageSizeInterceptor {
 
 impl InboundInterceptor for MessageSizeInterceptor {
     fn name(&self) -> &'static str { "message-size" }
-    fn on_receive(&self, ctx: &InboundContext<'_>, _headers: &mut Headers, _message: &dyn Any) -> Disposition {
+    fn on_receive(&self, ctx: &InboundContext<'_>, _runtime_headers: &RuntimeHeaders, _headers: &mut Headers, _message: &dyn Any) -> Disposition {
         // std::mem::size_of gives the stack size of the message type.
         // For heap-allocated content, use a custom SizeOf header set by the sender.
         let mut sizes = self.sizes.lock().unwrap();
@@ -6673,7 +6708,7 @@ struct SlowHandlerInterceptor {
 
 impl InboundInterceptor for SlowHandlerInterceptor {
     fn name(&self) -> &'static str { "slow-handler" }
-    fn on_receive(&self, _ctx: &InboundContext<'_>, headers: &mut Headers, _message: &dyn Any) -> Disposition {
+    fn on_receive(&self, _ctx: &InboundContext<'_>, _runtime_headers: &RuntimeHeaders, headers: &mut Headers, _message: &dyn Any) -> Disposition {
         // Stash the start time in a header for on_complete to read.
         headers.insert(HandlerStartTime(Instant::now()));
         Disposition::Continue
@@ -6709,7 +6744,7 @@ struct CircuitBreakerInterceptor {
 impl InboundInterceptor for CircuitBreakerInterceptor {
     fn name(&self) -> &'static str { "circuit-breaker" }
 
-    fn on_receive(&self, ctx: &InboundContext<'_>, _headers: &mut Headers, _message: &dyn Any) -> Disposition {
+    fn on_receive(&self, ctx: &InboundContext<'_>, _runtime_headers: &RuntimeHeaders, _headers: &mut Headers, _message: &dyn Any) -> Disposition {
         let count = self.error_counts
             .entry(ctx.actor_id)
             .or_insert(AtomicU64::new(0));
@@ -6751,7 +6786,7 @@ struct OtelInterceptor;
 
 impl InboundInterceptor for OtelInterceptor {
     fn name(&self) -> &'static str { "opentelemetry" }
-    fn on_receive(&self, ctx: &InboundContext<'_>, headers: &mut Headers, _message: &dyn Any) -> Disposition {
+    fn on_receive(&self, ctx: &InboundContext<'_>, _runtime_headers: &RuntimeHeaders, headers: &mut Headers, _message: &dyn Any) -> Disposition {
         // Extract trace context from headers (injected by sender)
         let parent = headers.get::<TraceContext>();
 
@@ -8812,7 +8847,7 @@ Layer 1. These can be provided as:
 2. **Trait-based pattern** in the core crate (no macro needed):
    ```rust
    // User implements Actor + Handler<M> traits
-   // A blanket impl or adapter bridges to ActorRef<M>
+   // A blanket impl or adapter bridges to ActorRef<A>
    ```
 
 3. **Closure-based** (already in v0.1, remains the simplest path):
