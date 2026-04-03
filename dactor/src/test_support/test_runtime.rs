@@ -201,14 +201,17 @@ impl<A: Actor> TestActorRef<A> {
 
     fn notify_dead_letter(&self, message_type: &'static str, send_mode: SendMode, reason: DeadLetterReason) {
         if let Some(ref handler) = *self.dead_letter_handler {
-            handler.on_dead_letter(DeadLetterEvent {
+            let event = DeadLetterEvent {
                 target_id: self.id.clone(),
                 target_name: Some(self.name.clone()),
                 message_type,
                 send_mode,
                 reason,
                 message: None,
-            });
+            };
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                handler.on_dead_letter(event);
+            }));
         }
     }
 }
@@ -705,7 +708,7 @@ impl TestRuntime {
                 if let Some((interceptor_name, disposition)) = rejection {
                     if matches!(disposition, Disposition::Drop) {
                         if let Some(ref handler) = *dead_letter_handler_task {
-                            handler.on_dead_letter(DeadLetterEvent {
+                            let event = DeadLetterEvent {
                                 target_id: ctx.actor_id.clone(),
                                 target_name: Some(ctx.actor_name.clone()),
                                 message_type,
@@ -714,7 +717,10 @@ impl TestRuntime {
                                     interceptor: interceptor_name.clone(),
                                 },
                                 message: None,
-                            });
+                            };
+                            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                handler.on_dead_letter(event);
+                            }));
                         }
                     }
                     dispatch.reject(disposition, &interceptor_name);
