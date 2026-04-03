@@ -138,11 +138,13 @@ impl MetricsStore {
     }
 
     /// Return a point-in-time snapshot of system-level metrics.
+    /// Takes the lock once for a consistent snapshot.
     pub fn runtime_metrics(&self) -> RuntimeMetrics {
+        let store = self.inner.lock().unwrap();
         RuntimeMetrics {
-            actor_count: self.actor_count(),
-            total_messages: self.total_messages(),
-            total_errors: self.total_errors(),
+            actor_count: store.len(),
+            total_messages: store.values().map(|m| m.message_count).sum(),
+            total_errors: store.values().map(|m| m.error_count).sum(),
         }
     }
 
