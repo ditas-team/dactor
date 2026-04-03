@@ -11,7 +11,6 @@ documentation = "https://docs.rs/dactor-kameo"
 readme = "README.md"
 keywords = ["actor", "distributed", "kameo", "framework", "runtime"]
 categories = ["concurrency", "network-programming"]
-exclude = ["docs/", "tests/", ".github/"]
 
 [dependencies]
 dactor = { version = "0.2.0", path = "../dactor", features = ["serde"] }

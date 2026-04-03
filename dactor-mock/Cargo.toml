@@ -11,7 +11,6 @@ documentation = "https://docs.rs/dactor-mock"
 readme = "README.md"
 keywords = ["actor", "distributed", "mock", "testing", "framework"]
 categories = ["concurrency", "development-tools::testing"]
-exclude = ["docs/", "tests/", ".github/"]
 
 [dependencies]
 dactor = { version = "0.2.0", path = "../dactor", features = ["test-support"] }
