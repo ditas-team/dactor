@@ -71,10 +71,21 @@ pub trait Keyed {
 ///
 /// `PoolRef` is generic over the concrete ref type `R` because [`ActorRef<A>`]
 /// has generic methods and is therefore not object-safe.
+///
+/// # Routing
+///
+/// - **RoundRobin** — each message goes to the next worker in order.
+/// - **Random** — each message goes to a pseudo-randomly chosen worker.
+/// - **KeyBased** — messages routed via `tell_keyed()`/`ask_keyed()` use
+///   [`Keyed::routing_key()`] for deterministic per-key routing (sticky
+///   sessions). Messages sent via the standard `ActorRef` methods
+///   (`tell()`/`ask()`/`stream()`/`feed()`) fall back to round-robin,
+///   since the trait can't enforce `Keyed` bounds.
 pub struct PoolRef<A: Actor, R: ActorRef<A>> {
     workers: Vec<R>,
     routing: PoolRouting,
     counter: Arc<AtomicU64>,
+    pool_id: u64,
     name: String,
     _phantom: PhantomData<fn() -> A>,
 }
@@ -85,11 +96,15 @@ impl<A: Actor, R: ActorRef<A>> Clone for PoolRef<A, R> {
             workers: self.workers.clone(),
             routing: self.routing.clone(),
             counter: self.counter.clone(),
+            pool_id: self.pool_id,
             name: self.name.clone(),
             _phantom: PhantomData,
         }
     }
 }
+
+/// Global counter for unique pool IDs.
+static NEXT_POOL_ID: AtomicU64 = AtomicU64::new(1);
 
 impl<A: Actor, R: ActorRef<A>> PoolRef<A, R> {
     /// Create a new pool from a pre-built vector of worker references.
@@ -99,11 +114,13 @@ impl<A: Actor, R: ActorRef<A>> PoolRef<A, R> {
     /// Panics if `workers` is empty.
     pub fn new(workers: Vec<R>, routing: PoolRouting) -> Self {
         assert!(!workers.is_empty(), "pool must have at least one worker");
+        let pool_id = NEXT_POOL_ID.fetch_add(1, Ordering::Relaxed);
         let name = format!("pool({})", workers[0].name());
         Self {
             workers,
             routing,
             counter: Arc::new(AtomicU64::new(0)),
+            pool_id,
             name,
             _phantom: PhantomData,
         }
@@ -117,7 +134,7 @@ impl<A: Actor, R: ActorRef<A>> PoolRef<A, R> {
     /// Select a worker index using round-robin.
     fn round_robin_index(&self) -> usize {
         let idx = self.counter.fetch_add(1, Ordering::Relaxed);
-        (idx as usize) % self.workers.len()
+        (idx % (self.workers.len() as u64)) as usize
     }
 
     /// Select a worker index using a pseudo-random strategy.
@@ -125,15 +142,14 @@ impl<A: Actor, R: ActorRef<A>> PoolRef<A, R> {
     /// Uses a simple hash of the atomic counter combined with a large prime
     /// to provide adequate distribution without requiring the `rand` crate.
     fn random_index(&self) -> usize {
-        // Increment and mix — good enough for routing purposes.
         let raw = self.counter.fetch_add(1, Ordering::Relaxed);
         let mixed = splitmix64(raw);
-        (mixed as usize) % self.workers.len()
+        (mixed % (self.workers.len() as u64)) as usize
     }
 
     /// Select the worker for a keyed message.
     fn keyed_index(&self, key: u64) -> usize {
-        (key as usize) % self.workers.len()
+        (key % (self.workers.len() as u64)) as usize
     }
 
     /// Select a worker reference based on the current routing strategy
@@ -187,7 +203,7 @@ impl<A: Actor, R: ActorRef<A>> ActorRef<A> for PoolRef<A, R> {
     fn id(&self) -> ActorId {
         ActorId {
             node: NodeId("pool".into()),
-            local: 0,
+            local: self.pool_id,
         }
     }
 
@@ -195,6 +211,9 @@ impl<A: Actor, R: ActorRef<A>> ActorRef<A> for PoolRef<A, R> {
         self.name.clone()
     }
 
+    /// Returns `true` if **any** worker in the pool is alive.
+    /// A partially degraded pool (some workers dead) still reports alive.
+    /// Use `pool_size()` and individual worker checks for detailed health.
     fn is_alive(&self) -> bool {
         self.workers.iter().any(|w| w.is_alive())
     }
