@@ -1423,6 +1423,10 @@ actor code doesn't change.
 ```rust
 /// Controls automatic batching for stream and feed channels.
 /// Batching is transparent — the sender/receiver API remains per-item.
+///
+/// A batch is flushed when ANY of these two conditions is met (whichever first):
+/// - `max_items` items have accumulated
+/// - `max_delay` has elapsed since the first item in the current batch
 #[derive(Debug, Clone)]
 pub struct BatchConfig {
     /// Maximum number of items to batch together.
@@ -1449,30 +1453,30 @@ impl Default for BatchConfig {
 
 ```rust
 impl<A: Actor> ActorRef<A> {
-    /// Send a request and receive a stream of responses, with batching.
-    pub fn stream_batched<M>(
+    /// Send a request and receive a stream of responses, with optional batching.
+    pub fn stream<M>(
         &self,
         msg: M,
         buffer: usize,
-        batch: BatchConfig,
+        batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
-    ) -> Result<BoxStream<M::Reply>, RuntimeError>
+    ) -> Result<BoxStream<M::Reply>, ActorSendError>
     where
         A: Handler<M>,
         M: Message;
 
-    /// Feed an async stream into the actor, with batching.
-    pub async fn feed_batched<M>(
+    /// Feed an async stream into the actor, with optional batching.
+    pub fn feed<Item, Reply>(
         &self,
-        msg: M,
-        input: BoxStream<M::Item>,
+        input: BoxStream<Item>,
         buffer: usize,
-        batch: BatchConfig,
+        batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
-    ) -> Result<M::Reply, RuntimeError>
+    ) -> Result<AskReply<Reply>, ActorSendError>
     where
-        A: FeedHandler<M>,
-        M: FeedMessage;
+        A: FeedHandler<Item, Reply>,
+        Item: Send + 'static,
+        Reply: Send + 'static;
 }
 ```
 
@@ -1510,7 +1514,10 @@ sequenceDiagram
 ```
 
 The batch writer accumulates items and flushes when either `max_items` is
-reached or `max_delay` elapses — whichever comes first. On the receiving
+reached or `max_delay` elapses. A flushed batch (Vec<T>) will be wrapped
+into a single WireEnvelope by the transport layer, sharing the same
+MessageId and headers. Byte-level concerns (frame size limits, throttling)
+are handled by the transport layer, not the batch writer. On the receiving
 end, the batch reader unpacks items and delivers them individually to the
 `StreamReceiver` or `StreamSender`. The application code sees single items
 as usual.
@@ -1523,8 +1530,8 @@ as usual.
 | `max_items=64, max_delay=5ms` | Good (default) | ≤5ms added latency |
 | `max_items=256, max_delay=50ms` | Best for bulk transfer | Higher latency acceptable |
 
-> **Note:** `stream()` and `feed()` without `_batched` suffix continue to
-> work with no batching (per-item delivery). Batching is opt-in.
+> **Note:** Pass `batch_config: None` to `stream()` and `feed()` for
+> per-item delivery with no batching. Batching is opt-in.
 
 ### 4.12 Feed (Client-Streaming / Stream-to-Actor)
 
@@ -1573,31 +1580,19 @@ impl<T: Send + 'static> StreamReceiver<T> {
 }
 ```
 
-**Message trait for feed handlers:**
-
-```rust
-/// Marker trait for messages that represent a stream-to-actor feed.
-/// `Item` is the type of each streamed element.
-/// `Reply` is the optional final response after the stream is consumed.
-pub trait FeedMessage: Message {
-    type Item: Send + 'static;
-}
-```
-
 **Feed handler trait:**
 
 ```rust
 /// Implemented by actors that can receive a stream of items.
-/// The handler receives the initial request plus a `StreamReceiver`
-/// to pull items from. It returns a final reply after processing.
+/// The handler receives a `StreamReceiver` to pull items from.
+/// It returns a final reply after processing.
 #[async_trait]
-pub trait FeedHandler<M: FeedMessage>: Actor {
+pub trait FeedHandler<Item: Send + 'static, Reply: Send + 'static>: Actor {
     async fn handle_feed(
         &mut self,
-        msg: M,
-        receiver: StreamReceiver<M::Item>,
+        receiver: StreamReceiver<Item>,
         ctx: &mut ActorContext,
-    ) -> Result<M::Reply, ActorError>;
+    ) -> Reply;
 }
 ```
 
@@ -1610,26 +1605,26 @@ impl<A: Actor> ActorRef<A> {
     /// `input` is an async stream the caller provides. The runtime drains
     /// items from it and delivers them to the actor's `FeedHandler`.
     ///
-    /// `msg` is an initial request/config sent alongside the stream
-    /// (e.g., filename, options, schema).
-    ///
     /// `buffer` controls the internal channel capacity (backpressure).
+    ///
+    /// `batch_config` optionally enables batching for the feed stream.
     ///
     /// `cancel` optionally cancels the feed. When cancelled, the receiver
     /// yields `None` and the actor can finalize early.
     ///
     /// Returns the actor's final reply after the stream is fully consumed
     /// (or cancelled).
-    pub async fn feed<M>(
+    pub fn feed<Item, Reply>(
         &self,
-        msg: M,
-        input: BoxStream<M::Item>,
+        input: BoxStream<Item>,
         buffer: usize,
+        batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
-    ) -> Result<M::Reply, RuntimeError>
+    ) -> Result<AskReply<Reply>, ActorSendError>
     where
-        A: FeedHandler<M>,
-        M: FeedMessage;
+        A: FeedHandler<Item, Reply>,
+        Item: Send + 'static,
+        Reply: Send + 'static;
 }
 ```
 
@@ -1671,33 +1666,21 @@ the caller's input stream. No unbounded buffering occurs.
 **Example — Aggregation actor:**
 
 ```rust
-// Message: start a sum aggregation over streamed i64 values
-struct SumRequest {
-    label: String,
-}
-
-impl Message for SumRequest {
-    type Reply = i64;  // final sum
-}
-
-impl FeedMessage for SumRequest {
-    type Item = i64;  // each streamed value
-}
+// Actor receives a stream of i64 values and returns their sum
+struct Aggregator;
 
 #[async_trait]
-impl FeedHandler<SumRequest> for Aggregator {
+impl FeedHandler<i64, i64> for Aggregator {
     async fn handle_feed(
         &mut self,
-        msg: SumRequest,
         mut receiver: StreamReceiver<i64>,
         _ctx: &mut ActorContext,
-    ) -> Result<i64, ActorError> {
+    ) -> i64 {
         let mut sum: i64 = 0;
         while let Some(value) = receiver.recv().await {
             sum += value;
         }
-        tracing::info!(label = %msg.label, sum, "aggregation complete");
-        Ok(sum)
+        sum
     }
 }
 ```
@@ -1713,7 +1696,7 @@ async fn compute_sum(aggregator: &ActorRef<Aggregator>) -> i64 {
     let input: BoxStream<i64> = Box::pin(values);
 
     let total = aggregator
-        .feed(SumRequest { label: "batch-1".into() }, input, 16, None)
+        .feed::<i64, i64>(input, 16, None, None)
         .await
         .unwrap();
 
@@ -1725,37 +1708,20 @@ async fn compute_sum(aggregator: &ActorRef<Aggregator>) -> i64 {
 **Example — Chunked file upload:**
 
 ```rust
-struct UploadFile {
-    filename: String,
-    content_type: String,
-}
-
-impl Message for UploadFile {
-    type Reply = UploadResult;
-}
-
-impl FeedMessage for UploadFile {
-    type Item = Bytes;  // file chunks
-}
-
 #[async_trait]
-impl FeedHandler<UploadFile> for StorageActor {
+impl FeedHandler<Bytes, UploadResult> for StorageActor {
     async fn handle_feed(
         &mut self,
-        msg: UploadFile,
         mut receiver: StreamReceiver<Bytes>,
         ctx: &mut ActorContext,
-    ) -> Result<UploadResult, ActorError> {
-        let mut file = File::create(&msg.filename).await?;
+    ) -> UploadResult {
         let mut total_bytes = 0u64;
 
         while let Some(chunk) = receiver.recv().await {
-            file.write_all(&chunk).await?;
             total_bytes += chunk.len() as u64;
         }
 
-        file.flush().await?;
-        Ok(UploadResult { bytes_written: total_bytes })
+        UploadResult { bytes_written: total_bytes }
     }
 }
 ```
@@ -1763,14 +1729,19 @@ impl FeedHandler<UploadFile> for StorageActor {
 **Remote support:** For remote actors, the adapter serializes each stream
 item and sends it over the wire using the same `MessageSerializer`. The
 drain task runs on the caller's node; items flow to the remote actor via
-the provider's transport. The `FeedMessage` initial request travels as a
-`WireEnvelope`, and stream items follow as a sequence of serialized payloads
-on the same logical channel.
+the provider's transport. Stream items are sent as a sequence of serialized
+payloads on the same logical channel.
 
-**Interceptor visibility:** Both `InboundInterceptor` and `OutboundInterceptor`
-see the initial `FeedMessage` as a regular message. Individual stream items
-are **not** intercepted (same as `stream()` — see §5.2, §5.3). The final
-reply is visible to `OutboundInterceptor::on_reply`.
+**Interceptor visibility:** The **real interception** happens per-Item
+via `on_stream_item()`:
+
+- **Outbound `on_stream_item()`:** called on the caller side for each Item
+  *before* it is sent to the actor. This is where throttling interceptors
+  can observe per-item data and make rate-limiting decisions.
+- **Inbound `on_stream_item()`:** called on the actor side as each Item
+  is delivered from the `StreamReceiver`.
+
+The final reply is visible to `OutboundInterceptor::on_reply`.
 
 > **Note:** Bidirectional streaming (stream in + stream out) can be composed
 > from `feed()` + actor-internal `stream()`, or by having the `FeedHandler`
@@ -2484,7 +2455,9 @@ crates such as [`dcontext`](https://github.com/Yaming-Hub/dcontext) and
 consumed by interceptors for context propagation. This keeps dactor free of
 opinionated context structures.
 
-The only built-in header type is `Priority` (used by priority mailboxes):
+The only built-in header type is `Priority`:
+
+- **`Priority`** — message priority level for priority mailboxes (§5.6)
 
 ```rust
 /// Message priority level for priority mailboxes.
@@ -2716,14 +2689,16 @@ pub enum SendMode {
 ///
 /// ### `Feed` (client-streaming)
 /// ```text
-/// on_receive(initial FeedMessage) → handler starts consuming StreamReceiver
-///                                 → on_complete(outcome=Replied)         if handler returns Ok
-///                                 → on_complete(outcome=HandlerError)    if handler fails
-///                                 → on_complete(outcome=StreamCancelled) if cancel token fires
+/// on_receive → handler starts consuming StreamReceiver
+///   → on_stream_item per input item   (as items arrive from caller)
+///   → on_complete(outcome=Replied)         if handler returns Ok
+///   → on_complete(outcome=HandlerError)    if handler fails
+///   → on_complete(outcome=StreamCancelled) if cancel token fires
 /// ```
-/// **Note:** Individual stream items fed into the actor are **not**
-/// intercepted (same as `stream()` — only the initial `FeedMessage`
-/// triggers `on_receive`). The final reply is visible in `on_complete`.
+/// The real interception happens per-Item via `on_stream_item`.
+/// On the outbound (caller) side,
+/// `OutboundInterceptor::on_stream_item` fires for each Item *before*
+/// it is sent to the actor — enabling per-item throttling and metrics.
 pub trait InboundInterceptor: Send + Sync + 'static {
     /// Human-readable name for this interceptor (e.g., "auth-check",
     /// "rate-limiter", "circuit-breaker"). Included in `Rejected` errors

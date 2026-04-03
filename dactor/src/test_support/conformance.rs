@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::actor::{
-    Actor, ActorContext, ActorError, ActorRef, FeedHandler, FeedMessage, Handler, StreamHandler,
+    Actor, ActorContext, ActorError, ActorRef, FeedHandler, Handler, StreamHandler,
 };
 use crate::errors::{ErrorAction, RuntimeError};
 use crate::message::Message;
@@ -113,18 +113,10 @@ impl Actor for ConformanceAggregator {
     }
 }
 
-/// Feed request: sum all incoming i64 items.
-pub struct SumFeed;
-impl FeedMessage for SumFeed {
-    type Item = i64;
-    type Reply = i64;
-}
-
 #[async_trait]
-impl FeedHandler<SumFeed> for ConformanceAggregator {
+impl FeedHandler<i64, i64> for ConformanceAggregator {
     async fn handle_feed(
         &mut self,
-        _msg: SumFeed,
         mut rx: StreamReceiver<i64>,
         _ctx: &mut ActorContext,
     ) -> i64 {
@@ -312,7 +304,7 @@ where
 
     let actor = spawn("conf-streamer", ());
     let stream = actor
-        .stream(StreamNumbers { count: 5 }, 16, None)
+        .stream(StreamNumbers { count: 5 }, 16, None, None)
         .unwrap();
     let items: Vec<u64> = stream.collect().await;
     assert_eq!(items, vec![0, 1, 2, 3, 4]);
@@ -328,7 +320,7 @@ where
 
     let actor = spawn("conf-streamer-empty", ());
     let stream = actor
-        .stream(StreamNumbers { count: 0 }, 16, None)
+        .stream(StreamNumbers { count: 0 }, 16, None, None)
         .unwrap();
     let items: Vec<u64> = stream.collect().await;
     assert!(items.is_empty(), "expected empty stream, got {:?}", items);
@@ -346,7 +338,7 @@ where
 {
     let actor = spawn("conf-agg", ());
     let input: BoxStream<i64> = Box::pin(futures::stream::iter(vec![10, 20, 30]));
-    let result = actor.feed(SumFeed, input, 16, None).unwrap().await.unwrap();
+    let result = actor.feed::<i64, i64>(input, 16, None, None).unwrap().await.unwrap();
     assert_eq!(result, 60, "feed sum: expected 60, got {}", result);
 }
 

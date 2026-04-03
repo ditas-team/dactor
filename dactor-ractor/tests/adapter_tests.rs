@@ -721,7 +721,7 @@ mod stream_tests {
         let runtime = RactorRuntime::new();
         let actor = runtime.spawn::<Streamer>("streamer-items", ());
 
-        let stream = actor.stream(StreamN(5), 8, None).unwrap();
+        let stream = actor.stream(StreamN(5), 8, None, None).unwrap();
         let items: Vec<u32> = stream.collect().await;
         assert_eq!(items, vec![0, 1, 2, 3, 4]);
     }
@@ -731,7 +731,7 @@ mod stream_tests {
         let runtime = RactorRuntime::new();
         let actor = runtime.spawn::<Streamer>("streamer-empty", ());
 
-        let stream = actor.stream(StreamEmpty, 8, None).unwrap();
+        let stream = actor.stream(StreamEmpty, 8, None, None).unwrap();
         let items: Vec<u32> = stream.collect().await;
         assert!(items.is_empty());
     }
@@ -742,7 +742,7 @@ mod stream_tests {
         let actor = runtime.spawn::<Streamer>("streamer-drop", ());
 
         // Request a stream of 1000 items but only take 2
-        let stream = actor.stream(StreamN(1000), 1, None).unwrap();
+        let stream = actor.stream(StreamN(1000), 1, None, None).unwrap();
         let items: Vec<u32> = stream.take(2).collect().await;
         assert_eq!(items, vec![0, 1]);
 
@@ -759,7 +759,7 @@ mod stream_tests {
 mod feed_tests {
     use async_trait::async_trait;
 
-    use dactor::actor::{Actor, ActorContext, FeedHandler, FeedMessage, ActorRef};
+    use dactor::actor::{Actor, ActorContext, FeedHandler, ActorRef};
     use dactor::stream::{BoxStream, StreamReceiver};
     use dactor_ractor::RactorRuntime;
 
@@ -775,17 +775,10 @@ mod feed_tests {
         }
     }
 
-    struct SumFeed;
-    impl FeedMessage for SumFeed {
-        type Item = u64;
-        type Reply = u64;
-    }
-
     #[async_trait]
-    impl FeedHandler<SumFeed> for Summer {
+    impl FeedHandler<u64, u64> for Summer {
         async fn handle_feed(
             &mut self,
-            _msg: SumFeed,
             mut receiver: StreamReceiver<u64>,
             _ctx: &mut ActorContext,
         ) -> u64 {
@@ -807,7 +800,7 @@ mod feed_tests {
         let actor = runtime.spawn::<Summer>("summer-feed", ());
 
         let input = items_stream(vec![1, 2, 3, 4, 5]);
-        let reply = actor.feed(SumFeed, input, 8, None).unwrap().await.unwrap();
+        let reply = actor.feed::<u64, u64>(input, 8, None, None).unwrap().await.unwrap();
         assert_eq!(reply, 15);
     }
 
@@ -817,7 +810,7 @@ mod feed_tests {
         let actor = runtime.spawn::<Summer>("summer-empty", ());
 
         let input = items_stream(vec![]);
-        let reply = actor.feed(SumFeed, input, 8, None).unwrap().await.unwrap();
+        let reply = actor.feed::<u64, u64>(input, 8, None, None).unwrap().await.unwrap();
         assert_eq!(reply, 0);
     }
 }

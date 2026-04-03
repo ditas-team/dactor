@@ -3,7 +3,7 @@
 //! Run with: cargo run --example streaming --features test-support
 
 use async_trait::async_trait;
-use dactor::actor::{Actor, ActorContext, FeedHandler, FeedMessage, StreamHandler, ActorRef};
+use dactor::actor::{Actor, ActorContext, FeedHandler, StreamHandler, ActorRef};
 use dactor::message::Message;
 use dactor::stream::{StreamReceiver, StreamSender};
 use dactor::TestRuntime;
@@ -54,12 +54,6 @@ impl StreamHandler<GetLogs> for LogServer {
 // ===========================================================================
 
 /// Feed message: caller streams u64 items, actor returns the sum.
-struct SumItems;
-impl FeedMessage for SumItems {
-    type Item = u64;
-    type Reply = u64;
-}
-
 struct Aggregator;
 
 impl Actor for Aggregator {
@@ -72,10 +66,9 @@ impl Actor for Aggregator {
 }
 
 #[async_trait]
-impl FeedHandler<SumItems> for Aggregator {
+impl FeedHandler<u64, u64> for Aggregator {
     async fn handle_feed(
         &mut self,
-        _msg: SumItems,
         mut receiver: StreamReceiver<u64>,
         _ctx: &mut ActorContext,
     ) -> u64 {
@@ -109,7 +102,7 @@ async fn main() {
         ],
     );
 
-    let mut stream = server.stream(GetLogs, 16, None).unwrap();
+    let mut stream = server.stream(GetLogs, 16, None, None).unwrap();
     while let Some(entry) = stream.next().await {
         println!("  [Client] log entry: {}", entry);
     }
@@ -121,7 +114,7 @@ async fn main() {
 
     let input = futures::stream::iter(vec![10u64, 20, 30, 40, 50]);
     let total = aggregator
-        .feed(SumItems, Box::pin(input), 8, None)
+        .feed::<u64, u64>(Box::pin(input), 8, None, None)
         .unwrap()
         .await
         .unwrap();

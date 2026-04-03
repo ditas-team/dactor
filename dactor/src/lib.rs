@@ -31,6 +31,7 @@ pub mod interceptor;
 pub mod mailbox;
 pub mod message;
 pub mod persistence;
+pub mod runtime_support;
 pub mod stream;
 pub mod supervision;
 pub mod metrics;
@@ -57,7 +58,7 @@ pub mod prelude {
 pub use async_trait::async_trait;
 pub use actor::{Actor, ActorContext, ActorError, ActorRef, SpawnConfig};
 pub use actor::{AskReply, Handler, StreamHandler};
-pub use actor::{FeedMessage, FeedHandler};
+pub use actor::FeedHandler;
 pub use actor::cancel_after;
 pub use tokio_util::sync::CancellationToken;
 pub use message::Message;
@@ -69,8 +70,9 @@ pub use timer::TimerHandle;
 pub use clock::{Clock, SystemClock};
 pub use node::{NodeId, ActorId};
 pub use supervision::ChildTerminated;
-pub use interceptor::{InboundInterceptor, InboundContext, Disposition, Outcome, SendMode};
+pub use interceptor::{InboundInterceptor, InboundContext, Disposition, Outcome, SendMode, InterceptResult, intercept_outbound_stream_item};
 pub use interceptor::{OutboundInterceptor, OutboundContext};
+pub use interceptor::{DropObserver, DropNotice, notify_drop};
 pub use dead_letter::{
     DeadLetterHandler, DeadLetterEvent, DeadLetterReason,
     LoggingDeadLetterHandler, CollectingDeadLetterHandler, DeadLetterInfo,
@@ -79,7 +81,7 @@ pub use throttle::ActorRateLimiter;
 pub use metrics::{MetricsInterceptor, MetricsStore, ActorMetrics};
 pub use mailbox::{MailboxConfig, OverflowStrategy};
 pub use stream::{BoxStream, StreamSendError, StreamSender};
-pub use stream::StreamReceiver;
+pub use stream::{StreamReceiver, BatchConfig, BatchWriter, BatchReader};
 pub use remote::{
     RemoteMessage, MessageSerializer, SerializationError,
     WireEnvelope, WireHeaders, MessageVersionHandler,

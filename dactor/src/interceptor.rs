@@ -6,6 +6,7 @@
 //! notified via `on_complete`.
 
 use std::any::Any;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::actor::ActorError;
@@ -72,6 +73,95 @@ pub enum Disposition {
     Retry(Duration),
 }
 
+/// Result of running an interceptor pipeline. Pairs the final [`Disposition`]
+/// with the name of the interceptor that produced it (empty for `Continue`).
+///
+/// Used by runtimes to log/route dropped messages to the dead letter handler
+/// with the interceptor's identity.
+pub struct InterceptResult {
+    pub disposition: Disposition,
+    /// Name of the interceptor that produced a non-Continue disposition.
+    /// Empty string if all interceptors returned Continue.
+    pub interceptor_name: &'static str,
+}
+
+impl InterceptResult {
+    /// All interceptors returned Continue.
+    pub fn continued() -> Self {
+        Self { disposition: Disposition::Continue, interceptor_name: "" }
+    }
+
+    /// Whether the disposition is `Continue`.
+    pub fn is_continue(&self) -> bool {
+        matches!(self.disposition, Disposition::Continue)
+    }
+}
+
+/// Information about a dropped message or stream item.
+/// Passed to [`DropObserver::on_drop`] so the runtime never silently
+/// discards items.
+#[derive(Debug)]
+pub struct DropNotice {
+    /// The target actor's name.
+    pub target_name: String,
+    /// The Rust type name of the message or stream item.
+    pub message_type: &'static str,
+    /// The interceptor that returned `Disposition::Drop`.
+    pub interceptor_name: &'static str,
+    /// How the message was sent (Tell, Ask, Stream, Feed).
+    pub send_mode: SendMode,
+    /// Context string describing where the drop happened
+    /// (e.g., "outbound on_send", "stream reply", "feed item").
+    pub context: &'static str,
+    /// For stream/feed items, the zero-based sequence number.
+    /// `None` for message-level drops (tell/ask/stream initial request).
+    pub seq: Option<u64>,
+}
+
+/// Global observer for interceptor-driven drops.
+///
+/// Register on the runtime to observe all messages and stream items
+/// that interceptors drop via `Disposition::Drop`. Without an observer,
+/// drops are silent — the application is responsible for registering
+/// one if it wants visibility.
+///
+/// Use cases: metrics (count dropped items), alerting, dead-letter routing,
+/// audit logging.
+pub trait DropObserver: Send + Sync + 'static {
+    /// Called whenever an interceptor returns `Disposition::Drop`.
+    fn on_drop(&self, notice: DropNotice);
+}
+
+/// Notify the drop observer when an interceptor drops an item.
+/// If no observer is registered, the drop is silent — the application
+/// is responsible for registering an observer if it wants visibility.
+pub fn notify_drop(
+    observer: &Option<Arc<dyn DropObserver>>,
+    notice: DropNotice,
+) {
+    if let Some(obs) = observer {
+        obs.on_drop(notice);
+    }
+}
+
+/// Run outbound interceptors' `on_stream_item` for a single item.
+/// Returns the first non-Continue disposition with the interceptor name.
+pub fn intercept_outbound_stream_item(
+    interceptors: &[Box<dyn OutboundInterceptor>],
+    ctx: &OutboundContext<'_>,
+    headers: &Headers,
+    seq: u64,
+    item: &dyn Any,
+) -> InterceptResult {
+    for interceptor in interceptors {
+        let d = interceptor.on_stream_item(ctx, headers, seq, item);
+        if !matches!(d, Disposition::Continue) {
+            return InterceptResult { disposition: d, interceptor_name: interceptor.name() };
+        }
+    }
+    InterceptResult::continued()
+}
+
 /// Result reported to interceptors after handler execution completes.
 ///
 /// The reply (for ask) is type-erased — interceptors can downcast via
@@ -133,6 +223,33 @@ pub trait InboundInterceptor: Send + Sync + 'static {
     ) {
         let _ = (ctx, runtime_headers, headers, outcome);
     }
+
+    /// Called for each item in a stream or feed.
+    ///
+    /// - **Stream (server-streaming):** called when the handler emits each
+    ///   reply item via `StreamSender::send()`.
+    /// - **Feed (client-streaming):** called when each input item is
+    ///   delivered to the actor via `StreamReceiver`.
+    ///
+    /// `seq` is a zero-based sequence number within this stream/feed.
+    /// The item is type-erased; downcast if you know the concrete type.
+    ///
+    /// Returns [`Disposition`] to control per-item flow:
+    /// - `Continue` — deliver/forward the item normally.
+    /// - `Drop` — silently skip this item.
+    /// - `Delay(d)` — pause for `d` before forwarding (backpressure).
+    /// - `Reject(reason)` — terminate the stream with an error.
+    /// - `Retry(d)` — not meaningful for stream items; treated as `Drop`.
+    fn on_stream_item(
+        &self,
+        ctx: &InboundContext<'_>,
+        headers: &Headers,
+        seq: u64,
+        item: &dyn Any,
+    ) -> Disposition {
+        let _ = (ctx, headers, seq, item);
+        Disposition::Continue
+    }
 }
 
 /// Metadata about an outbound message, provided to outbound interceptors.
@@ -187,6 +304,33 @@ pub trait OutboundInterceptor: Send + Sync + 'static {
         outcome: &Outcome<'_>,
     ) {
         let _ = (ctx, runtime_headers, headers, outcome);
+    }
+
+    /// Called for each item flowing through a stream or feed on the sender side.
+    ///
+    /// - **Stream (server-streaming):** called when each reply item arrives
+    ///   back at the caller.
+    /// - **Feed (client-streaming):** called when each input item is about
+    ///   to be sent to the target actor.
+    ///
+    /// `seq` is a zero-based sequence number within this stream/feed.
+    /// The item is type-erased; downcast if you know the concrete type.
+    ///
+    /// Returns [`Disposition`] to control per-item flow:
+    /// - `Continue` — deliver/forward the item normally.
+    /// - `Drop` — silently skip this item.
+    /// - `Delay(d)` — pause for `d` before forwarding (backpressure).
+    /// - `Reject(reason)` — terminate the stream with an error.
+    /// - `Retry(d)` — not meaningful for stream items; treated as `Drop`.
+    fn on_stream_item(
+        &self,
+        ctx: &OutboundContext<'_>,
+        headers: &Headers,
+        seq: u64,
+        item: &dyn Any,
+    ) -> Disposition {
+        let _ = (ctx, headers, seq, item);
+        Disposition::Continue
     }
 }
 

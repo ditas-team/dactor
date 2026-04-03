@@ -180,26 +180,28 @@ impl<A: Actor + 'static> ActorRef<A> for CoerceActorRef<A> {
         &self,
         msg: M,
         buffer: usize,
+        batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
     ) -> Result<BoxStream<M::Reply>, ActorSendError>
     where
         A: StreamHandler<M>,
         M: Message,
     {
-        self.inner.stream(msg, buffer, cancel)
+        self.inner.stream(msg, buffer, batch_config, cancel)
     }
 
-    fn feed<M>(
+    fn feed<Item, Reply>(
         &self,
-        msg: M,
-        input: BoxStream<M::Item>,
+        input: BoxStream<Item>,
         buffer: usize,
+        batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
-    ) -> Result<AskReply<M::Reply>, ActorSendError>
+    ) -> Result<AskReply<Reply>, ActorSendError>
     where
-        A: FeedHandler<M>,
-        M: FeedMessage,
+        A: FeedHandler<Item, Reply>,
+        Item: Send + 'static,
+        Reply: Send + 'static,
     {
-        self.inner.feed(msg, input, buffer, cancel)
+        self.inner.feed(input, buffer, batch_config, cancel)
     }
 }

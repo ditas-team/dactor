@@ -9,7 +9,7 @@ use std::any::Any;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use crate::actor::{Actor, ActorContext, FeedHandler, FeedMessage, Handler, StreamHandler};
+use crate::actor::{Actor, ActorContext, FeedHandler, Handler, StreamHandler};
 use crate::errors::RuntimeError;
 use crate::interceptor::{Disposition, SendMode};
 use crate::message::Message;
@@ -174,7 +174,7 @@ where
                 retry_after,
             },
             Disposition::Drop => {
-                RuntimeError::ActorNotFound("message dropped by interceptor".into())
+                RuntimeError::ActorNotFound(format!("dropped by interceptor '{}'", interceptor_name))
             }
             _ => return,
         };
@@ -237,28 +237,28 @@ where
 // FeedDispatch
 // ---------------------------------------------------------------------------
 
-/// Feed envelope: carries the message, a StreamReceiver for items, and a oneshot for the reply.
-pub struct FeedDispatch<M: FeedMessage> {
-    pub msg: M,
-    pub receiver: StreamReceiver<M::Item>,
-    pub reply_tx: tokio::sync::oneshot::Sender<Result<M::Reply, RuntimeError>>,
+/// Feed envelope: carries a StreamReceiver for items and a oneshot for the reply.
+pub struct FeedDispatch<Item: Send + 'static, Reply: Send + 'static> {
+    pub receiver: StreamReceiver<Item>,
+    pub reply_tx: tokio::sync::oneshot::Sender<Result<Reply, RuntimeError>>,
     pub cancel: Option<CancellationToken>,
 }
 
 #[async_trait]
-impl<A, M> Dispatch<A> for FeedDispatch<M>
+impl<A, Item, Reply> Dispatch<A> for FeedDispatch<Item, Reply>
 where
-    A: FeedHandler<M>,
-    M: FeedMessage,
+    A: FeedHandler<Item, Reply>,
+    Item: Send + 'static,
+    Reply: Send + 'static,
 {
     async fn dispatch(self: Box<Self>, actor: &mut A, ctx: &mut ActorContext) -> DispatchResult {
-        let reply = actor.handle_feed(self.msg, self.receiver, ctx).await;
+        let reply = actor.handle_feed(self.receiver, ctx).await;
         let reply_any: Box<dyn Any + Send> = Box::new(reply);
         let reply_tx = self.reply_tx;
         DispatchResult {
             reply: Some(reply_any),
             reply_sender: Some(Box::new(move |boxed_reply| {
-                if let Ok(reply) = boxed_reply.downcast::<M::Reply>() {
+                if let Ok(reply) = boxed_reply.downcast::<Reply>() {
                     if reply_tx.send(Ok(*reply)).is_err() {
                         tracing::debug!("reply dropped — caller may have timed out or been cancelled");
                     }
@@ -268,7 +268,8 @@ where
     }
 
     fn message_any(&self) -> &dyn Any {
-        &self.msg
+        // FeedDispatch has no message — return unit
+        &()
     }
 
     fn send_mode(&self) -> SendMode {
@@ -276,7 +277,7 @@ where
     }
 
     fn message_type_name(&self) -> &'static str {
-        std::any::type_name::<M>()
+        std::any::type_name::<Item>()
     }
 
     fn reject(self: Box<Self>, disposition: Disposition, interceptor_name: &str) {
@@ -290,7 +291,7 @@ where
                 retry_after,
             },
             Disposition::Drop => {
-                RuntimeError::ActorNotFound("message dropped by interceptor".into())
+                RuntimeError::ActorNotFound(format!("dropped by interceptor '{}'", interceptor_name))
             }
             _ => return,
         };

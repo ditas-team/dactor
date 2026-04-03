@@ -13,7 +13,7 @@ use crate::interceptor::SendMode;
 use crate::mailbox::MailboxConfig;
 use crate::message::{Headers, Message};
 use crate::node::ActorId;
-use crate::stream::{BoxStream, StreamReceiver, StreamSender};
+use crate::stream::{BatchConfig, BoxStream, StreamReceiver, StreamSender};
 
 /// An error originating from within an actor's handler or lifecycle hook.
 ///
@@ -191,32 +191,23 @@ pub trait StreamHandler<M: Message>: Actor {
     );
 }
 
-/// A message type used with feed (client-streaming) delivery.
-///
-/// Unlike regular `Message`, a `FeedMessage` carries an associated `Item`
-/// type that the caller streams to the actor, plus a `Reply` returned
-/// when the actor has consumed the entire stream.
-pub trait FeedMessage: Send + 'static {
-    /// The type of items the caller streams to the actor.
-    type Item: Send + 'static;
-    /// The reply returned after the actor consumes all items.
-    type Reply: Send + 'static;
-}
-
 /// Implemented by actors that handle client-streaming (feed) requests.
 ///
-/// The handler receives the initial message and a [`StreamReceiver`] from
-/// which it pulls caller-provided items. When the stream ends, the handler
-/// returns a final reply.
+/// The handler receives a [`StreamReceiver`] from which it pulls
+/// caller-provided items. When the stream ends, the handler returns a
+/// final reply.
+///
+/// Generic parameters:
+/// - `Item` — the type of items the caller streams to the actor.
+/// - `Reply` — the type returned after the actor consumes all items.
 #[async_trait]
-pub trait FeedHandler<M: FeedMessage>: Actor {
+pub trait FeedHandler<Item: Send + 'static, Reply: Send + 'static>: Actor {
     /// Handle a feed request. Pull items from `receiver` and return a reply.
     async fn handle_feed(
         &mut self,
-        msg: M,
-        receiver: StreamReceiver<M::Item>,
+        receiver: StreamReceiver<Item>,
         ctx: &mut ActorContext,
-    ) -> M::Reply;
+    ) -> Reply;
 }
 
 /// A future that resolves to the reply from an `ask()` call.
@@ -289,36 +280,44 @@ pub trait ActorRef<A: Actor>: Clone + Send + Sync + 'static {
     /// Request-stream: send a request and receive a stream of responses.
     /// `buffer` controls the channel capacity (backpressure).
     ///
+    /// Pass `batch_config` to enable batching (reduces per-item overhead
+    /// for remote actors). `None` means unbatched per-item delivery.
+    ///
     /// Pass a [`CancellationToken`] to cooperatively cancel the stream.
     fn stream<M>(
         &self,
         msg: M,
         buffer: usize,
+        batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
     ) -> Result<BoxStream<M::Reply>, ActorSendError>
     where
         A: StreamHandler<M>,
         M: Message;
 
-    /// Client-streaming (feed): send a request with an async stream of items.
+    /// Client-streaming (feed): stream items to the actor and receive a reply.
     ///
     /// The caller provides items via `input`. The actor consumes them via
     /// [`StreamReceiver`] and returns a single reply when the stream ends.
     /// `buffer` controls the internal channel capacity (backpressure).
     ///
+    /// Pass `batch_config` to enable batching (reduces per-item overhead
+    /// for remote actors). `None` means unbatched per-item delivery.
+    ///
     /// Pass a [`CancellationToken`] to cooperatively cancel the feed.
     ///
-    /// Returns an [`AskReply`] future: `let reply = actor.feed(msg, stream, 8, None)?.await?;`
-    fn feed<M>(
+    /// Usage: `let reply = actor.feed::<u64, u64>(input, 8, None, None)?.await?;`
+    fn feed<Item, Reply>(
         &self,
-        msg: M,
-        input: BoxStream<M::Item>,
+        input: BoxStream<Item>,
         buffer: usize,
+        batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
-    ) -> Result<AskReply<M::Reply>, ActorSendError>
+    ) -> Result<AskReply<Reply>, ActorSendError>
     where
-        A: FeedHandler<M>,
-        M: FeedMessage;
+        A: FeedHandler<Item, Reply>,
+        Item: Send + 'static,
+        Reply: Send + 'static;
 }
 
 /// Create a [`CancellationToken`] that automatically cancels after the given duration.

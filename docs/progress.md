@@ -129,7 +129,7 @@ Based on design spec audit (§4-§17 vs implementation), the following work item
 
 | # | Feature | Design Section | Priority | Status |
 |---|---------|----------------|----------|--------|
-| F1 | Stream/Feed batching (BatchConfig) | §4.11.1 | High | 🔲 Not started |
+| F1 | Stream/Feed batching (BatchConfig) | §4.11.1 | High | ✅ PR #42 (in review) |
 | F2 | Actor Pool (PoolRef, routing) | §4.14 | Medium | 🔲 Not started |
 | F3 | EventSourced/DurableState actor traits | §6.3.2-6.3.4 | Medium | 🔲 Types only |
 | F4 | Supervision strategies (OneForOne, etc.) | §6.1 | Low | 🔲 Design only |
@@ -152,7 +152,7 @@ Based on design spec audit (§4-§17 vs implementation), the following work item
 | E9 | metrics | MetricsInterceptor | 🔲 Not started |
 | E10 | dead_letters | DeadLetterHandler | 🔲 Not started |
 | E11 | rate_limiting | ActorRateLimiter | 🔲 Not started |
-| E12 | batch_streaming | BatchConfig (after F1) | 🔲 Not started |
+| E12 | batch_streaming | BatchConfig | ✅ Done |
 
 ### 3.3 E2E Integration Tests (Test Harness)
 
@@ -171,23 +171,26 @@ Real multi-process cluster tests using dactor-test-harness with gRPC control:
 | T9 | Corner case: concurrent asks from multiple callers | all | 🔲 Not started |
 | T10 | Corner case: stream with slow consumer | all | 🔲 Not started |
 
-### 3.4 Stream/Feed Message Batching
+### 3.4 Stream/Feed Batching (PR #42)
 
-Reduce message overhead in streaming by batching multiple values:
+| # | Item | Status |
+|---|------|--------|
+| B1 | BatchConfig (max_items + max_delay + max_bytes) | ✅ Done |
+| B2 | BatchWriter (generic push + Vec\<u8\>::push_bytes) | ✅ Done |
+| B3 | BatchReader (unbatching) | ✅ Done |
+| B4 | Merged stream()/stream_batched() → Option\<BatchConfig\> | ✅ Done |
+| B5 | Merged feed()/feed_batched() → Option\<BatchConfig\> | ✅ Done |
+| B6 | Removed FeedMessage trait (direct Item/Reply generics) | ✅ Done |
+| B7 | Per-item on_stream_item interception with Disposition | ✅ Done |
+| B8 | DropObserver trait for observing interceptor drops | ✅ Done |
+| B9 | runtime_support module (shared OutboundPipeline helpers) | ✅ Done |
+| B10 | ContentLength built-in header | ✅ Done |
+| B11 | Example: batch_streaming | ✅ Done |
+| B12 | Tests (count, bytes, deadline, oversized, pre-flush) | ✅ Done |
 
-| # | Item | Description | Status |
-|---|------|-------------|--------|
-| B1 | BatchConfig struct | max_items + max_delay configuration | 🔲 Not started |
-| B2 | BatchWriter | Accumulates items, flushes on count or timeout | 🔲 Not started |
-| B3 | BatchReader | Unpacks batched items into individual items | 🔲 Not started |
-| B4 | stream_batched() | ActorRef method with BatchConfig param | 🔲 Not started |
-| B5 | feed_batched() | ActorRef method with BatchConfig param | 🔲 Not started |
-| B6 | Tests | Verify batching reduces message count | 🔲 Not started |
-| B7 | Example | Demonstrate batch streaming | 🔲 Not started |
+### Recommended Execution Order (Phase 3)
 
-### Recommended Execution Order
-
-1. **F1 + B1-B7**: Stream batching (highest user-requested priority)
+1. ~~**F1 + B1-B12**: Stream batching~~ ✅ Complete (PR #42)
 2. **E7-E11**: Sample code for remaining features
 3. **T1-T3**: Ractor E2E tests (validates real multi-process)
 4. **T4-T6**: Kameo/Coerce E2E tests
@@ -195,3 +198,167 @@ Reduce message overhead in streaming by batching multiple values:
 6. **F2**: Actor Pool
 7. **T7-T10**: Cross-adapter corner case tests
 8. **F4-F7**: Remaining design features
+
+---
+
+## Phase 4: Remote Transport & System Actors
+
+Wire format, cross-node communication, and system actors for remote operations.
+
+### 4.1 Transport Layer
+
+| # | Feature | Design Section | Description |
+|---|---------|----------------|-------------|
+| R1 | Transport trait | §9 | Abstract transport interface (gRPC, TCP, etc.) |
+| R2 | WireEnvelope send/receive | §9.1 | Serialize messages → WireEnvelope → transport → deserialize |
+| R3 | RemoteActorRef | §9.3 | ActorRef impl that serializes + sends via transport |
+| R4 | Connection management | §10.2 | AdapterCluster: connect(), disconnect(), reconnect |
+| R5 | Batched remote sends | §4.11.1 | BatchWriter\<Vec\<u8\>\>::push_bytes() for wire batching |
+| R6 | ContentLength stamping | §5.1 | Stamp ContentLength header after serialization |
+
+### 4.2 System Actors
+
+| # | Feature | Design Section | Description |
+|---|---------|----------------|-------------|
+| S1 | SpawnManager | §8.2 | Process remote actor spawn requests |
+| S2 | WatchManager | §8.2, §6.2 | Handle remote watch/unwatch, deliver ChildTerminated |
+| S3 | CancelManager | §8.2, §4.13 | Process remote cancellation requests |
+| S4 | NodeDirectory | §8.3 | Map NodeId → peer system actor refs |
+
+### 4.3 Serialization & Schema
+
+| # | Feature | Design Section | Description |
+|---|---------|----------------|-------------|
+| SE1 | MessageSerializer integration | §9.1 | Wire MessageSerializer into transport layer |
+| SE2 | TypeRegistry | §8.3, §9.2 | Map type names → deserializers for remote dispatch |
+| SE3 | HeaderRegistry | §5.1 | Deserializer registry for remote headers |
+| SE4 | Message versioning | §9.1 | MessageVersionHandler for schema evolution/migration |
+| SE5 | ActorRef serialization | §9.3 | Serialize/deserialize ActorRef for cross-node passing |
+
+### 4.4 Cluster Discovery & Health
+
+| # | Feature | Design Section | Description |
+|---|---------|----------------|-------------|
+| C1 | ClusterDiscovery wiring | §10.1 | Wire discovery into adapter startup |
+| C2 | ClusterEventEmitter | §10.1 | Emit node_joined/node_left events |
+| C3 | ClusterState API | §10.4 | runtime.cluster_state() for topology queries |
+| C4 | PeerStatus tracking | §10.4 | Connected, Connecting, Unreachable, Disconnected |
+| C5 | Health delegation | §10.3 | Delegate health checks to provider, on_node_unreachable |
+
+### 4.5 Remote Spawn & Placement
+
+| # | Feature | Design Section | Description |
+|---|---------|----------------|-------------|
+| P1 | Remote spawn | §9.2 | SpawnConfig.target_node for spawning on specific nodes |
+| P2 | ActorFactory trait | §9.2 | Factory for remote actor reconstruction |
+| P3 | Location transparency | §9.2 | Caller doesn't know if actor is local or remote |
+
+---
+
+## Phase 5: Persistence Integration
+
+Wire persistence traits into actor lifecycle (recovery, snapshots, durable state).
+
+### 5.1 Event Sourcing
+
+| # | Feature | Design Section | Description |
+|---|---------|----------------|-------------|
+| ES1 | PersistentActor trait | §6.3.2 | persistence_id(), pre_recovery(), post_recovery() |
+| ES2 | EventSourced trait | §6.3.3 | apply(), persist(), persist_batch(), snapshot() |
+| ES3 | SnapshotConfig | §6.3.5 | Automatic snapshotting rules |
+| ES4 | Recovery pipeline | §6.3.7 | Load snapshot → replay events → post_recovery |
+| ES5 | RecoveryFailurePolicy | §6.3.8 | Stop, Retry, SkipAndStart |
+| ES6 | PersistFailurePolicy | §6.3.8 | Stop, ReturnError, Retry |
+
+### 5.2 Durable State
+
+| # | Feature | Design Section | Description |
+|---|---------|----------------|-------------|
+| DS1 | DurableState trait | §6.3.4 | save_state(), automatic save via SaveConfig |
+| DS2 | SaveConfig | §6.3.5 | Rules for automatic state persistence |
+
+### 5.3 Storage Backends
+
+| # | Feature | Design Section | Description |
+|---|---------|----------------|-------------|
+| SB1 | StorageProvider trait | §6.3.6 | Pluggable storage backend abstraction |
+| SB2 | InMemoryStorage | §6.3.6 | ✅ Types exist (testing/dev) |
+| SB3 | dactor-sqlite crate | §6.3.6 | SQLite storage for single-node production |
+| SB4 | dactor-postgres crate | §6.3.6 | PostgreSQL storage for multi-node production |
+
+---
+
+## Phase 6: Actor Pools & Advanced Features
+
+### 6.1 Actor Pool
+
+| # | Feature | Design Section | Description |
+|---|---------|----------------|-------------|
+| AP1 | PoolRef\<A\> | §4.14 | Handle to a pool of worker actors |
+| AP2 | PoolConfig | §4.14 | Pool size, routing strategy, per-worker spawn config |
+| AP3 | PoolRouting | §4.14 | RoundRobin, LeastLoaded, Random, KeyBased |
+| AP4 | Keyed trait | §4.14 | Extract routing keys for key-based routing |
+| AP5 | spawn_pool() | §4.14 | Runtime method to create worker pools |
+
+### 6.2 Supervision Strategies
+
+| # | Feature | Design Section | Description |
+|---|---------|----------------|-------------|
+| SV1 | SupervisionStrategy trait | §6.1 | on_child_failed() → SupervisionAction |
+| SV2 | OneForOne | §6.1 | Restart only the failed child |
+| SV3 | OneForAll | §6.1 | Restart all children when one fails |
+| SV4 | RestForOne | §6.1 | Restart failed child + children started after it |
+
+### 6.3 Advanced Messaging
+
+| # | Feature | Design Section | Description |
+|---|---------|----------------|-------------|
+| AM1 | Priority mailbox scheduling | §5.6-5.9 | Priority-based message ordering |
+| AM2 | MessageComparer trait | §5.6 | Custom message ordering rules |
+| AM3 | Timer methods (send_after, send_interval) | §4.5 | Scheduled message delivery |
+| AM4 | on_reply wiring | §5.3 | OutboundInterceptor sees ask replies |
+| AM5 | Outbound priority queue | §5.8 | Per-destination priority lanes |
+
+---
+
+## Phase 7: Observability & Tooling
+
+### 7.1 Metrics & Monitoring
+
+| # | Feature | Design Section | Description |
+|---|---------|----------------|-------------|
+| O1 | MetricsInterceptor wiring | §11.2 | Wire built-in metrics into runtimes |
+| O2 | MetricsStore query API | §11.3 | Query per-actor and per-message-type metrics |
+| O3 | RuntimeMetrics | §11.6 | System-level: actor count, mailbox depth, uptime |
+| O4 | OtelInterceptor | §11.4 | OpenTelemetry tracing integration |
+| O5 | CircuitBreakerInterceptor | §11.4 | Error-rate circuit breaker |
+
+### 7.2 Dead Letter Routing
+
+| # | Feature | Design Section | Description |
+|---|---------|----------------|-------------|
+| DL1 | Wire DeadLetterHandler into runtimes | §5.4 | Route undelivered messages to handler |
+| DL2 | Wire DropObserver into DeadLetterHandler | §5.4 | Interceptor drops → dead letters |
+
+---
+
+## Phase 8: Named Registry & Cluster Events
+
+| # | Feature | Design Section | Description |
+|---|---------|----------------|-------------|
+| NR1 | Actor naming & registry | §8.3 | runtime.lookup(name) for named actor discovery |
+| NR2 | ClusterEvent enum | §10.1, §10.4 | NodeJoined, NodeLeft push events |
+| NR3 | Cluster event handlers | §10.4 | Actors subscribe to membership changes |
+| NR4 | Processing groups | §2.2 | Actor group pub/sub (ractor pg, coerce sharding) |
+
+---
+
+## Not Planned / Out of Scope
+
+| Feature | Reason |
+|---------|--------|
+| Hot code upgrade | Excluded from design (Erlang-only, §2.2) |
+| Passivation | Not in design spec |
+| Security (TLS, auth) | Deferred to interceptors + application code |
+| CLI tools / dashboard | Not in design spec |
+| Bidirectional streaming | Composed from feed() + stream() at app level |
