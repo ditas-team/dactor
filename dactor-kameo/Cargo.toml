@@ -2,13 +2,16 @@
 name = "dactor-kameo"
 version = "0.2.0"
 edition = "2021"
+rust-version = "1.70"
 description = "Kameo adapter for the dactor distributed actor framework"
 license = "MIT"
 repository = "https://github.com/Yaming-Hub/dactor"
 homepage = "https://github.com/Yaming-Hub/dactor"
+documentation = "https://docs.rs/dactor-kameo"
 readme = "README.md"
 keywords = ["actor", "distributed", "kameo", "framework", "runtime"]
 categories = ["concurrency", "network-programming"]
+exclude = ["docs/", "tests/", ".github/"]
 
 [dependencies]
 dactor = { version = "0.2.0", path = "../dactor", features = ["serde"] }

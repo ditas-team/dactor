@@ -2,13 +2,16 @@
 name = "dactor"
 version = "0.2.0"
 edition = "2021"
+rust-version = "1.70"
 description = "An abstract framework for distributed actors in Rust"
 license = "MIT"
 repository = "https://github.com/Yaming-Hub/dactor"
 homepage = "https://github.com/Yaming-Hub/dactor"
+documentation = "https://docs.rs/dactor"
 readme = "README.md"
 keywords = ["actor", "distributed", "framework", "async", "runtime"]
 categories = ["concurrency", "network-programming"]
+exclude = ["docs/", "tests/", ".github/"]
 
 [dependencies]
 async-trait = "0.1"
@@ -17,7 +20,7 @@ tokio = { version = "1", features = ["time", "sync", "rt", "rt-multi-thread", "m
 tracing = "0.1"
 tokio-stream = "0.1"
 tokio-util = "0.7"
-uuid = { version = "1.23.0", features = ["v4"] }
+uuid = { version = "1", features = ["v4"] }
 
 [dependencies.serde]
 version = "1"

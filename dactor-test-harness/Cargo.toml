@@ -2,13 +2,16 @@
 name = "dactor-test-harness"
 version = "0.2.0"
 edition = "2021"
+rust-version = "1.70"
 description = "Multi-process integration test harness for dactor actor framework"
 license = "MIT"
 repository = "https://github.com/Yaming-Hub/dactor"
 homepage = "https://github.com/Yaming-Hub/dactor"
+documentation = "https://docs.rs/dactor-test-harness"
 readme = "README.md"
 keywords = ["actor", "distributed", "testing", "harness", "integration"]
 categories = ["concurrency", "development-tools::testing"]
+exclude = ["docs/", "tests/", ".github/"]
 
 [dependencies]
 dactor = { version = "0.2.0", path = "../dactor" }

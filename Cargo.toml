@@ -1,3 +1,7 @@
 [workspace]
 members = ["dactor", "dactor-ractor", "dactor-kameo", "dactor-test-harness", "dactor-mock", "dactor-coerce"]
 resolver = "2"
+
+[workspace.metadata]
+repository = "https://github.com/Yaming-Hub/dactor"
+license = "MIT"
