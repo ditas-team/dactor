@@ -61,7 +61,7 @@ impl Handler<GetCount> for Counter {
 async fn main() {
     println!("=== Metrics Example ===\n");
 
-    let store = MetricsStore::new(100);
+    let store = MetricsStore::default();
     let runtime = TestRuntime::new();
 
     // Spawn actor with MetricsInterceptor
@@ -105,9 +105,10 @@ async fn main() {
     let all = store.all();
     for (actor_id, m) in &all {
         println!("\n  Actor {:?}:", actor_id);
-        println!("    message_count: {}", m.message_count);
-        println!("    error_count:   {}", m.error_count);
-        for (msg_type, count) in &m.message_counts_by_type {
+        println!("    message_count: {}", m.message_count());
+        println!("    error_count:   {}", m.error_count());
+        println!("    message_rate:  {:.2}/s", m.message_rate());
+        for (msg_type, count) in &m.message_counts_by_type() {
             println!("    {}: {} messages", msg_type, count);
         }
         if let Some(avg) = m.avg_latency() {

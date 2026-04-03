@@ -3565,8 +3565,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_runtime_metrics_snapshot() {
-        use crate::metrics::RuntimeMetrics;
-
         let mut runtime = TestRuntime::new();
         runtime.enable_metrics();
 
@@ -3575,11 +3573,12 @@ mod tests {
         let _ = counter.ask(GetCount, None).unwrap().await.unwrap();
 
         let snapshot = runtime.metrics().unwrap().runtime_metrics();
-        assert_eq!(snapshot, RuntimeMetrics {
-            actor_count: 1,
-            total_messages: 2,
-            total_errors: 0,
-        });
+        assert_eq!(snapshot.actor_count, 1);
+        assert_eq!(snapshot.total_messages, 2);
+        assert_eq!(snapshot.total_errors, 0);
+        assert!(snapshot.message_rate > 0.0);
+        assert_eq!(snapshot.error_rate, 0.0);
+        assert_eq!(snapshot.window, std::time::Duration::from_secs(60));
     }
 
     #[tokio::test]
