@@ -117,5 +117,39 @@ async fn main() {
     }
 
     println!("\n  ✓ metrics collected successfully");
+
+    // ── Periodic metrics reporting ──────────────────────────
+    // Applications can spawn a background task that periodically
+    // queries the MetricsStore and logs/emits the windowed metrics.
+    println!("\n--- Periodic Metrics Reporting (3 intervals) ---");
+
+    let report_store = store.clone();
+    let report_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
+        for tick in 1..=3 {
+            interval.tick().await;
+            let snapshot = report_store.runtime_metrics();
+            println!(
+                "  [tick {}] actors={} msgs={} errs={} msg_rate={:.1}/s err_rate={:.1}/s window={:?}",
+                tick,
+                snapshot.actor_count,
+                snapshot.total_messages,
+                snapshot.total_errors,
+                snapshot.message_rate,
+                snapshot.error_rate,
+                snapshot.window,
+            );
+        }
+    });
+
+    // Meanwhile, send more messages to show the windowed view updating
+    for i in 1..=3 {
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        counter.tell(Increment(i)).unwrap();
+    }
+
+    report_handle.await.unwrap();
+    println!("  ✓ periodic reporting complete");
+
     println!("\n=== Done ===");
 }
