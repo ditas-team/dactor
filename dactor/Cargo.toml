@@ -81,3 +81,11 @@ required-features = ["test-support"]
 [[example]]
 name = "rate_limiting"
 required-features = ["test-support"]
+
+[[example]]
+name = "event_sourcing"
+required-features = ["test-support"]
+
+[[example]]
+name = "actor_pool"
+required-features = ["test-support"]
