@@ -4,26 +4,32 @@
 //! Actors are spawned on the Tokio runtime and process messages sequentially
 //! via an unbounded channel.
 
+#[allow(unused_imports)]
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[allow(unused_imports)]
 use async_trait::async_trait;
 use futures::FutureExt;
 use tokio::sync::mpsc;
 
 use crate::actor::{Actor, ActorContext, ActorError, AskReply, FeedHandler, Handler, StreamHandler, ActorRef};
 use crate::dispatch::{
-    AskDispatch, BoxedDispatch, Dispatch, DispatchResult, FeedDispatch, StreamDispatch,
+    AskDispatch, BoxedDispatch, FeedDispatch, StreamDispatch,
     TypedDispatch,
 };
+#[allow(unused_imports)]
+use crate::dispatch::DispatchResult;
 use crate::errors::{ActorSendError, ErrorAction, RuntimeError};
 use crate::interceptor::{
-    Disposition, InboundContext, InboundInterceptor, OutboundContext, OutboundInterceptor,
+    Disposition, InboundContext, InboundInterceptor, OutboundInterceptor,
     Outcome, SendMode, DropObserver,
 };
+#[allow(unused_imports)]
+use crate::interceptor::OutboundContext;
 use crate::mailbox::{MailboxConfig, OverflowStrategy};
 use crate::message::{Headers, Message, RuntimeHeaders};
 use crate::node::{ActorId, NodeId};

@@ -471,7 +471,7 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
         }
 
         let buffer = buffer.max(1);
-        let (tx, mut rx) = tokio::sync::mpsc::channel(buffer);
+        let (tx, rx) = tokio::sync::mpsc::channel(buffer);
         let sender = StreamSender::new(tx);
         let dispatch: Box<dyn Dispatch<A>> = Box::new(StreamDispatch { msg, sender, cancel });
         self.inner

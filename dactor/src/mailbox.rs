@@ -2,8 +2,10 @@ use std::cmp::Ordering;
 
 /// Mailbox capacity configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum MailboxConfig {
     /// Unbounded mailbox — no capacity limit (default).
+    #[default]
     Unbounded,
     /// Bounded mailbox with a fixed capacity.
     ///
@@ -23,11 +25,6 @@ impl MailboxConfig {
     }
 }
 
-impl Default for MailboxConfig {
-    fn default() -> Self {
-        Self::Unbounded
-    }
-}
 
 /// What happens when a bounded mailbox is full.
 ///

@@ -52,12 +52,15 @@ pub trait Dispatch<A: Actor>: Send {
 /// Convenience alias for a boxed dispatch envelope.
 pub type BoxedDispatch<A> = Box<dyn Dispatch<A>>;
 
+/// Type alias for the reply sender closure in DispatchResult.
+pub type ReplySender = Box<dyn FnOnce(Box<dyn Any + Send>) + Send>;
+
 /// Result of dispatching a message, including the type-erased reply for ask.
 pub struct DispatchResult {
     /// The type-erased reply value (Some for ask, None for tell).
     pub reply: Option<Box<dyn Any + Send>>,
     /// Oneshot sender to deliver the reply to the caller (Some for ask).
-    pub reply_sender: Option<Box<dyn FnOnce(Box<dyn Any + Send>) + Send>>,
+    pub reply_sender: Option<ReplySender>,
 }
 
 impl DispatchResult {

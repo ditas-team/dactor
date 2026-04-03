@@ -255,10 +255,7 @@ impl<T: Send + 'static> BatchReader<T> {
     /// Convert into a `BoxStream` of individual items.
     pub fn into_stream(self) -> BoxStream<T> {
         Box::pin(futures::stream::unfold(self, |mut reader| async move {
-            match reader.recv().await {
-                Some(item) => Some((item, reader)),
-                None => None,
-            }
+            reader.recv().await.map(|item| (item, reader))
         }))
     }
 }

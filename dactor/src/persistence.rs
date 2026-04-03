@@ -77,7 +77,9 @@ impl std::error::Error for PersistError {}
 
 /// What to do when recovery fails.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub enum RecoveryFailurePolicy {
+    #[default]
     Stop,
     Retry {
         max_attempts: Option<u32>,
@@ -86,15 +88,12 @@ pub enum RecoveryFailurePolicy {
     SkipAndStart,
 }
 
-impl Default for RecoveryFailurePolicy {
-    fn default() -> Self {
-        Self::Stop
-    }
-}
 
 /// What to do when a persist operation fails.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub enum PersistFailurePolicy {
+    #[default]
     Stop,
     ReturnError,
     Retry {
@@ -103,14 +102,10 @@ pub enum PersistFailurePolicy {
     },
 }
 
-impl Default for PersistFailurePolicy {
-    fn default() -> Self {
-        Self::Stop
-    }
-}
 
 /// Controls automatic snapshotting for event-sourced actors.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct SnapshotConfig {
     pub every_n_events: Option<u64>,
     pub interval: Option<Duration>,
@@ -118,32 +113,15 @@ pub struct SnapshotConfig {
     pub delete_events_on_snapshot: bool,
 }
 
-impl Default for SnapshotConfig {
-    fn default() -> Self {
-        Self {
-            every_n_events: None,
-            interval: None,
-            retention_count: None,
-            delete_events_on_snapshot: false,
-        }
-    }
-}
 
 /// Controls automatic state saving for durable state actors.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct SaveConfig {
     pub every_n_messages: Option<u64>,
     pub interval: Option<Duration>,
 }
 
-impl Default for SaveConfig {
-    fn default() -> Self {
-        Self {
-            every_n_messages: None,
-            interval: None,
-        }
-    }
-}
 
 // ── Storage Traits ──────────────────────────────────
 

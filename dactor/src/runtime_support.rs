@@ -52,7 +52,7 @@ impl OutboundPipeline {
                     interceptor_name: interceptor.name(),
                 };
                 if matches!(interception_result.disposition, Disposition::Drop) {
-                    notify_drop(&self.drop_observer.clone().map(|o| o), DropNotice {
+                    notify_drop(&self.drop_observer.clone(), DropNotice {
                         target_name: self.target_name.clone(),
                         message_type: std::any::type_name::<M>(),
                         interceptor_name: interception_result.interceptor_name,
