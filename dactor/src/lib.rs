@@ -24,6 +24,9 @@
 
 /// Core actor traits and types (Actor, ActorRef, Handler, etc.).
 pub mod actor;
+/// Batched transport sender for reducing per-message overhead (requires `serde` feature).
+#[cfg(feature = "serde")]
+pub mod batched_transport;
 /// Circuit breaker interceptor for fault isolation.
 pub mod circuit_breaker;
 /// Clock abstraction for deterministic testing.
@@ -95,6 +98,10 @@ pub use actor::FeedHandler;
 pub use actor::{Actor, ActorContext, ActorError, ActorRef, SpawnConfig};
 pub use actor::{AskReply, Handler, StreamHandler};
 pub use async_trait::async_trait;
+#[cfg(feature = "serde")]
+pub use batched_transport::{
+    is_batch_envelope, unpack_batch, BatchedTransportSender, WireEnvelopeBatch, BATCH_MESSAGE_TYPE,
+};
 pub use circuit_breaker::{CircuitBreakerInterceptor, CircuitState};
 pub use clock::{Clock, SystemClock};
 pub use cluster::{

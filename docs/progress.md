@@ -232,7 +232,7 @@ Wire format, cross-node communication, and system actors for remote operations.
 | R3 | RemoteActorRef | §9.3 | ActorRef impl that serializes + sends via transport | ✅ PR #64 |
 | R3b | RemoteActorRef outbound interceptors | §5.3, §9.6 | Wire OutboundInterceptor pipeline into RemoteActorRef tell/ask (on_send, on_reply, header stamping) | ✅ PR #68 |
 | R4 | Connection management | §10.2 | AdapterCluster: connect(), disconnect(), reconnect |
-| R5 | Batched remote sends | §4.11.1 | BatchWriter batches items → single WireEnvelope per batch |
+| R5 | Batched remote sends | §4.11.1 | BatchedTransportSender batches WireEnvelopes per-node → single transport call | ✅ PR #73 |
 | R6 | WireInterceptor (envelope-level) | §9.0.4 | Intercept WireEnvelopes at the transport boundary using only headers + body bytes (no deserialization). Enables runtime-level load control: delay, reject, drop, rate-limit, prioritize remote messages before they enter the actor mailbox. Runs on receiver side between Transport and dispatch. | ✅ PR #69 |
 | R6b | WireEnvelope target_name field | §9.0.4 | Add target_name: String to WireEnvelope so wire interceptors can inspect the actor name without deserialization | ✅ PR #70 |
 | R6c | Wire interceptor metrics & dead letters | §9.0.4, §11.2, §5.4 | Report Drop/Reject/Delay decisions to RuntimeMetrics (counters: wire_dropped, wire_rejected, wire_delayed) and route dropped/rejected envelopes to DeadLetterHandler with DeadLetterReason::WireInterceptorDrop/WireInterceptorReject | ✅ PR #70 |
