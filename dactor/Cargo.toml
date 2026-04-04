@@ -90,3 +90,7 @@ required-features = ["test-support"]
 [[example]]
 name = "actor_pool"
 required-features = ["test-support"]
+
+[[example]]
+name = "showcase"
+required-features = ["test-support"]

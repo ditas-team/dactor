@@ -4,6 +4,14 @@
 
 ---
 
+## Current Status (PR #57)
+- 59 commits, 16 examples, ~230 tests
+- Phase 3: ✅ Complete (features, examples, conformance, batching)
+- Phase 4-8: Design documented, some items implemented ahead of schedule
+- Next: Phase 4 (Remote Transport) or additional standalone features
+
+---
+
 ## Progress Summary
 
 | Milestone | PRs | Status |
@@ -379,22 +387,22 @@ impl<A: Actor> ActorRef<A> for PoolActorRef<A> {
 
 ### 6.2 Supervision Strategies
 
-| # | Feature | Design Section | Description |
-|---|---------|----------------|-------------|
-| SV1 | SupervisionStrategy trait | §6.1 | on_child_failed() → SupervisionAction |
-| SV2 | OneForOne | §6.1 | Restart only the failed child |
-| SV3 | OneForAll | §6.1 | Restart all children when one fails |
-| SV4 | RestForOne | §6.1 | Restart failed child + children started after it |
+| # | Feature | Design Section | Description | Status |
+|---|---------|----------------|-------------|--------|
+| SV1 | SupervisionStrategy trait | §6.1 | on_child_failed() → SupervisionAction | ✅ PR #46 |
+| SV2 | OneForOne | §6.1 | Restart only the failed child | ✅ PR #46 |
+| SV3 | OneForAll | §6.1 | Restart all children when one fails | ✅ PR #46 |
+| SV4 | RestForOne | §6.1 | Restart failed child + children started after it | ✅ PR #46 |
 
 ### 6.3 Advanced Messaging
 
-| # | Feature | Design Section | Description |
-|---|---------|----------------|-------------|
-| AM1 | Priority mailbox scheduling | §5.6-5.9 | Priority-based message ordering |
-| AM2 | MessageComparer trait | §5.6 | Custom message ordering rules |
-| AM3 | Timer methods (send_after, send_interval) | §4.5 | Scheduled message delivery |
-| AM4 | on_reply wiring | §5.3 | OutboundInterceptor sees ask replies |
-| AM5 | Outbound priority queue | §5.8 | Per-destination priority lanes |
+| # | Feature | Design Section | Description | Status |
+|---|---------|----------------|-------------|--------|
+| AM1 | Priority mailbox scheduling | §5.6-5.9 | Priority-based message ordering | ✅ PR #46 |
+| AM2 | MessageComparer trait | §5.6 | Custom message ordering rules | ✅ PR #46 |
+| AM3 | Timer methods (send_after, send_interval) | §4.5 | Scheduled message delivery | ✅ PR #46 |
+| AM4 | on_reply wiring | §5.3 | OutboundInterceptor sees ask replies | ✅ PR #46 |
+| AM5 | Outbound priority queue | §5.8 | Per-destination priority lanes | 🔲 Not started |
 
 ---
 
@@ -402,20 +410,20 @@ impl<A: Actor> ActorRef<A> for PoolActorRef<A> {
 
 ### 7.1 Metrics & Monitoring
 
-| # | Feature | Design Section | Description |
-|---|---------|----------------|-------------|
-| O1 | MetricsInterceptor wiring | §11.2 | Wire built-in metrics into runtimes |
-| O2 | MetricsStore query API | §11.3 | Query per-actor and per-message-type metrics |
-| O3 | RuntimeMetrics | §11.6 | System-level: actor count, mailbox depth, uptime |
-| O4 | OtelInterceptor | §11.4 | OpenTelemetry tracing integration |
-| O5 | CircuitBreakerInterceptor | §11.4 | Error-rate circuit breaker |
+| # | Feature | Design Section | Description | Status |
+|---|---------|----------------|-------------|--------|
+| O1 | MetricsInterceptor wiring | §11.2 | Wire built-in metrics into runtimes | ✅ PR #55 (per-actor ActorMetricsHandle, windowed buckets) |
+| O2 | MetricsStore query API | §11.3 | Query per-actor and per-message-type metrics | ✅ PR #55 (MetricsRegistry with register/snapshot) |
+| O3 | RuntimeMetrics | §11.6 | System-level: actor count, mailbox depth, uptime | ✅ PR #55 (message_rate, error_rate, windowed) |
+| O4 | OtelInterceptor | §11.4 | OpenTelemetry tracing integration | 🔲 Not started (needs opentelemetry crate) |
+| O5 | CircuitBreakerInterceptor | §11.4 | Error-rate circuit breaker | ✅ PR #56 |
 
 ### 7.2 Dead Letter Routing
 
-| # | Feature | Design Section | Description |
-|---|---------|----------------|-------------|
-| DL1 | Wire DeadLetterHandler into runtimes | §5.4 | Route undelivered messages to handler |
-| DL2 | Wire DropObserver into DeadLetterHandler | §5.4 | Interceptor drops → dead letters |
+| # | Feature | Design Section | Description | Status |
+|---|---------|----------------|-------------|--------|
+| DL1 | Wire DeadLetterHandler into runtimes | §5.4 | Route undelivered messages to handler | ✅ PR #54 |
+| DL2 | Wire DropObserver into DeadLetterHandler | §5.4 | Interceptor drops → dead letters | ✅ PR #42 (DropObserver already in runtime_support) |
 
 ---
 
