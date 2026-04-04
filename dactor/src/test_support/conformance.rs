@@ -632,3 +632,142 @@ where
     let v3 = actor.ask(AddValue(5), None).unwrap().await.unwrap();
     assert_eq!(v3, 50, "after second add: expected 50, got {}", v3);
 }
+
+// ══════════════════════════════════════════════════════
+// Conformance Tests – Corner-Case Edge Tests
+// ══════════════════════════════════════════════════════
+
+/// Test: send 100 ask(Increment) in sequence with values 1..=100, verify FIFO ordering.
+/// Each ask returns the reply after the increment, and we verify the running total
+/// matches the expected sum at each step — this detects reordering since addition
+/// of different values in wrong order produces wrong intermediate results.
+pub async fn test_message_ordering_under_load<R, F>(spawn: F)
+where
+    R: ActorRef<ConformanceCounter>,
+    F: FnOnce(&str, u64) -> R,
+{
+    let actor = spawn("ordering-load", 0);
+    let mut expected_sum = 0u64;
+    for i in 1..=100u64 {
+        expected_sum += i;
+        actor.ask(Increment(i), None).unwrap().await.unwrap();
+        // Verify running total after each increment to detect reordering
+        let count = actor.ask(GetCount, None).unwrap().await.unwrap();
+        assert_eq!(
+            count, expected_sum,
+            "ordering: after Increment({}), expected {}, got {}",
+            i, expected_sum, count
+        );
+    }
+}
+
+/// Test: concurrent asks from 10 tasks don't corrupt actor state.
+/// Each task sends 10 ask(GetCount) messages and verifies replies are non-negative
+/// and monotonically non-decreasing within each task.
+pub async fn test_concurrent_asks<R, F>(spawn: F)
+where
+    R: ActorRef<ConformanceCounter>,
+    F: FnOnce(&str, u64) -> R,
+{
+    let actor = spawn("concurrent-asks", 0);
+
+    // Send some increments so GetCount returns increasing values
+    for i in 1..=50u64 {
+        actor.tell(Increment(i)).unwrap();
+    }
+
+    let mut handles = Vec::new();
+    for _ in 0..10 {
+        let actor_clone = actor.clone();
+        handles.push(tokio::spawn(async move {
+            let mut prev = 0u64;
+            for _ in 0..10 {
+                let count = actor_clone.ask(GetCount, None).unwrap().await.unwrap();
+                assert!(
+                    count >= prev,
+                    "concurrent asks: count went backwards ({} < {})",
+                    count,
+                    prev
+                );
+                prev = count;
+            }
+        }));
+    }
+    for h in handles {
+        h.await.expect("concurrent ask task panicked");
+    }
+}
+
+/// Test: stream with small buffer (backpressure) and a slow consumer.
+/// Starts a stream of 20 items with buffer=2, sleeps 10ms between each item,
+/// and verifies all 20 items arrive in order.
+pub async fn test_stream_slow_consumer<R, F>(spawn: F)
+where
+    R: ActorRef<ConformanceStreamer>,
+    F: FnOnce(&str, ()) -> R,
+{
+    use tokio_stream::StreamExt;
+
+    let actor = spawn("stream-slow", ());
+    let mut stream = actor
+        .stream(StreamNumbers { count: 20 }, 2, None, None)
+        .unwrap();
+
+    let mut items = Vec::new();
+    while let Some(item) = stream.next().await {
+        items.push(item);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let expected: Vec<u64> = (0..20).collect();
+    assert_eq!(
+        items, expected,
+        "slow consumer: expected 0..20 in order, got {:?}",
+        items
+    );
+}
+
+/// Test: spawn, send 5 messages, ask for count, stop, then verify post-stop sends fail.
+/// Validates that messages before stop are processed and post-stop sends return errors.
+pub async fn test_rapid_stop_and_send<R, F>(spawn: F)
+where
+    R: ActorRef<ConformanceCounter>,
+    F: FnOnce(&str, u64) -> R,
+{
+    let actor = spawn("rapid-stop", 0);
+
+    // Send 5 messages and ask for the count before stopping
+    for _ in 0..5 {
+        actor.tell(Increment(1)).unwrap();
+    }
+    let count = actor.ask(GetCount, None).unwrap().await.unwrap();
+    assert_eq!(
+        count, 5,
+        "rapid stop: expected 5 messages processed before stop, got {}",
+        count
+    );
+
+    actor.stop();
+    // Poll until actor is stopped
+    for _ in 0..50 {
+        if !actor.is_alive() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(!actor.is_alive(), "actor should be stopped");
+
+    // Post-stop tell should fail
+    let tell_result = actor.tell(Increment(1));
+    assert!(
+        tell_result.is_err(),
+        "tell after stop should return error"
+    );
+
+    // Post-stop ask should fail
+    let ask_result = actor.ask(GetCount, None);
+    assert!(
+        ask_result.is_err(),
+        "ask after stop should return error"
+    );
+}

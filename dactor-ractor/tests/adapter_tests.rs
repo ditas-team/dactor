@@ -127,6 +127,31 @@ async fn conformance_multiple_handlers() {
         .await;
 }
 
+#[tokio::test]
+async fn conformance_message_ordering_under_load() {
+    let runtime = RactorRuntime::new();
+    test_message_ordering_under_load(|name, init| runtime.spawn::<ConformanceCounter>(name, init))
+        .await;
+}
+
+#[tokio::test]
+async fn conformance_concurrent_asks() {
+    let runtime = RactorRuntime::new();
+    test_concurrent_asks(|name, init| runtime.spawn::<ConformanceCounter>(name, init)).await;
+}
+
+#[tokio::test]
+async fn conformance_stream_slow_consumer() {
+    let runtime = RactorRuntime::new();
+    test_stream_slow_consumer(|name, init| runtime.spawn::<ConformanceStreamer>(name, init)).await;
+}
+
+#[tokio::test]
+async fn conformance_rapid_stop_and_send() {
+    let runtime = RactorRuntime::new();
+    test_rapid_stop_and_send(|name, init| runtime.spawn::<ConformanceCounter>(name, init)).await;
+}
+
 // ---------------------------------------------------------------------------
 // Ractor-specific: re-exports & default
 // ---------------------------------------------------------------------------
