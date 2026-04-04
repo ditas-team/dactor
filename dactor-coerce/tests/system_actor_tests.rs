@@ -312,3 +312,80 @@ fn sa10_with_node_id_initializes_all() {
     assert_eq!(runtime.cancel_manager().active_count(), 0);
     assert_eq!(runtime.node_directory().peer_count(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Node ID consistency between local and remote spawn
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sa10_local_spawn_uses_correct_node_id() {
+    use dactor::actor::{Actor, ActorContext, ActorRef, Handler};
+    use dactor::message::Message;
+
+    struct DummyActor;
+    impl Actor for DummyActor {
+        type Args = ();
+        type Deps = ();
+        fn create(_: (), _: ()) -> Self { DummyActor }
+    }
+
+    struct Ping;
+    impl Message for Ping { type Reply = (); }
+
+    #[async_trait::async_trait]
+    impl Handler<Ping> for DummyActor {
+        async fn handle(&mut self, _msg: Ping, _ctx: &mut ActorContext) {}
+    }
+
+    let runtime = CoerceRuntime::new();
+    let actor_ref = runtime.spawn::<DummyActor>("dummy", ());
+
+    // Local spawn should use the same node ID as runtime.node_id()
+    assert_eq!(actor_ref.id().node, *runtime.node_id());
+}
+
+#[tokio::test]
+async fn sa10_local_and_remote_spawn_ids_dont_collide() {
+    use dactor::actor::{Actor, ActorContext, ActorRef, Handler};
+    use dactor::message::Message;
+
+    struct DummyActor;
+    impl Actor for DummyActor {
+        type Args = ();
+        type Deps = ();
+        fn create(_: (), _: ()) -> Self { DummyActor }
+    }
+
+    struct Ping;
+    impl Message for Ping { type Reply = (); }
+
+    #[async_trait::async_trait]
+    impl Handler<Ping> for DummyActor {
+        async fn handle(&mut self, _msg: Ping, _ctx: &mut ActorContext) {}
+    }
+
+    let mut runtime = CoerceRuntime::new();
+    runtime.register_factory("test::Actor", |_| Ok(Box::new(())));
+
+    // Local spawn
+    let local_ref = runtime.spawn::<DummyActor>("local", ());
+    let local_id = local_ref.id();
+
+    // Remote spawn
+    let request = SpawnRequest {
+        type_name: "test::Actor".into(),
+        args_bytes: serde_json::to_vec(&()).unwrap(),
+        name: "remote".into(),
+        request_id: "req-1".into(),
+    };
+    let (remote_id, _) = runtime.handle_spawn_request(&request).unwrap();
+
+    // Both should use the same node ID
+    assert_eq!(local_id.node, *runtime.node_id());
+    assert_eq!(remote_id.node, *runtime.node_id());
+
+    // IDs should not collide
+    assert_ne!(local_id.local, remote_id.local,
+        "local spawn ({}) and remote spawn ({}) should have different local IDs",
+        local_id.local, remote_id.local);
+}

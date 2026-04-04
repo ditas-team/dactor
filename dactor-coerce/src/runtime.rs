@@ -66,7 +66,13 @@ impl Default for SpawnOptions {
 pub struct CoerceRuntime {
     inner: TestRuntime,
     node_id: NodeId,
-    next_local: AtomicU64,
+    /// Separate local ID counter for remote spawn requests.
+    ///
+    /// Local spawns (via `spawn()`) use `TestRuntime`'s internal counter.
+    /// Remote spawns (via `handle_spawn_request()`) use this counter with
+    /// an offset to avoid collisions. When the real coerce-rt engine
+    /// replaces TestRuntime, a single counter will be used.
+    next_remote_local: AtomicU64,
     /// Manages remote actor spawn requests for this node.
     spawn_manager: SpawnManager,
     /// Manages remote watch/unwatch subscriptions for this node.
@@ -78,12 +84,16 @@ pub struct CoerceRuntime {
 }
 
 impl CoerceRuntime {
+    /// Offset for remote spawn IDs to avoid collisions with local spawns.
+    const REMOTE_ID_OFFSET: u64 = 1_000_000;
+
     /// Create a new `CoerceRuntime`.
     pub fn new() -> Self {
+        let node_id = NodeId("coerce-node".into());
         Self {
-            inner: TestRuntime::new(),
-            node_id: NodeId("coerce-node".into()),
-            next_local: AtomicU64::new(1),
+            inner: TestRuntime::with_node_id(node_id.clone()),
+            node_id,
+            next_remote_local: AtomicU64::new(Self::REMOTE_ID_OFFSET),
             spawn_manager: SpawnManager::new(TypeRegistry::new()),
             watch_manager: WatchManager::new(),
             cancel_manager: CancelManager::new(),
@@ -96,7 +106,7 @@ impl CoerceRuntime {
         Self {
             inner: TestRuntime::with_node_id(node_id.clone()),
             node_id,
-            next_local: AtomicU64::new(1),
+            next_remote_local: AtomicU64::new(Self::REMOTE_ID_OFFSET),
             spawn_manager: SpawnManager::new(TypeRegistry::new()),
             watch_manager: WatchManager::new(),
             cancel_manager: CancelManager::new(),
@@ -210,7 +220,7 @@ impl CoerceRuntime {
     ) -> Result<(ActorId, Box<dyn std::any::Any + Send>), SpawnResponse> {
         match self.spawn_manager.create_actor(request) {
             Ok(actor) => {
-                let local = self.next_local.fetch_add(1, Ordering::SeqCst);
+                let local = self.next_remote_local.fetch_add(1, Ordering::SeqCst);
                 let actor_id = ActorId {
                     node: self.node_id.clone(),
                     local,
