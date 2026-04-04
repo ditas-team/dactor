@@ -55,6 +55,8 @@ pub mod pool;
 pub mod registry;
 /// Remote actor types, wire format, and cluster discovery.
 pub mod remote;
+/// Remote actor reference for cross-node communication.
+pub mod remote_ref;
 /// Shared runtime helpers for adapter implementations.
 pub mod runtime_support;
 /// Streaming primitives (StreamSender, StreamReceiver, batching).
@@ -127,6 +129,7 @@ pub use remote::{
     ClusterDiscovery, ClusterState, HeaderRegistry, MessageSerializer, MessageVersionHandler,
     RemoteMessage, SerializationError, StaticSeeds, WireEnvelope, WireHeaders,
 };
+pub use remote_ref::{RemoteActorRef, RemoteActorRefBuilder};
 pub use stream::{BatchConfig, BatchReader, BatchWriter, StreamReceiver};
 pub use stream::{BoxStream, StreamSendError, StreamSender};
 pub use supervision::ChildTerminated;

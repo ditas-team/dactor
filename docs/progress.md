@@ -4,14 +4,14 @@
 
 ---
 
-## Current Status (PR #63)
+## Current Status (PR #64)
 - Phase 3: ✅ Complete (features, examples, conformance, batching)
-- Phase 4: R1 ✅ (Transport trait), R2 ✅ (WireEnvelope pipeline), R3-R5 pending
+- Phase 4: R1-R3 ✅ (Transport, WireEnvelope pipeline, RemoteActorRef), R4-R5 pending
 - Phase 6: ✅ Complete (supervision, pools, timers, on_reply, message comparer)
 - Phase 7: ✅ Complete (metrics, dead letters, circuit breaker, drop observer)
 - Phase 8: NR1 done (actor registry), NR2-NR4 need Phase 4
 - Zero clippy warnings, cargo doc clean
-- Next: Phase 4 R3 (RemoteActorRef) — location-transparent remote actor refs
+- Next: Phase 4 S1-S4 (System Actors) — SpawnManager, WatchManager, CancelManager, NodeDirectory
 
 ---
 
@@ -131,6 +131,7 @@
 | 2026-04-01 | PR K2 | Kameo watch/unwatch + mailbox config |
 | 2026-04-04 | PR R1 | Transport trait, InMemoryTransport, TransportRegistry |
 | 2026-04-04 | PR R2 | WireEnvelope pipeline: TypeRegistry, JsonSerializer, HeaderRegistry, wire send/receive helpers |
+| 2026-04-04 | PR R3 | RemoteActorRef: location-transparent remote actor ref with tell/ask via transport |
 
 ---
 
@@ -225,7 +226,7 @@ Wire format, cross-node communication, and system actors for remote operations.
 |---|---------|----------------|-------------|--------|
 | R1 | Transport trait | §9 | Abstract transport interface (gRPC, TCP, etc.) | ✅ PR #62 |
 | R2 | WireEnvelope send/receive | §9.1 | Serialize messages → WireEnvelope → transport → deserialize | ✅ PR #63 |
-| R3 | RemoteActorRef | §9.3 | ActorRef impl that serializes + sends via transport |
+| R3 | RemoteActorRef | §9.3 | ActorRef impl that serializes + sends via transport | ✅ PR #64 |
 | R4 | Connection management | §10.2 | AdapterCluster: connect(), disconnect(), reconnect |
 | R5 | Batched remote sends | §4.11.1 | BatchWriter batches items → single WireEnvelope per batch |
 
