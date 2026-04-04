@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use dactor::actor::{Actor, ActorContext, Handler, ActorRef};
+use dactor::actor::{Actor, ActorContext, ActorRef, Handler};
 use dactor::mailbox::{MailboxConfig, OverflowStrategy};
 use dactor::message::Message;
 use dactor::{SpawnOptions, TestRuntime};

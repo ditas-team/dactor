@@ -144,11 +144,21 @@ impl fmt::Display for RuntimeError {
             Self::Send(e) => write!(f, "send error: {}", e),
             Self::ActorNotFound(id) => write!(f, "actor not found: {}", id),
             Self::Timeout => write!(f, "operation timed out"),
-            Self::Rejected { interceptor, reason } => {
+            Self::Rejected {
+                interceptor,
+                reason,
+            } => {
                 write!(f, "rejected by '{}': {}", interceptor, reason)
             }
-            Self::RetryAfter { interceptor, retry_after } => {
-                write!(f, "retry after {:?} (suggested by '{}')", retry_after, interceptor)
+            Self::RetryAfter {
+                interceptor,
+                retry_after,
+            } => {
+                write!(
+                    f,
+                    "retry after {:?} (suggested by '{}')",
+                    retry_after, interceptor
+                )
             }
             Self::Actor(e) => write!(f, "actor error: {}", e),
             Self::Cancelled => write!(f, "operation cancelled"),

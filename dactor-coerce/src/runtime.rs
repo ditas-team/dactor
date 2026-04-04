@@ -72,12 +72,7 @@ impl CoerceRuntime {
     }
 
     /// Spawn an actor with explicit dependencies.
-    pub fn spawn_with_deps<A>(
-        &self,
-        name: &str,
-        args: A::Args,
-        deps: A::Deps,
-    ) -> CoerceActorRef<A>
+    pub fn spawn_with_deps<A>(&self, name: &str, args: A::Args, deps: A::Deps) -> CoerceActorRef<A>
     where
         A: Actor + 'static,
     {

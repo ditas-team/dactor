@@ -3,7 +3,7 @@
 //! Run with: cargo run --example streaming --features test-support
 
 use async_trait::async_trait;
-use dactor::actor::{Actor, ActorContext, FeedHandler, StreamHandler, ActorRef};
+use dactor::actor::{Actor, ActorContext, ActorRef, FeedHandler, StreamHandler};
 use dactor::message::Message;
 use dactor::stream::{StreamReceiver, StreamSender};
 use dactor::TestRuntime;

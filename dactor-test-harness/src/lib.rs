@@ -6,13 +6,13 @@
 //! coordinating cluster formation, injecting faults, and observing
 //! distributed events during integration tests.
 
-pub mod protocol;
-pub mod node;
 pub mod cluster;
-pub mod fault;
 pub mod events;
+pub mod fault;
+pub mod node;
+pub mod protocol;
 
 pub use cluster::{TestCluster, TestClusterBuilder};
-pub use node::{TestNode, TestNodeConfig};
-pub use fault::FaultInjector;
 pub use events::EventStream;
+pub use fault::FaultInjector;
+pub use node::{TestNode, TestNodeConfig};

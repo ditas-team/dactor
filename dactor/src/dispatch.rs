@@ -151,7 +151,9 @@ where
             reply_sender: Some(Box::new(move |boxed_reply| {
                 if let Ok(reply) = boxed_reply.downcast::<M::Reply>() {
                     if reply_tx.send(Ok(*reply)).is_err() {
-                        tracing::debug!("reply dropped — caller may have timed out or been cancelled");
+                        tracing::debug!(
+                            "reply dropped — caller may have timed out or been cancelled"
+                        );
                     }
                 }
             })),
@@ -180,9 +182,10 @@ where
                 interceptor: interceptor_name.to_string(),
                 retry_after,
             },
-            Disposition::Drop => {
-                RuntimeError::ActorNotFound(format!("dropped by interceptor '{}'", interceptor_name))
-            }
+            Disposition::Drop => RuntimeError::ActorNotFound(format!(
+                "dropped by interceptor '{}'",
+                interceptor_name
+            )),
             _ => return,
         };
         let _ = self.reply_tx.send(Err(error));
@@ -273,7 +276,9 @@ where
             reply_sender: Some(Box::new(move |boxed_reply| {
                 if let Ok(reply) = boxed_reply.downcast::<Reply>() {
                     if reply_tx.send(Ok(*reply)).is_err() {
-                        tracing::debug!("reply dropped — caller may have timed out or been cancelled");
+                        tracing::debug!(
+                            "reply dropped — caller may have timed out or been cancelled"
+                        );
                     }
                 }
             })),
@@ -303,9 +308,10 @@ where
                 interceptor: interceptor_name.to_string(),
                 retry_after,
             },
-            Disposition::Drop => {
-                RuntimeError::ActorNotFound(format!("dropped by interceptor '{}'", interceptor_name))
-            }
+            Disposition::Drop => RuntimeError::ActorNotFound(format!(
+                "dropped by interceptor '{}'",
+                interceptor_name
+            )),
             _ => return,
         };
         let _ = self.reply_tx.send(Err(error));

@@ -8,12 +8,12 @@
 //! [`MetricsInterceptor`] is an [`InboundInterceptor`] that holds a direct
 //! `Arc<ActorMetricsHandle>` and records metrics without any global map lookup.
 
+use std::any::Any;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use std::any::Any;
 
 use crate::interceptor::*;
 use crate::message::{Headers, RuntimeHeaders};
@@ -136,7 +136,11 @@ impl HandleInner {
         }
     }
 
-    fn current_bucket(&mut self, bucket_duration: Duration, window: Duration) -> &mut MetricsBucket {
+    fn current_bucket(
+        &mut self,
+        bucket_duration: Duration,
+        window: Duration,
+    ) -> &mut MetricsBucket {
         let now = Instant::now();
         self.evict_expired(window);
 
@@ -266,8 +270,16 @@ impl ActorMetricsHandle {
         ActorMetricsSnapshot {
             message_count,
             error_count,
-            message_rate: if secs > 0.0 { windowed_messages as f64 / secs } else { 0.0 },
-            error_rate: if secs > 0.0 { windowed_errors as f64 / secs } else { 0.0 },
+            message_rate: if secs > 0.0 {
+                windowed_messages as f64 / secs
+            } else {
+                0.0
+            },
+            error_rate: if secs > 0.0 {
+                windowed_errors as f64 / secs
+            } else {
+                0.0
+            },
             message_counts_by_type: by_type,
             avg_latency,
             max_latency,
@@ -318,7 +330,10 @@ impl MetricsRegistry {
     /// Register an actor and return its metrics handle.
     pub fn register(&self, actor_id: ActorId) -> Arc<ActorMetricsHandle> {
         let handle = Arc::new(ActorMetricsHandle::new(self.window, self.bucket_duration));
-        self.handles.lock().unwrap().insert(actor_id, handle.clone());
+        self.handles
+            .lock()
+            .unwrap()
+            .insert(actor_id, handle.clone());
         handle
     }
 
@@ -390,8 +405,16 @@ impl MetricsRegistry {
             actor_count: handles.len(),
             total_messages,
             total_errors,
-            message_rate: if secs > 0.0 { windowed_messages as f64 / secs } else { 0.0 },
-            error_rate: if secs > 0.0 { windowed_errors as f64 / secs } else { 0.0 },
+            message_rate: if secs > 0.0 {
+                windowed_messages as f64 / secs
+            } else {
+                0.0
+            },
+            error_rate: if secs > 0.0 {
+                windowed_errors as f64 / secs
+            } else {
+                0.0
+            },
             window: self.window,
         }
     }
@@ -440,7 +463,9 @@ impl MetricsInterceptor {
 }
 
 impl InboundInterceptor for MetricsInterceptor {
-    fn name(&self) -> &'static str { "metrics" }
+    fn name(&self) -> &'static str {
+        "metrics"
+    }
 
     fn on_receive(
         &self,
@@ -484,7 +509,10 @@ mod tests {
     }
 
     fn make_id(local: u64) -> ActorId {
-        ActorId { node: NodeId("n1".into()), local }
+        ActorId {
+            node: NodeId("n1".into()),
+            local,
+        }
     }
 
     #[test]

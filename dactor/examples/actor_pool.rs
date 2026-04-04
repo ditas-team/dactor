@@ -29,7 +29,10 @@ impl Actor for Worker {
     type Args = (u64, Arc<AtomicU64>);
     type Deps = ();
     fn create(args: Self::Args, _deps: ()) -> Self {
-        Self { id: args.0, processed: args.1 }
+        Self {
+            id: args.0,
+            processed: args.1,
+        }
     }
 }
 
@@ -38,15 +41,25 @@ impl Actor for Worker {
 // ---------------------------------------------------------------------------
 
 struct Task;
-impl Message for Task { type Reply = (); }
+impl Message for Task {
+    type Reply = ();
+}
 
 struct WhoHandled;
-impl Message for WhoHandled { type Reply = u64; }
+impl Message for WhoHandled {
+    type Reply = u64;
+}
 
-struct KeyedTask { key: u64 }
-impl Message for KeyedTask { type Reply = u64; }
+struct KeyedTask {
+    key: u64,
+}
+impl Message for KeyedTask {
+    type Reply = u64;
+}
 impl Keyed for KeyedTask {
-    fn routing_key(&self) -> u64 { self.key }
+    fn routing_key(&self) -> u64 {
+        self.key
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +96,10 @@ fn make_pool(
     rt: &TestRuntime,
     size: usize,
     routing: PoolRouting,
-) -> (PoolRef<Worker, dactor::TestActorRef<Worker>>, Vec<Arc<AtomicU64>>) {
+) -> (
+    PoolRef<Worker, dactor::TestActorRef<Worker>>,
+    Vec<Arc<AtomicU64>>,
+) {
     let mut counters = Vec::new();
     let mut workers = Vec::new();
     for i in 0..size {
@@ -131,7 +147,11 @@ async fn main() {
     for key in [10, 42, 99, 1000] {
         let mut worker_ids = Vec::new();
         for _ in 0..4 {
-            let wid = pool.ask_keyed(KeyedTask { key }, None).unwrap().await.unwrap();
+            let wid = pool
+                .ask_keyed(KeyedTask { key }, None)
+                .unwrap()
+                .await
+                .unwrap();
             worker_ids.push(wid);
         }
         let first = worker_ids[0];

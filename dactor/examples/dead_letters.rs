@@ -34,7 +34,9 @@ impl Actor for Processor {
     type Args = ();
     type Deps = ();
     fn create(_: (), _: ()) -> Self {
-        Processor { processed: Vec::new() }
+        Processor {
+            processed: Vec::new(),
+        }
     }
 }
 

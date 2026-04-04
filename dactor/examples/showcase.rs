@@ -104,7 +104,10 @@ struct LoggingDropObserver {
 
 impl DropObserver for LoggingDropObserver {
     fn on_drop(&self, notice: DropNotice) {
-        let msg = format!("{} dropped by {}", notice.message_type, notice.interceptor_name);
+        let msg = format!(
+            "{} dropped by {}",
+            notice.message_type, notice.interceptor_name
+        );
         self.drops.lock().unwrap().push(msg);
     }
 }
@@ -131,11 +134,12 @@ async fn main() {
     let mut workers: Vec<TestActorRef<TaskProcessor>> = Vec::new();
     for i in 0..4 {
         let mut opts = SpawnOptions::default();
-        opts.interceptors.push(Box::new(CircuitBreakerInterceptor::new(
-            3,                          // threshold: 3 errors to trip
-            Duration::from_secs(60),    // within 60s window
-            Duration::from_secs(10),    // 10s cooldown
-        )));
+        opts.interceptors
+            .push(Box::new(CircuitBreakerInterceptor::new(
+                3,                       // threshold: 3 errors to trip
+                Duration::from_secs(60), // within 60s window
+                Duration::from_secs(10), // 10s cooldown
+            )));
         let w = runtime.spawn_with_options::<TaskProcessor>(&format!("worker-{i}"), i, opts);
         workers.push(w);
     }
@@ -174,7 +178,11 @@ async fn main() {
 
     // --- 5. send_after (delayed message) ---
     println!("\n--- send_after: delayed task ---");
-    send_after::<TaskProcessor, _, _>(&workers[3], ProcessTask("delayed-task".into()), Duration::from_millis(100));
+    send_after::<TaskProcessor, _, _>(
+        &workers[3],
+        ProcessTask("delayed-task".into()),
+        Duration::from_millis(100),
+    );
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     // --- 6. cancel_after (cancellable ask) ---
@@ -217,7 +225,10 @@ async fn main() {
     // Dead letters
     println!("\n  Dead letters: {}", dead_letters.count());
     for dl in dead_letters.events() {
-        println!("    target={:?} msg={} reason={:?}", dl.target_id, dl.message_type, dl.reason);
+        println!(
+            "    target={:?} msg={} reason={:?}",
+            dl.target_id, dl.message_type, dl.reason
+        );
     }
 
     // Circuit breaker (no errors → all circuits remain Closed)

@@ -3,8 +3,8 @@
 //! Contains marker traits, wire-format types, and cluster discovery stubs
 //! for future remote actor communication. No actual networking is implemented.
 
-use crate::node::{NodeId, ActorId};
 use crate::interceptor::SendMode;
+use crate::node::{ActorId, NodeId};
 use uuid::Uuid;
 
 /// Marker trait for messages that can be sent to remote actors.
@@ -23,7 +23,11 @@ pub trait MessageSerializer: Send + Sync + 'static {
     fn serialize(&self, value: &dyn std::any::Any) -> Result<Vec<u8>, SerializationError>;
 
     /// Deserialize bytes back to a typed value.
-    fn deserialize(&self, bytes: &[u8], type_name: &str) -> Result<Box<dyn std::any::Any + Send>, SerializationError>;
+    fn deserialize(
+        &self,
+        bytes: &[u8],
+        type_name: &str,
+    ) -> Result<Box<dyn std::any::Any + Send>, SerializationError>;
 }
 
 /// Error during serialization/deserialization.
@@ -36,7 +40,9 @@ pub struct SerializationError {
 impl SerializationError {
     /// Create a new serialization error with the given message.
     pub fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into() }
+        Self {
+            message: message.into(),
+        }
     }
 }
 
@@ -80,7 +86,11 @@ pub struct WireHeaders {
 
 impl WireHeaders {
     /// Create an empty wire headers map.
-    pub fn new() -> Self { Self { entries: std::collections::HashMap::new() } }
+    pub fn new() -> Self {
+        Self {
+            entries: std::collections::HashMap::new(),
+        }
+    }
 
     /// Insert a header entry.
     pub fn insert(&mut self, name: String, value: Vec<u8>) {
@@ -93,9 +103,13 @@ impl WireHeaders {
     }
 
     /// Whether there are no headers.
-    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
     /// Number of header entries.
-    pub fn len(&self) -> usize { self.entries.len() }
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
 }
 
 /// Handler for message version migration.
@@ -122,7 +136,9 @@ pub struct ClusterState {
 
 impl ClusterState {
     /// Number of nodes in the cluster.
-    pub fn node_count(&self) -> usize { self.nodes.len() }
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
 
     /// Check if a specific node is in the cluster.
     pub fn contains(&self, node_id: &NodeId) -> bool {
@@ -144,23 +160,30 @@ pub struct StaticSeeds {
 
 impl StaticSeeds {
     /// Create a new static seeds discovery with the given addresses.
-    pub fn new(seeds: Vec<String>) -> Self { Self { seeds } }
+    pub fn new(seeds: Vec<String>) -> Self {
+        Self { seeds }
+    }
 }
 
 impl ClusterDiscovery for StaticSeeds {
-    fn discover(&self) -> Vec<String> { self.seeds.clone() }
+    fn discover(&self) -> Vec<String> {
+        self.seeds.clone()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::NodeId;
     use crate::interceptor::SendMode;
+    use crate::node::NodeId;
 
     #[test]
     fn test_wire_envelope_construction() {
         let envelope = WireEnvelope {
-            target: ActorId { node: NodeId("node-1".into()), local: 42 },
+            target: ActorId {
+                node: NodeId("node-1".into()),
+                local: 42,
+            },
             message_type: "my_crate::Increment".into(),
             send_mode: SendMode::Tell,
             headers: WireHeaders::new(),
@@ -210,10 +233,7 @@ mod tests {
 
     #[test]
     fn test_static_seeds() {
-        let seeds = StaticSeeds::new(vec![
-            "node1:4697".into(),
-            "node2:4697".into(),
-        ]);
+        let seeds = StaticSeeds::new(vec!["node1:4697".into(), "node2:4697".into()]);
         let discovered = seeds.discover();
         assert_eq!(discovered.len(), 2);
         assert_eq!(discovered[0], "node1:4697");
@@ -222,7 +242,10 @@ mod tests {
     #[test]
     fn test_wire_envelope_with_request_id() {
         let envelope = WireEnvelope {
-            target: ActorId { node: NodeId("n".into()), local: 1 },
+            target: ActorId {
+                node: NodeId("n".into()),
+                local: 1,
+            },
             message_type: "Ask".into(),
             send_mode: SendMode::Ask,
             headers: WireHeaders::new(),

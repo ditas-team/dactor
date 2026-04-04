@@ -44,12 +44,19 @@ impl ActorRegistry {
 
     /// Remove an actor from the registry.
     pub fn unregister(&self, name: &str) -> bool {
-        self.entries.lock().unwrap_or_else(|e| e.into_inner()).remove(name).is_some()
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(name)
+            .is_some()
     }
 
     /// Check if a name is registered.
     pub fn contains(&self, name: &str) -> bool {
-        self.entries.lock().unwrap_or_else(|e| e.into_inner()).contains_key(name)
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(name)
     }
 
     /// Number of registered actors.
@@ -59,12 +66,20 @@ impl ActorRegistry {
 
     /// Whether the registry is empty.
     pub fn is_empty(&self) -> bool {
-        self.entries.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
     }
 
     /// List all registered names.
     pub fn names(&self) -> Vec<String> {
-        self.entries.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect()
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect()
     }
 }
 
@@ -82,7 +97,10 @@ mod tests {
     fn register_and_lookup() {
         let registry = ActorRegistry::new();
         registry.register("greeting", "hello".to_string());
-        assert_eq!(registry.lookup::<String>("greeting"), Some("hello".to_string()));
+        assert_eq!(
+            registry.lookup::<String>("greeting"),
+            Some("hello".to_string())
+        );
     }
 
     #[test]

@@ -10,8 +10,8 @@ use futures::{FutureExt, StreamExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::interceptor::{
-    Disposition, DropNotice, DropObserver, InterceptResult, Outcome, OutboundContext,
-    OutboundInterceptor, SendMode, notify_drop, intercept_outbound_stream_item,
+    intercept_outbound_stream_item, notify_drop, Disposition, DropNotice, DropObserver,
+    InterceptResult, OutboundContext, OutboundInterceptor, Outcome, SendMode,
 };
 use crate::message::{Headers, RuntimeHeaders};
 use crate::node::ActorId;
@@ -34,11 +34,7 @@ pub struct OutboundPipeline {
 impl OutboundPipeline {
     /// Run the outbound `on_send` interceptor pipeline for a message.
     /// Returns the first non-Continue disposition with the interceptor name.
-    pub fn run_on_send<M: 'static>(
-        &self,
-        send_mode: SendMode,
-        msg: &M,
-    ) -> InterceptResult {
+    pub fn run_on_send<M: 'static>(&self, send_mode: SendMode, msg: &M) -> InterceptResult {
         let runtime_headers = RuntimeHeaders::new();
         let mut headers = Headers::new();
         let octx = OutboundContext {
@@ -56,14 +52,17 @@ impl OutboundPipeline {
                     interceptor_name: interceptor.name(),
                 };
                 if matches!(interception_result.disposition, Disposition::Drop) {
-                    notify_drop(&self.drop_observer.clone(), DropNotice {
-                        target_name: self.target_name.clone(),
-                        message_type: std::any::type_name::<M>(),
-                        interceptor_name: interception_result.interceptor_name,
-                        send_mode,
-                        context: "outbound on_send",
-                        seq: None,
-                    });
+                    notify_drop(
+                        &self.drop_observer.clone(),
+                        DropNotice {
+                            target_name: self.target_name.clone(),
+                            message_type: std::any::type_name::<M>(),
+                            interceptor_name: interception_result.interceptor_name,
+                            send_mode,
+                            context: "outbound on_send",
+                            seq: None,
+                        },
+                    );
                 }
                 return interception_result;
             }
@@ -71,15 +70,25 @@ impl OutboundPipeline {
         InterceptResult::continued()
     }
 
-    fn notify_item_drop(&self, message_type: &'static str, send_mode: SendMode, context: &'static str, interceptor_name: &'static str, seq: u64) {
-        notify_drop(&self.drop_observer, DropNotice {
-            target_name: self.target_name.clone(),
-            message_type,
-            interceptor_name,
-            send_mode,
-            context,
-            seq: Some(seq),
-        });
+    fn notify_item_drop(
+        &self,
+        message_type: &'static str,
+        send_mode: SendMode,
+        context: &'static str,
+        interceptor_name: &'static str,
+        seq: u64,
+    ) {
+        notify_drop(
+            &self.drop_observer,
+            DropNotice {
+                target_name: self.target_name.clone(),
+                message_type,
+                interceptor_name,
+                send_mode,
+                context,
+                seq: Some(seq),
+            },
+        );
     }
 
     /// Run `on_reply` on all outbound interceptors.
@@ -129,20 +138,34 @@ pub fn wrap_stream_with_interception<T: Send + 'static>(
                 remote: false,
             };
             let interception_result = intercept_outbound_stream_item(
-                &pipeline.interceptors, &octx, &item_headers, seq, &item as &dyn Any,
+                &pipeline.interceptors,
+                &octx,
+                &item_headers,
+                seq,
+                &item as &dyn Any,
             );
             seq += 1;
             match interception_result.disposition {
                 Disposition::Continue => {
-                    if out_tx.send(item).await.is_err() { break; }
+                    if out_tx.send(item).await.is_err() {
+                        break;
+                    }
                 }
                 Disposition::Drop | Disposition::Retry(_) => {
-                    pipeline.notify_item_drop(message_type, SendMode::Stream, "stream reply", interception_result.interceptor_name, seq - 1);
+                    pipeline.notify_item_drop(
+                        message_type,
+                        SendMode::Stream,
+                        "stream reply",
+                        interception_result.interceptor_name,
+                        seq - 1,
+                    );
                     continue;
                 }
                 Disposition::Delay(d) => {
                     tokio::time::sleep(d).await;
-                    if out_tx.send(item).await.is_err() { break; }
+                    if out_tx.send(item).await.is_err() {
+                        break;
+                    }
                 }
                 Disposition::Reject(_) => break,
             }
@@ -172,20 +195,34 @@ pub fn wrap_batched_stream_with_interception<T: Send + 'static>(
                 remote: false,
             };
             let interception_result = intercept_outbound_stream_item(
-                &pipeline.interceptors, &octx, &item_headers, seq, &item as &dyn Any,
+                &pipeline.interceptors,
+                &octx,
+                &item_headers,
+                seq,
+                &item as &dyn Any,
             );
             seq += 1;
             match interception_result.disposition {
                 Disposition::Continue => {
-                    if out_tx.send(item).await.is_err() { break; }
+                    if out_tx.send(item).await.is_err() {
+                        break;
+                    }
                 }
                 Disposition::Drop | Disposition::Retry(_) => {
-                    pipeline.notify_item_drop(message_type, SendMode::Stream, "stream reply (batched)", interception_result.interceptor_name, seq - 1);
+                    pipeline.notify_item_drop(
+                        message_type,
+                        SendMode::Stream,
+                        "stream reply (batched)",
+                        interception_result.interceptor_name,
+                        seq - 1,
+                    );
                     continue;
                 }
                 Disposition::Delay(d) => {
                     tokio::time::sleep(d).await;
-                    if out_tx.send(item).await.is_err() { break; }
+                    if out_tx.send(item).await.is_err() {
+                        break;
+                    }
                 }
                 Disposition::Reject(_) => break,
             }
@@ -228,20 +265,34 @@ pub fn spawn_feed_drain<T: Send + 'static>(
                             remote: false,
                         };
                         let interception_result = intercept_outbound_stream_item(
-                            &pipeline.interceptors, &octx, &item_headers, seq, &item as &dyn Any,
+                            &pipeline.interceptors,
+                            &octx,
+                            &item_headers,
+                            seq,
+                            &item as &dyn Any,
                         );
                         seq += 1;
                         match interception_result.disposition {
                             Disposition::Continue => {
-                                if item_tx.send(item).await.is_err() { break; }
+                                if item_tx.send(item).await.is_err() {
+                                    break;
+                                }
                             }
                             Disposition::Drop | Disposition::Retry(_) => {
-                                pipeline.notify_item_drop(message_type, SendMode::Feed, "feed item", interception_result.interceptor_name, seq - 1);
+                                pipeline.notify_item_drop(
+                                    message_type,
+                                    SendMode::Feed,
+                                    "feed item",
+                                    interception_result.interceptor_name,
+                                    seq - 1,
+                                );
                                 continue;
                             }
                             Disposition::Delay(d) => {
                                 tokio::time::sleep(d).await;
-                                if item_tx.send(item).await.is_err() { break; }
+                                if item_tx.send(item).await.is_err() {
+                                    break;
+                                }
                             }
                             Disposition::Reject(_) => break,
                         }
@@ -300,20 +351,34 @@ pub fn spawn_feed_batched_drain<T: Send + 'static>(
                                 remote: false,
                             };
                             let interception_result = intercept_outbound_stream_item(
-                                &pipeline.interceptors, &octx, &item_headers, seq, &item as &dyn Any,
+                                &pipeline.interceptors,
+                                &octx,
+                                &item_headers,
+                                seq,
+                                &item as &dyn Any,
                             );
                             seq += 1;
                             match interception_result.disposition {
                                 Disposition::Continue => {
-                                    if intercepted_tx.send(item).await.is_err() { break; }
+                                    if intercepted_tx.send(item).await.is_err() {
+                                        break;
+                                    }
                                 }
                                 Disposition::Drop | Disposition::Retry(_) => {
-                                    pipeline.notify_item_drop(message_type, SendMode::Feed, "feed item (batched)", interception_result.interceptor_name, seq - 1);
+                                    pipeline.notify_item_drop(
+                                        message_type,
+                                        SendMode::Feed,
+                                        "feed item (batched)",
+                                        interception_result.interceptor_name,
+                                        seq - 1,
+                                    );
                                     continue;
                                 }
                                 Disposition::Delay(d) => {
                                     tokio::time::sleep(d).await;
-                                    if intercepted_tx.send(item).await.is_err() { break; }
+                                    if intercepted_tx.send(item).await.is_err() {
+                                        break;
+                                    }
                                 }
                                 Disposition::Reject(_) => break,
                             }
@@ -349,7 +414,9 @@ pub fn spawn_feed_batched_drain<T: Send + 'static>(
                     } else {
                         match intercepted_rx.recv().await {
                             Some(item) => {
-                                if writer.push(item).await.is_err() { break; }
+                                if writer.push(item).await.is_err() {
+                                    break;
+                                }
                             }
                             None => break,
                         }
@@ -376,7 +443,9 @@ pub fn spawn_feed_batched_drain<T: Send + 'static>(
                     break;
                 }
             }
-            if send_failed { break; }
+            if send_failed {
+                break;
+            }
         }
         drop(batch_rx);
         drop(item_tx);

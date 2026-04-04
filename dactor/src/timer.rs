@@ -23,11 +23,7 @@ pub trait TimerHandle: Send + 'static {
 ///
 /// Returns a [`JoinHandle`] that completes once the message has been sent
 /// (or the delay has elapsed and the actor is no longer reachable).
-pub fn send_after<A, M, R>(
-    actor_ref: &R,
-    msg: M,
-    delay: Duration,
-) -> JoinHandle<()>
+pub fn send_after<A, M, R>(actor_ref: &R, msg: M, delay: Duration) -> JoinHandle<()>
 where
     A: Actor + Handler<M>,
     M: Message<Reply = ()>,
@@ -76,8 +72,8 @@ where
 #[cfg(feature = "test-support")]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
 
     use async_trait::async_trait;
 

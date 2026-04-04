@@ -13,27 +13,26 @@ use futures::FutureExt;
 use tokio_util::sync::CancellationToken;
 
 use dactor::actor::{
-    Actor, ActorContext, ActorError, AskReply, FeedHandler, Handler, StreamHandler,
-    ActorRef,
+    Actor, ActorContext, ActorError, ActorRef, AskReply, FeedHandler, Handler, StreamHandler,
 };
-use dactor::dispatch::{
-    AskDispatch, Dispatch, FeedDispatch, StreamDispatch, TypedDispatch,
-};
-use dactor::errors::{ActorSendError, ErrorAction, RuntimeError};
-use dactor::mailbox::MailboxConfig;
-use dactor::supervision::ChildTerminated;
 use dactor::dead_letter::{DeadLetterEvent, DeadLetterHandler, DeadLetterReason};
+use dactor::dispatch::{AskDispatch, Dispatch, FeedDispatch, StreamDispatch, TypedDispatch};
+use dactor::errors::{ActorSendError, ErrorAction, RuntimeError};
 use dactor::interceptor::{
     Disposition, DropObserver, InboundContext, InboundInterceptor, OutboundInterceptor, Outcome,
     SendMode,
 };
+use dactor::mailbox::MailboxConfig;
 use dactor::message::{Headers, Message, RuntimeHeaders};
 use dactor::node::{ActorId, NodeId};
 use dactor::runtime_support::{
-    OutboundPipeline, spawn_feed_batched_drain, spawn_feed_drain,
-    wrap_batched_stream_with_interception, wrap_stream_with_interception,
+    spawn_feed_batched_drain, spawn_feed_drain, wrap_batched_stream_with_interception,
+    wrap_stream_with_interception, OutboundPipeline,
 };
-use dactor::stream::{BatchConfig, BatchReader, BatchWriter, BoxStream, StreamReceiver, StreamSender};
+use dactor::stream::{
+    BatchConfig, BatchReader, BatchWriter, BoxStream, StreamReceiver, StreamSender,
+};
+use dactor::supervision::ChildTerminated;
 
 use crate::cluster::RactorClusterEvents;
 
@@ -202,10 +201,9 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
 
         // Dispatch with panic catching and cancellation racing
         let result = if let Some(ref token) = cancel_token {
-            let dispatch_fut = std::panic::AssertUnwindSafe(
-                dispatch.dispatch(&mut state.actor, &mut state.ctx),
-            )
-            .catch_unwind();
+            let dispatch_fut =
+                std::panic::AssertUnwindSafe(dispatch.dispatch(&mut state.actor, &mut state.ctx))
+                    .catch_unwind();
             tokio::select! {
                 biased;
                 r = dispatch_fut => r,
@@ -218,11 +216,9 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
                 }
             }
         } else {
-            std::panic::AssertUnwindSafe(
-                dispatch.dispatch(&mut state.actor, &mut state.ctx),
-            )
-            .catch_unwind()
-            .await
+            std::panic::AssertUnwindSafe(dispatch.dispatch(&mut state.actor, &mut state.ctx))
+                .catch_unwind()
+                .await
         };
 
         state.ctx.set_cancellation_token(None);
@@ -240,7 +236,9 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
         match result {
             Ok(dispatch_result) => {
                 let outcome = match (&dispatch_result.reply, send_mode) {
-                    (Some(reply), SendMode::Ask) => Outcome::AskSuccess { reply: reply.as_ref() },
+                    (Some(reply), SendMode::Ask) => Outcome::AskSuccess {
+                        reply: reply.as_ref(),
+                    },
                     _ => Outcome::TellSuccess,
                 };
 
@@ -364,7 +362,12 @@ impl<A: Actor + 'static> RactorActorRef<A> {
         }
     }
 
-    fn notify_dead_letter(&self, message_type: &'static str, send_mode: SendMode, reason: DeadLetterReason) {
+    fn notify_dead_letter(
+        &self,
+        message_type: &'static str,
+        send_mode: SendMode,
+        reason: DeadLetterReason,
+    ) {
         if let Some(ref handler) = *self.dead_letter_handler {
             let event = DeadLetterEvent {
                 target_id: self.id.clone(),
@@ -417,12 +420,14 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
         }
 
         let dispatch: Box<dyn Dispatch<A>> = Box::new(TypedDispatch { msg });
-        self.inner
-            .cast(DactorMsg(dispatch))
-            .map_err(|e| {
-                self.notify_dead_letter(std::any::type_name::<M>(), SendMode::Tell, DeadLetterReason::ActorStopped);
-                ActorSendError(e.to_string())
-            })
+        self.inner.cast(DactorMsg(dispatch)).map_err(|e| {
+            self.notify_dead_letter(
+                std::any::type_name::<M>(),
+                SendMode::Tell,
+                DeadLetterReason::ActorStopped,
+            );
+            ActorSendError(e.to_string())
+        })
     }
 
     fn ask<M>(
@@ -470,12 +475,14 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
             reply_tx: tx,
             cancel,
         });
-        self.inner
-            .cast(DactorMsg(dispatch))
-            .map_err(|e| {
-                self.notify_dead_letter(std::any::type_name::<M>(), SendMode::Ask, DeadLetterReason::ActorStopped);
-                ActorSendError(e.to_string())
-            })?;
+        self.inner.cast(DactorMsg(dispatch)).map_err(|e| {
+            self.notify_dead_letter(
+                std::any::type_name::<M>(),
+                SendMode::Ask,
+                DeadLetterReason::ActorStopped,
+            );
+            ActorSendError(e.to_string())
+        })?;
         Ok(AskReply::new(rx))
     }
 
@@ -513,7 +520,11 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
         let buffer = buffer.max(1);
         let (tx, mut rx) = tokio::sync::mpsc::channel(buffer);
         let sender = StreamSender::new(tx);
-        let dispatch: Box<dyn Dispatch<A>> = Box::new(StreamDispatch { msg, sender, cancel });
+        let dispatch: Box<dyn Dispatch<A>> = Box::new(StreamDispatch {
+            msg,
+            sender,
+            cancel,
+        });
         self.inner
             .cast(DactorMsg(dispatch))
             .map_err(|e| ActorSendError(e.to_string()))?;
@@ -543,7 +554,9 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
                         } else {
                             match rx.recv().await {
                                 Some(item) => {
-                                    if writer.push(item).await.is_err() { break; }
+                                    if writer.push(item).await.is_err() {
+                                        break;
+                                    }
                                 }
                                 None => break,
                             }
@@ -552,14 +565,18 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
                     let _ = writer.flush().await;
                 });
                 Ok(wrap_batched_stream_with_interception(
-                    reader, buffer, pipeline, std::any::type_name::<M>(),
+                    reader,
+                    buffer,
+                    pipeline,
+                    std::any::type_name::<M>(),
                 ))
             }
-            None => {
-                Ok(wrap_stream_with_interception(
-                    rx, buffer, pipeline, std::any::type_name::<M>(),
-                ))
-            }
+            None => Ok(wrap_stream_with_interception(
+                rx,
+                buffer,
+                pipeline,
+                std::any::type_name::<M>(),
+            )),
         }
     }
 
@@ -592,12 +609,22 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
         match batch_config {
             Some(batch_config) => {
                 spawn_feed_batched_drain(
-                    input, item_tx, buffer, batch_config, cancel, pipeline, std::any::type_name::<Item>(),
+                    input,
+                    item_tx,
+                    buffer,
+                    batch_config,
+                    cancel,
+                    pipeline,
+                    std::any::type_name::<Item>(),
                 );
             }
             None => {
                 spawn_feed_drain(
-                    input, item_tx, cancel, pipeline, std::any::type_name::<Item>(),
+                    input,
+                    item_tx,
+                    cancel,
+                    pipeline,
+                    std::any::type_name::<Item>(),
                 );
             }
         }
@@ -706,12 +733,7 @@ impl RactorRuntime {
     }
 
     /// Spawn an actor with explicit dependencies.
-    pub fn spawn_with_deps<A>(
-        &self,
-        name: &str,
-        args: A::Args,
-        deps: A::Deps,
-    ) -> RactorActorRef<A>
+    pub fn spawn_with_deps<A>(&self, name: &str, args: A::Args, deps: A::Deps) -> RactorActorRef<A>
     where
         A: Actor + 'static,
     {
@@ -771,8 +793,7 @@ impl RactorRuntime {
         let handle = tokio::runtime::Handle::current();
         std::thread::spawn(move || {
             handle.block_on(async move {
-                let result =
-                    ractor::Actor::spawn(Some(name_for_ractor), wrapper, spawn_args).await;
+                let result = ractor::Actor::spawn(Some(name_for_ractor), wrapper, spawn_args).await;
                 match result {
                     Ok((actor_ref, _join)) => {
                         let _ = tx.send(Ok(actor_ref));

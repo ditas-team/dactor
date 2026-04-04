@@ -103,9 +103,7 @@ async fn main() {
     let producer = runtime.spawn::<SlowProducer>("producer", ());
 
     let token = cancel_after(Duration::from_millis(150));
-    let mut stream = producer
-        .stream(GetNumbers, 16, None, Some(token))
-        .unwrap();
+    let mut stream = producer.stream(GetNumbers, 16, None, Some(token)).unwrap();
 
     let mut received = Vec::new();
     while let Some(n) = stream.next().await {
@@ -113,7 +111,10 @@ async fn main() {
         println!("  [Client] received: {}", n);
     }
 
-    println!("  [Client] stream ended — received {} items", received.len());
+    println!(
+        "  [Client] stream ended — received {} items",
+        received.len()
+    );
     assert!(
         received.len() < 10,
         "expected early termination but got all 10 items"

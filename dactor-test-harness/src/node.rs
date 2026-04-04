@@ -99,16 +99,17 @@ impl TestNodeService for TestNode {
         }))
     }
 
-    async fn shutdown(
-        &self,
-        request: Request<ShutdownRequest>,
-    ) -> Result<Response<Empty>, Status> {
+    async fn shutdown(&self, request: Request<ShutdownRequest>) -> Result<Response<Empty>, Status> {
         let req = request.into_inner();
         self.shutdown_flag.store(true, Ordering::SeqCst);
-        self.emit_event("node_shutdown", &serde_json::json!({
-            "graceful": req.graceful,
-            "timeout_ms": req.timeout_ms,
-        }).to_string());
+        self.emit_event(
+            "node_shutdown",
+            &serde_json::json!({
+                "graceful": req.graceful,
+                "timeout_ms": req.timeout_ms,
+            })
+            .to_string(),
+        );
         // Signal the server to shut down gracefully
         self.shutdown_notify.notify_one();
         Ok(Response::new(Empty {}))
@@ -150,9 +151,7 @@ impl TestNodeService for TestNode {
         let rx = self.event_tx.subscribe();
         let stream = tokio_stream::wrappers::BroadcastStream::new(rx)
             .filter_map(|result| result.ok())
-            .filter(move |event| {
-                event_types.is_empty() || event_types.contains(&event.event_type)
-            })
+            .filter(move |event| event_types.is_empty() || event_types.contains(&event.event_type))
             .map(|event| Ok(event));
         Ok(Response::new(Box::pin(stream)))
     }

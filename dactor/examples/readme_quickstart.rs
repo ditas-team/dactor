@@ -1,20 +1,28 @@
-use dactor::prelude::*;
 use dactor::message::Message;
+use dactor::prelude::*;
 use dactor::test_support::test_runtime::TestRuntime;
 
-struct Counter { count: u64 }
+struct Counter {
+    count: u64,
+}
 
 impl Actor for Counter {
     type Args = Self;
     type Deps = ();
-    fn create(args: Self, _deps: ()) -> Self { args }
+    fn create(args: Self, _deps: ()) -> Self {
+        args
+    }
 }
 
 struct Increment(u64);
-impl Message for Increment { type Reply = (); }
+impl Message for Increment {
+    type Reply = ();
+}
 
 struct GetCount;
-impl Message for GetCount { type Reply = u64; }
+impl Message for GetCount {
+    type Reply = u64;
+}
 
 #[async_trait::async_trait]
 impl Handler<Increment> for Counter {

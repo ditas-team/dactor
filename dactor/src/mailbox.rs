@@ -1,8 +1,7 @@
 use std::cmp::Ordering;
 
 /// Mailbox capacity configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum MailboxConfig {
     /// Unbounded mailbox — no capacity limit (default).
     #[default]
@@ -26,7 +25,6 @@ impl MailboxConfig {
         Self::Bounded { capacity, overflow }
     }
 }
-
 
 /// What happens when a bounded mailbox is full.
 ///
@@ -92,10 +90,22 @@ mod tests {
     fn strict_comparer_priority_constants() {
         use crate::message::Priority;
         let cmp = StrictPriorityComparer;
-        assert_eq!(cmp.compare(Priority::CRITICAL.0, Priority::HIGH.0), Ordering::Less);
-        assert_eq!(cmp.compare(Priority::HIGH.0, Priority::NORMAL.0), Ordering::Less);
-        assert_eq!(cmp.compare(Priority::NORMAL.0, Priority::LOW.0), Ordering::Less);
-        assert_eq!(cmp.compare(Priority::LOW.0, Priority::BACKGROUND.0), Ordering::Less);
+        assert_eq!(
+            cmp.compare(Priority::CRITICAL.0, Priority::HIGH.0),
+            Ordering::Less
+        );
+        assert_eq!(
+            cmp.compare(Priority::HIGH.0, Priority::NORMAL.0),
+            Ordering::Less
+        );
+        assert_eq!(
+            cmp.compare(Priority::NORMAL.0, Priority::LOW.0),
+            Ordering::Less
+        );
+        assert_eq!(
+            cmp.compare(Priority::LOW.0, Priority::BACKGROUND.0),
+            Ordering::Less
+        );
     }
 
     #[test]

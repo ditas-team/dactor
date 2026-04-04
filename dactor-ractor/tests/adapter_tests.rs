@@ -123,8 +123,7 @@ async fn conformance_ask_after_stop() {
 #[tokio::test]
 async fn conformance_multiple_handlers() {
     let runtime = RactorRuntime::new();
-    test_multiple_handlers(|name, init| runtime.spawn::<ConformanceMultiHandler>(name, init))
-        .await;
+    test_multiple_handlers(|name, init| runtime.spawn::<ConformanceMultiHandler>(name, init)).await;
 }
 
 #[tokio::test]
@@ -179,7 +178,7 @@ mod interceptor_tests {
 
     use async_trait::async_trait;
 
-    use dactor::actor::{Actor, ActorContext, Handler, ActorRef};
+    use dactor::actor::{Actor, ActorContext, ActorRef, Handler};
     use dactor::errors::RuntimeError;
     use dactor::interceptor::{
         Disposition, InboundContext, InboundInterceptor, OutboundContext, OutboundInterceptor,
@@ -212,7 +211,7 @@ mod interceptor_tests {
         }
     }
 
-    struct Fire(u64);
+    struct Fire(#[allow(dead_code)] u64);
     impl Message for Fire {
         type Reply = ();
     }
@@ -562,7 +561,7 @@ mod lifecycle_tests {
     use async_trait::async_trait;
     use tokio::sync::Mutex;
 
-    use dactor::actor::{Actor, ActorContext, ActorError, Handler, ActorRef};
+    use dactor::actor::{Actor, ActorContext, ActorError, ActorRef, Handler};
     use dactor::errors::ErrorAction;
     use dactor::message::Message;
     use dactor_ractor::RactorRuntime;
@@ -627,7 +626,10 @@ mod lifecycle_tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let log = events.lock().await;
-        assert!(log.contains(&"on_stop".to_string()), "on_stop should be called");
+        assert!(
+            log.contains(&"on_stop".to_string()),
+            "on_stop should be called"
+        );
     }
 
     // -- Actor that panics on a specific message, with configurable on_error --
@@ -650,7 +652,7 @@ mod lifecycle_tests {
         }
         fn on_error(&mut self, _error: &ActorError) -> ErrorAction {
             self.error_count.fetch_add(1, Ordering::SeqCst);
-            self.action.clone()
+            self.action
         }
     }
 
@@ -686,7 +688,11 @@ mod lifecycle_tests {
         let runtime = RactorRuntime::new();
         let actor = runtime.spawn::<PanicActor>(
             "panic-resume",
-            (ErrorAction::Resume, error_count.clone(), handle_count.clone()),
+            (
+                ErrorAction::Resume,
+                error_count.clone(),
+                handle_count.clone(),
+            ),
         );
 
         // Cause a panic
@@ -731,7 +737,7 @@ mod stream_tests {
     use async_trait::async_trait;
     use futures::StreamExt;
 
-    use dactor::actor::{Actor, ActorContext, StreamHandler, ActorRef};
+    use dactor::actor::{Actor, ActorContext, ActorRef, StreamHandler};
     use dactor::message::Message;
     use dactor::stream::StreamSender;
     use dactor_ractor::RactorRuntime;
@@ -829,7 +835,7 @@ mod stream_tests {
 mod feed_tests {
     use async_trait::async_trait;
 
-    use dactor::actor::{Actor, ActorContext, FeedHandler, ActorRef};
+    use dactor::actor::{Actor, ActorContext, ActorRef, FeedHandler};
     use dactor::stream::{BoxStream, StreamReceiver};
     use dactor_ractor::RactorRuntime;
 
@@ -870,7 +876,11 @@ mod feed_tests {
         let actor = runtime.spawn::<Summer>("summer-feed", ());
 
         let input = items_stream(vec![1, 2, 3, 4, 5]);
-        let reply = actor.feed::<u64, u64>(input, 8, None, None).unwrap().await.unwrap();
+        let reply = actor
+            .feed::<u64, u64>(input, 8, None, None)
+            .unwrap()
+            .await
+            .unwrap();
         assert_eq!(reply, 15);
     }
 
@@ -880,7 +890,11 @@ mod feed_tests {
         let actor = runtime.spawn::<Summer>("summer-empty", ());
 
         let input = items_stream(vec![]);
-        let reply = actor.feed::<u64, u64>(input, 8, None, None).unwrap().await.unwrap();
+        let reply = actor
+            .feed::<u64, u64>(input, 8, None, None)
+            .unwrap()
+            .await
+            .unwrap();
         assert_eq!(reply, 0);
     }
 }
@@ -893,7 +907,7 @@ mod cancellation_tests {
     use async_trait::async_trait;
     use tokio_util::sync::CancellationToken;
 
-    use dactor::actor::{Actor, ActorContext, Handler, ActorRef};
+    use dactor::actor::{Actor, ActorContext, ActorRef, Handler};
     use dactor::errors::RuntimeError;
     use dactor::message::Message;
     use dactor_ractor::RactorRuntime;
@@ -932,7 +946,7 @@ mod cancellation_tests {
 
         let result = actor.ask(SlowPing, Some(token)).unwrap().await;
         match result {
-            Err(RuntimeError::Cancelled) => {} // expected
+            Err(RuntimeError::Cancelled) => {}        // expected
             Err(RuntimeError::ActorNotFound(_)) => {} // also acceptable
             other => panic!("expected Cancelled or ActorNotFound, got {:?}", other),
         }
@@ -965,11 +979,11 @@ mod cancellation_tests {
 // ---------------------------------------------------------------------------
 
 mod watch_tests {
+    use async_trait::async_trait;
     use dactor::actor::{Actor, ActorContext, ActorRef, Handler};
     use dactor::message::Message;
     use dactor::supervision::ChildTerminated;
     use dactor_ractor::RactorRuntime;
-    use async_trait::async_trait;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -1002,11 +1016,15 @@ mod watch_tests {
     impl Actor for Worker {
         type Args = ();
         type Deps = ();
-        fn create(_: (), _: ()) -> Self { Worker }
+        fn create(_: (), _: ()) -> Self {
+            Worker
+        }
     }
 
     struct Ping;
-    impl Message for Ping { type Reply = (); }
+    impl Message for Ping {
+        type Reply = ();
+    }
 
     #[async_trait]
     impl Handler<Ping> for Worker {
@@ -1070,11 +1088,11 @@ mod watch_tests {
 // ---------------------------------------------------------------------------
 
 mod mailbox_tests {
+    use async_trait::async_trait;
     use dactor::actor::{Actor, ActorContext, ActorRef, Handler};
     use dactor::mailbox::{MailboxConfig, OverflowStrategy};
     use dactor::message::Message;
     use dactor_ractor::{RactorRuntime, SpawnOptions};
-    use async_trait::async_trait;
     use std::time::Duration;
 
     struct Worker;
@@ -1082,11 +1100,15 @@ mod mailbox_tests {
     impl Actor for Worker {
         type Args = ();
         type Deps = ();
-        fn create(_: (), _: ()) -> Self { Worker }
+        fn create(_: (), _: ()) -> Self {
+            Worker
+        }
     }
 
     struct Ping;
-    impl Message for Ping { type Reply = (); }
+    impl Message for Ping {
+        type Reply = ();
+    }
 
     #[async_trait]
     impl Handler<Ping> for Worker {
@@ -1105,7 +1127,10 @@ mod mailbox_tests {
         let actor = runtime.spawn_with_options::<Worker>("bounded-worker", (), options);
 
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(actor.is_alive(), "actor should be alive despite bounded mailbox config");
+        assert!(
+            actor.is_alive(),
+            "actor should be alive despite bounded mailbox config"
+        );
 
         actor.tell(Ping).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;

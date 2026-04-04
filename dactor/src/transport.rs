@@ -147,15 +147,8 @@ impl InMemoryTransport {
         }
 
         // Mark each other as connected.
-        self.connected
-            .lock()
-            .await
-            .insert(other.local_node.clone());
-        other
-            .connected
-            .lock()
-            .await
-            .insert(self.local_node.clone());
+        self.connected.lock().await.insert(other.local_node.clone());
+        other.connected.lock().await.insert(self.local_node.clone());
     }
 
     /// Submit a reply for a pending `send_request` call identified by its
@@ -344,10 +337,7 @@ mod tests {
     async fn send_receive_roundtrip() {
         let transport = InMemoryTransport::new(NodeId("node-a".into()));
         let mut rx = transport.register_node(NodeId("node-b".into())).await;
-        transport
-            .connect(&NodeId("node-b".into()))
-            .await
-            .unwrap();
+        transport.connect(&NodeId("node-b".into())).await.unwrap();
 
         let envelope = test_envelope("node-b", b"hello");
         transport
@@ -364,10 +354,7 @@ mod tests {
     async fn send_request_with_reply() {
         let transport = Arc::new(InMemoryTransport::new(NodeId("node-a".into())));
         let mut rx = transport.register_node(NodeId("node-b".into())).await;
-        transport
-            .connect(&NodeId("node-b".into()))
-            .await
-            .unwrap();
+        transport.connect(&NodeId("node-b".into())).await.unwrap();
 
         let request_id = Uuid::new_v4();
         let envelope = test_envelope_with_request_id("node-b", b"question", request_id);
@@ -398,13 +385,13 @@ mod tests {
         assert!(!transport.is_reachable(&NodeId("node-b".into())).await);
         assert!(!transport.is_reachable(&NodeId("node-c".into())).await);
 
-        transport
-            .connect(&NodeId("node-b".into()))
-            .await
-            .unwrap();
+        transport.connect(&NodeId("node-b".into())).await.unwrap();
         assert!(transport.is_reachable(&NodeId("node-b".into())).await);
 
-        transport.disconnect(&NodeId("node-b".into())).await.unwrap();
+        transport
+            .disconnect(&NodeId("node-b".into()))
+            .await
+            .unwrap();
         assert!(!transport.is_reachable(&NodeId("node-b".into())).await);
     }
 

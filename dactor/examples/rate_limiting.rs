@@ -64,21 +64,22 @@ async fn main() {
     for i in 1..=8 {
         let result = worker.ask(Work(i), None);
         match result {
-            Ok(reply_future) => {
-                match reply_future.await {
-                    Ok(reply) => {
-                        println!("  [{}] delivered: {}", i, reply);
-                        delivered += 1;
-                    }
-                    Err(RuntimeError::Rejected { interceptor, reason }) => {
-                        println!("  [{}] rejected by {}: {}", i, interceptor, reason);
-                        rejected += 1;
-                    }
-                    Err(e) => {
-                        println!("  [{}] error: {}", i, e);
-                    }
+            Ok(reply_future) => match reply_future.await {
+                Ok(reply) => {
+                    println!("  [{}] delivered: {}", i, reply);
+                    delivered += 1;
                 }
-            }
+                Err(RuntimeError::Rejected {
+                    interceptor,
+                    reason,
+                }) => {
+                    println!("  [{}] rejected by {}: {}", i, interceptor, reason);
+                    rejected += 1;
+                }
+                Err(e) => {
+                    println!("  [{}] error: {}", i, e);
+                }
+            },
             Err(e) => {
                 println!("  [{}] send error: {:?}", i, e);
             }
