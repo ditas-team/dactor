@@ -5337,6 +5337,8 @@ pub trait UnreachableHandler: Send + Sync + 'static {
 
 ### 9.0.4 Wire Interceptor (Envelope-Level Load Control)
 
+> See also §9.0.5 for batched transport which reduces per-message overhead.
+
 **Problem:** Before a remote message is deserialized, the runtime should be
 able to shed load — reject oversized payloads, rate-limit by source, or
 apply backpressure. Deserializing a message only to reject it wastes CPU.
@@ -5397,6 +5399,33 @@ decisions are reported to:
   `DeadLetterReason::WireInterceptorReject` — the envelope's `target`,
   `target_name`, `message_type`, and `send_mode` are preserved in the dead
   letter event without deserializing the body.
+
+### 9.0.5 Batched Remote Sends
+
+**Problem:** Sending each remote message as a separate transport call
+creates per-message overhead (TCP framing, TLS handshakes, serialization
+headers). For high-throughput streams, this overhead dominates.
+
+**Design:** `BatchedTransportSender` accumulates `WireEnvelope`s per
+destination node and flushes them as a single `WireEnvelopeBatch` when
+`max_items` is reached or `flush_all()` is called.
+
+```rust
+let sender = BatchedTransportSender::new(transport, BatchConfig::new(64, Duration::from_millis(5)));
+
+// Envelopes are buffered per-node
+sender.send(envelope1).await?;  // buffered
+sender.send(envelope2).await?;  // buffered
+sender.send(envelope3).await?;  // triggers flush (if max_items reached)
+
+// Or flush manually
+sender.flush_all().await?;
+```
+
+**Batch wire format:** A `WireEnvelopeBatch` is sent as a `WireEnvelope`
+with `message_type = "dactor::system::Batch"`. The receiver detects this
+via `is_batch_envelope()` and calls `unpack_batch()` to extract the
+individual envelopes for dispatch.
 
 ### 9.1 Serialization Contract
 
