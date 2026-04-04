@@ -6001,6 +6001,12 @@ where
 
 ### 9.3 Serializable Actor References
 
+> **Implementation:** `ActorRefEnvelope` is the wire-safe representation.
+> It carries `ActorId` + `actor_name` + `actor_type` (Rust type name).
+> `from_ref()` extracts an envelope from any `ActorRef<A>`.
+> `into_remote_ref()` / `into_remote_ref_builder()` reconstructs a
+> `RemoteActorRef` on the receiving node.
+
 **Question:** Can I send an `ActorRef` to another machine and use it to call
 the actor from there?
 
