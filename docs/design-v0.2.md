@@ -5335,6 +5335,52 @@ pub trait UnreachableHandler: Send + Sync + 'static {
 }
 ```
 
+### 9.0.4 Wire Interceptor (Envelope-Level Load Control)
+
+**Problem:** Before a remote message is deserialized, the runtime should be
+able to shed load — reject oversized payloads, rate-limit by source, or
+apply backpressure. Deserializing a message only to reject it wastes CPU.
+
+**Design:** `WireInterceptor` operates on `WireEnvelope`s at the transport
+boundary. It sees only headers + raw bytes, not typed messages. A
+`WireInterceptorPipeline` runs interceptors in order; the first non-Accept
+disposition short-circuits.
+
+```text
+Transport → WireInterceptorPipeline → TypeRegistry deserialize → Actor dispatch
+```
+
+```rust
+pub trait WireInterceptor: Send + Sync + 'static {
+    fn name(&self) -> &'static str;
+    fn on_receive(&self, envelope: &WireEnvelope) -> WireDisposition;
+}
+
+pub enum WireDisposition {
+    Accept,               // proceed to dispatch
+    Delay(Duration),      // backpressure, then accept
+    Reject(String),       // error reply to caller (ask) or dead letter (tell)
+    Drop,                 // silently discard
+}
+```
+
+**Built-in interceptors:**
+
+| Interceptor | Purpose |
+|---|---|
+| `MaxBodySizeInterceptor` | Reject envelopes exceeding a byte limit |
+| `RateLimitWireInterceptor` | Token-bucket rate limit with configurable backoff |
+
+**Difference from inbound/outbound interceptors:**
+
+| | WireInterceptor | InboundInterceptor | OutboundInterceptor |
+|---|---|---|---|
+| **Side** | Receiver | Receiver | Sender |
+| **Input** | `&WireEnvelope` (bytes) | `&dyn Any` (typed msg) | `&dyn Any` (typed msg) |
+| **Deserialization** | Before | After | Before (on sender) |
+| **Can modify headers** | No (read-only) | Yes | Yes |
+| **Use case** | Load shedding | Auth, logging, metrics | Trace propagation, auth injection |
+
 ### 9.1 Serialization Contract
 
 **Problem:** When messages cross node boundaries, they must be serialized.

@@ -233,7 +233,7 @@ Wire format, cross-node communication, and system actors for remote operations.
 | R3b | RemoteActorRef outbound interceptors | §5.3, §9.6 | Wire OutboundInterceptor pipeline into RemoteActorRef tell/ask (on_send, on_reply, header stamping) | ✅ PR #68 |
 | R4 | Connection management | §10.2 | AdapterCluster: connect(), disconnect(), reconnect |
 | R5 | Batched remote sends | §4.11.1 | BatchWriter batches items → single WireEnvelope per batch |
-| R6 | WireInterceptor (envelope-level) | new | Intercept WireEnvelopes at the transport boundary using only headers + body bytes (no deserialization). Enables runtime-level load control: delay, reject, drop, rate-limit, prioritize remote messages before they enter the actor mailbox. Runs on receiver side between Transport and dispatch. | 🔲 Not started |
+| R6 | WireInterceptor (envelope-level) | §9.0.4 | Intercept WireEnvelopes at the transport boundary using only headers + body bytes (no deserialization). Enables runtime-level load control: delay, reject, drop, rate-limit, prioritize remote messages before they enter the actor mailbox. Runs on receiver side between Transport and dispatch. | ✅ PR #69 |
 
 ### 4.2 System Actors
 
