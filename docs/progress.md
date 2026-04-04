@@ -296,10 +296,10 @@ Each adapter runtime must wire the core system actors into its remote message ha
 | SA2 | dactor-ractor | WatchManager wiring | RactorRuntime starts WatchManager, translates ractor's native watch into WatchManager entries, sends WatchNotification on termination | ✅ PR #80 |
 | SA3 | dactor-ractor | CancelManager wiring | RactorRuntime registers CancellationTokens with CancelManager, handles incoming CancelRequest from remote nodes | ✅ PR #80 |
 | SA4 | dactor-ractor | NodeDirectory wiring | RactorRuntime populates NodeDirectory from ractor_cluster membership, updates PeerStatus on connect/disconnect | ✅ PR #80 |
-| SA5 | dactor-kameo | SpawnManager wiring | KameoRuntime starts SpawnManager, routes SpawnRequest via kameo's distributed actor layer | 🔲 Not started |
-| SA6 | dactor-kameo | WatchManager wiring | KameoRuntime wires kameo's actor lifecycle into WatchManager for remote watch delivery | 🔲 Not started |
-| SA7 | dactor-kameo | CancelManager wiring | KameoRuntime registers tokens with CancelManager, handles remote cancel | 🔲 Not started |
-| SA8 | dactor-kameo | NodeDirectory wiring | KameoRuntime populates NodeDirectory from kameo/libp2p peer discovery | 🔲 Not started |
+| SA5 | dactor-kameo | SpawnManager wiring | KameoRuntime starts SpawnManager, routes SpawnRequest via kameo's distributed actor layer | ✅ PR #81 |
+| SA6 | dactor-kameo | WatchManager wiring | KameoRuntime wires kameo's actor lifecycle into WatchManager for remote watch delivery | ✅ PR #81 |
+| SA7 | dactor-kameo | CancelManager wiring | KameoRuntime registers tokens with CancelManager, handles remote cancel | ✅ PR #81 |
+| SA8 | dactor-kameo | NodeDirectory wiring | KameoRuntime populates NodeDirectory from kameo/libp2p peer discovery | ✅ PR #81 |
 | SA9 | dactor-mock | System actor wiring | MockCluster wires SpawnManager + WatchManager + CancelManager + NodeDirectory, auto-connects peers | ✅ PR #78 |
 | SA10 | dactor-coerce | System actor wiring | CoerceRuntime wires system actors (stub — depends on coerce sharding integration) | 🔲 Not started |
 
@@ -508,6 +508,114 @@ impl<A: Actor> ActorRef<A> for PoolActorRef<A> {
 | NR2 | ClusterEvent enum | §10.1, §10.4 | NodeJoined, NodeLeft push events | 🔲 Depends on Phase 4 |
 | NR3 | Cluster event handlers | §10.4 | Actors subscribe to membership changes |
 | NR4 | Processing groups | §2.2 | Actor group pub/sub (ractor pg, coerce sharding) |
+
+---
+
+## Phase 9: Actor Lifecycle Handles (JoinHandle / Await-Stop)
+
+### Background
+
+Each actor backend handles task lifecycle differently:
+
+| Backend | Spawn Return | Await Completion | Stop Signal |
+|---------|-------------|-----------------|-------------|
+| **ractor** | `(ActorRef, JoinHandle)` | `.await` on JoinHandle | `actor_ref.stop()` |
+| **kameo** | `ActorRef` only | Not exposed — lifecycle via hooks | Drop all refs or `stop()` |
+| **coerce** | `ActorRef` only | Not exposed — tracked actors use `system.stop_actor()` | Drop refs (anonymous) or system API (tracked) |
+| **dactor (current)** | `AdapterActorRef` | Not supported — JoinHandle discarded | `actor_ref.stop()` |
+
+Ractor is the only backend that returns a `JoinHandle` from spawn. Kameo and
+coerce manage actor lifecycle internally — there is no task-level handle to
+await. Dactor currently discards ractor's JoinHandle (`_join` in
+`spawn_internal`).
+
+### Plan
+
+| # | Feature | Description | Status |
+|---|---------|-------------|--------|
+| JH1 | Store ractor JoinHandle | `RactorRuntime` stores JoinHandle in an internal map (`ActorId → JoinHandle`), cleaned up on actor stop | 🔲 Not started |
+| JH2 | `runtime.await_stop(id)` | Backend-agnostic API: returns a future that resolves when the actor finishes. Ractor: awaits stored JoinHandle. Kameo/coerce: uses a oneshot channel wired into `on_stop()` | 🔲 Not started |
+| JH3 | `runtime.await_all()` | Await all spawned actors — useful for graceful shutdown | 🔲 Not started |
+| JH4 | Propagate panics | If an actor panics in `post_stop`, `await_stop()` should return the error instead of silently swallowing it | 🔲 Not started |
+| JH5 | TestRuntime support | Wire `await_stop` into TestRuntime for test teardown verification | 🔲 Not started |
+
+### Design Notes
+
+- **Backend-agnostic abstraction is essential.** Exposing ractor's JoinHandle
+  directly would leak the backend. The `await_stop(id)` API works for all
+  backends by using different internal mechanisms.
+- **Kameo/coerce workaround:** Since these backends don't return a JoinHandle,
+  `await_stop` would wire a `tokio::sync::oneshot` into the actor's `on_stop()`
+  hook. The adapter's `post_stop()` / lifecycle callback sends on the channel.
+- **Priority:** Low — most users don't need to await actor completion. The
+  primary use case is graceful shutdown in production and test teardown.
+- **Depends on:** SA1-SA8 (system actor wiring) for lifecycle integration.
+
+---
+
+## Phase 10: Async Spawn API
+
+### Background
+
+All dactor adapter spawn methods are currently synchronous:
+
+```rust
+// ractor adapter — sync, but ractor::Actor::spawn() is async
+pub fn spawn<A>(&self, name: &str, args: A::Args) -> RactorActorRef<A>
+
+// kameo adapter — sync (kameo's Spawn::spawn_with_mailbox is also sync)
+pub fn spawn<A>(&self, name: &str, args: A::Args) -> KameoActorRef<A>
+
+// TestRuntime — sync
+pub fn spawn<A>(&self, name: &str, args: A::Args) -> TestActorRef<A>
+```
+
+Each backend's native spawn has a different signature:
+
+| Backend | Native Spawn | Async? | Notes |
+|---------|-------------|--------|-------|
+| **ractor** | `ractor::Actor::spawn()` | **async** | Returns `Result<(ActorRef, JoinHandle)>`. Dactor currently bridges via `std::thread::spawn` + `Handle::block_on` to keep the API sync. This is heavyweight and can panic if no tokio runtime is active. |
+| **kameo** | `Spawn::spawn_with_mailbox()` | **sync** | Calls `tokio::spawn` internally, returns `ActorRef` immediately. No bridging needed. |
+| **coerce** | `actor.into_actor(name, &system)` | **async** | Returns `Result<ActorRef>`. Would also need sync→async bridging. |
+| **TestRuntime** | In-process task spawn | **sync** | No runtime needed, purely local. |
+
+The sync API was chosen for simplicity but has drawbacks:
+
+1. **Ractor sync bridge is fragile** — spawns a std::thread + `block_on` just
+   to call an async function. This adds latency (~100μs per spawn), can panic
+   without a tokio runtime, and is unusual Rust async code.
+2. **Coerce can't be properly wired** — `into_actor()` is async, so a coerce
+   adapter would also need the same heavyweight bridging.
+3. **Error swallowing** — sync spawn panics on failure instead of returning
+   `Result`, because there's no natural way to propagate async errors in a
+   sync context.
+
+### Plan
+
+| # | Feature | Description | Status |
+|---|---------|-------------|--------|
+| AS1 | Async spawn for ractor | `pub async fn spawn<A>(...) -> Result<RactorActorRef<A>, RuntimeError>` — call `ractor::Actor::spawn().await` directly, remove std::thread bridge | 🔲 Not started |
+| AS2 | Async spawn for kameo | `pub async fn spawn<A>(...) -> Result<KameoActorRef<A>, RuntimeError>` — kameo is sync internally but async API is forward-compatible and consistent | 🔲 Not started |
+| AS3 | Async spawn for coerce | `pub async fn spawn<A>(...) -> Result<CoerceActorRef<A>, RuntimeError>` — enables direct `into_actor().await` | 🔲 Not started |
+| AS4 | Async spawn for TestRuntime | `pub async fn spawn<A>(...) -> Result<TestActorRef<A>, RuntimeError>` — consistent API, trivially wraps sync | 🔲 Not started |
+| AS5 | Return Result, not panic | All spawn methods return `Result<Ref, RuntimeError>` instead of panicking on failure | 🔲 Not started |
+| AS6 | Migration: keep sync wrappers | Provide `spawn_blocking()` sync wrappers that call `Handle::block_on(spawn())` for callers that need sync API. Deprecate the current sync `spawn()` over time | 🔲 Not started |
+| AS7 | Update examples & tests | All examples, conformance tests, and adapter tests updated to use `.await` | 🔲 Not started |
+
+### Design Notes
+
+- **Breaking change.** Moving spawn from sync to async changes every call site.
+  Mitigation: keep `spawn_blocking()` sync wrappers during transition.
+- **Kameo doesn't need async spawn** but should have it for API consistency.
+  The async version would simply wrap the sync call.
+- **TestRuntime** is sync by nature but async spawn is trivially
+  `async { Ok(self.spawn_sync(name, args)) }`.
+- **Error handling improves.** Async spawn can return `Result` naturally
+  instead of panicking. This is especially important for remote spawn where
+  network errors are expected.
+- **Priority:** Medium — the sync bridge works but is a known wart. Worth
+  doing before 1.0 but not blocking current development.
+- **Depends on:** JH1 (storing JoinHandle) pairs naturally with async spawn.
 
 ---
 

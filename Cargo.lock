@@ -170,6 +170,7 @@ dependencies = [
  "dactor",
  "futures",
  "kameo",
+ "serde_json",
  "tokio",
  "tokio-stream",
  "tokio-util",

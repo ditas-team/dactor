@@ -940,8 +940,15 @@ impl RactorRuntime {
     ///
     /// Looks up the actor type in the registry, deserializes Args from bytes,
     /// and returns the constructed actor along with its assigned [`ActorId`].
-    /// The caller is responsible for actually spawning the actor via
-    /// `spawn()` or `spawn_with_deps()`.
+    ///
+    /// The returned `ActorId` is pre-assigned for the remote spawn flow where
+    /// the runtime controls ID assignment. The caller must use this ID when
+    /// registering the spawned actor (not via the regular `spawn()` path,
+    /// which assigns its own IDs).
+    ///
+    /// **Note:** Currently uses the simple factory API (`TypeRegistry::create_actor`).
+    /// For actors with non-trivial `Deps`, use `spawn_manager_mut()` to access
+    /// `TypeRegistry::create_actor_with_deps()` directly.
     ///
     /// Returns `Ok((actor_id, actor))` on success, or `Err(SpawnResponse::Failure)`
     /// if the type is not found or deserialization fails.
@@ -993,6 +1000,9 @@ impl RactorRuntime {
 
     /// Called when a local actor terminates. Returns notifications for all
     /// remote watchers that should be sent to their respective nodes.
+    ///
+    /// **Note:** This must be called explicitly by the integration layer.
+    /// It is not yet automatically wired into ractor's actor stop lifecycle.
     pub fn notify_terminated(&mut self, terminated: &ActorId) -> Vec<WatchNotification> {
         self.watch_manager.on_terminated(terminated)
     }
@@ -1019,6 +1029,14 @@ impl RactorRuntime {
     /// Process a remote cancellation request.
     pub fn cancel_request(&mut self, request_id: &str) -> CancelResponse {
         self.cancel_manager.cancel(request_id)
+    }
+
+    /// Clean up a cancellation token after its request completes normally.
+    ///
+    /// Should be called when a remote ask/stream/feed completes successfully
+    /// to prevent stale tokens from accumulating.
+    pub fn complete_request(&mut self, request_id: &str) {
+        self.cancel_manager.remove(request_id);
     }
 
     // -----------------------------------------------------------------------
