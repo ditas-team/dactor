@@ -285,7 +285,7 @@ Each adapter runtime must wire the core system actors into its remote message ha
 | SA6 | dactor-kameo | WatchManager wiring | KameoRuntime wires kameo's actor lifecycle into WatchManager for remote watch delivery | 🔲 Not started |
 | SA7 | dactor-kameo | CancelManager wiring | KameoRuntime registers tokens with CancelManager, handles remote cancel | 🔲 Not started |
 | SA8 | dactor-kameo | NodeDirectory wiring | KameoRuntime populates NodeDirectory from kameo/libp2p peer discovery | 🔲 Not started |
-| SA9 | dactor-mock | System actor wiring | MockCluster wires SpawnManager + WatchManager + CancelManager for simulated multi-node testing | 🔲 Not started |
+| SA9 | dactor-mock | System actor wiring | MockCluster wires SpawnManager + WatchManager + CancelManager + NodeDirectory, auto-connects peers | ✅ PR #78 |
 | SA10 | dactor-coerce | System actor wiring | CoerceRuntime wires system actors (stub — depends on coerce sharding integration) | 🔲 Not started |
 
 ### 4.3 Serialization & Schema

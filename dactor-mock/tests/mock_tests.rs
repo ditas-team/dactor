@@ -283,3 +283,111 @@ async fn test_mock_cluster_unwatch() {
         "unwatch should prevent notification"
     );
 }
+
+// -- System actor integration tests (SA9) --
+
+#[tokio::test]
+async fn test_node_directory_auto_connected() {
+    let cluster = MockCluster::new(&["n1", "n2", "n3"]);
+    let n1 = cluster.node("n1");
+    assert!(n1.node_directory.is_connected(&NodeId("n2".into())));
+    assert!(n1.node_directory.is_connected(&NodeId("n3".into())));
+    assert_eq!(n1.node_directory.connected_count(), 2);
+}
+
+#[tokio::test]
+async fn test_crash_node_updates_peers() {
+    let mut cluster = MockCluster::new(&["n1", "n2", "n3"]);
+    cluster.crash_node("n2");
+
+    // Surviving nodes should see n2 as disconnected
+    let n1 = cluster.node("n1");
+    assert!(!n1.node_directory.is_connected(&NodeId("n2".into())));
+    assert!(n1.node_directory.is_connected(&NodeId("n3".into())));
+}
+
+#[tokio::test]
+async fn test_restart_node_reconnects_peers() {
+    let mut cluster = MockCluster::new(&["n1", "n2", "n3"]);
+    cluster.crash_node("n2");
+    cluster.restart_node("n2");
+
+    // Restarted node should be connected to existing peers
+    let n2 = cluster.node("n2");
+    assert!(n2.node_directory.is_connected(&NodeId("n1".into())));
+    assert!(n2.node_directory.is_connected(&NodeId("n3".into())));
+
+    // Existing peers should see restarted node
+    let n1 = cluster.node("n1");
+    assert!(n1.node_directory.is_connected(&NodeId("n2".into())));
+}
+
+#[tokio::test]
+async fn test_remote_watch_and_notify() {
+    let mut cluster = MockCluster::new(&["n1", "n2"]);
+    let target = dactor::node::ActorId {
+        node: NodeId("n1".into()),
+        local: 42,
+    };
+    let watcher = dactor::node::ActorId {
+        node: NodeId("n2".into()),
+        local: 10,
+    };
+
+    cluster.remote_watch("n1", target.clone(), watcher.clone());
+
+    // Verify watcher is registered
+    let n1 = cluster.node("n1");
+    assert_eq!(n1.watch_manager.watchers_of(&target).len(), 1);
+
+    // Notify termination
+    let notifications = cluster.notify_terminated("n1", &target);
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].watcher, watcher);
+}
+
+#[tokio::test]
+async fn test_remote_unwatch() {
+    let mut cluster = MockCluster::new(&["n1", "n2"]);
+    let target = dactor::node::ActorId {
+        node: NodeId("n1".into()),
+        local: 42,
+    };
+    let watcher = dactor::node::ActorId {
+        node: NodeId("n2".into()),
+        local: 10,
+    };
+
+    cluster.remote_watch("n1", target.clone(), watcher.clone());
+    cluster.remote_unwatch("n1", &target, &watcher);
+
+    let notifications = cluster.notify_terminated("n1", &target);
+    assert!(notifications.is_empty());
+}
+
+#[tokio::test]
+async fn test_cancel_manager() {
+    let mut cluster = MockCluster::new(&["n1"]);
+    let token = tokio_util::sync::CancellationToken::new();
+    let token_check = token.clone();
+
+    cluster.register_cancel("n1", "req-1".into(), token);
+    assert!(!token_check.is_cancelled());
+
+    let response = cluster.cancel_request("n1", "req-1");
+    assert!(matches!(
+        response,
+        dactor::system_actors::CancelResponse::Acknowledged
+    ));
+    assert!(token_check.is_cancelled());
+}
+
+#[tokio::test]
+async fn test_cancel_unknown_request() {
+    let mut cluster = MockCluster::new(&["n1"]);
+    let response = cluster.cancel_request("n1", "nonexistent");
+    assert!(matches!(
+        response,
+        dactor::system_actors::CancelResponse::NotFound { .. }
+    ));
+}

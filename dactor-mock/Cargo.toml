@@ -15,6 +15,7 @@ categories = ["concurrency", "development-tools::testing"]
 [dependencies]
 dactor = { version = "0.2.0", path = "../dactor", features = ["test-support"] }
 tokio = { version = "1", features = ["sync", "rt", "time", "macros", "rt-multi-thread"] }
+tokio-util = "0.7"
 async-trait = "0.1"
 tracing = "0.1"
 

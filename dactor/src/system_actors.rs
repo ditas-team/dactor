@@ -105,6 +105,11 @@ impl SpawnManager {
     pub fn type_registry(&self) -> &crate::type_registry::TypeRegistry {
         &self.type_registry
     }
+
+    /// Access the type registry mutably (for registering new factories).
+    pub fn type_registry_mut(&mut self) -> &mut crate::type_registry::TypeRegistry {
+        &mut self.type_registry
+    }
 }
 
 // ---------------------------------------------------------------------------

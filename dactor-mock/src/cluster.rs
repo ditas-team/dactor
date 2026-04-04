@@ -12,8 +12,9 @@ use crate::node::MockNode;
 
 /// A simulated multi-node cluster for testing.
 ///
-/// Each node has its own runtime. Cross-node messaging goes through
-/// the MockNetwork which can simulate failures.
+/// Each node has its own runtime and system actors (SpawnManager,
+/// WatchManager, CancelManager, NodeDirectory). Cross-node messaging
+/// goes through the MockNetwork which can simulate failures.
 pub struct MockCluster {
     nodes: HashMap<NodeId, MockNode>,
     network: Arc<MockNetwork>,
@@ -21,12 +22,23 @@ pub struct MockCluster {
 
 impl MockCluster {
     /// Create a cluster with the given node IDs.
+    ///
+    /// All nodes are connected to each other in the NodeDirectory.
     pub fn new(node_ids: &[&str]) -> Self {
+        let ids: Vec<NodeId> = node_ids.iter().map(|id| NodeId(id.to_string())).collect();
         let mut nodes = HashMap::new();
-        for id in node_ids {
-            let node_id = NodeId(id.to_string());
-            nodes.insert(node_id.clone(), MockNode::new(node_id));
+
+        for id in &ids {
+            let mut node = MockNode::new(id.clone());
+            // Connect each node to all other nodes
+            for peer in &ids {
+                if peer != id {
+                    node.connect_peer(peer);
+                }
+            }
+            nodes.insert(id.clone(), node);
         }
+
         Self {
             nodes,
             network: Arc::new(MockNetwork::new()),
@@ -64,20 +76,31 @@ impl MockCluster {
 
     /// Remove a node from the cluster.
     ///
-    /// **Note:** This removes the node from cluster tracking. Actors with
-    /// existing `ActorRef` handles may continue running if references are
-    /// held. True actor termination semantics will be added when the mock
-    /// runtime supports a shutdown-all-actors API.
+    /// Updates all surviving nodes' NodeDirectory to mark the crashed
+    /// node as Disconnected.
     pub fn crash_node(&mut self, id: &str) {
-        self.nodes.remove(&NodeId(id.to_string()));
+        let crashed = NodeId(id.to_string());
+        self.nodes.remove(&crashed);
+        // Update surviving nodes
+        for node in self.nodes.values_mut() {
+            node.disconnect_peer(&crashed);
+        }
     }
 
     /// Restart a node — creates a fresh node with same ID.
-    /// Old actors from the previous runtime are not explicitly stopped
-    /// (see `crash_node` note).
+    /// Reconnects it to all existing peers and updates their directories.
     pub fn restart_node(&mut self, id: &str) {
         let node_id = NodeId(id.to_string());
-        self.nodes.insert(node_id.clone(), MockNode::new(node_id));
+        let mut new_node = MockNode::new(node_id.clone());
+        // Connect new node to all existing peers
+        for peer_id in self.nodes.keys() {
+            new_node.connect_peer(peer_id);
+        }
+        // Update existing nodes to know about the restarted node
+        for node in self.nodes.values_mut() {
+            node.connect_peer(&node_id);
+        }
+        self.nodes.insert(node_id, new_node);
     }
 
     /// Freeze a node — removes it from the cluster temporarily.
@@ -121,5 +144,49 @@ impl MockCluster {
             nodes: node_ids,
             is_leader: false,
         })
+    }
+
+    /// Register a remote watch via the target node's WatchManager.
+    pub fn remote_watch(&mut self, target_node: &str, target: ActorId, watcher: ActorId) {
+        let node = self.node_mut(target_node);
+        node.watch_manager.watch(target.clone(), watcher);
+    }
+
+    /// Remove a remote watch via the target node's WatchManager.
+    pub fn remote_unwatch(&mut self, target_node: &str, target: &ActorId, watcher: &ActorId) {
+        let node = self.node_mut(target_node);
+        node.watch_manager.unwatch(target, watcher);
+    }
+
+    /// Notify the target node's WatchManager that an actor has terminated.
+    /// Returns notifications for all remote watchers of this actor.
+    pub fn notify_terminated(
+        &mut self,
+        node_id: &str,
+        terminated: &ActorId,
+    ) -> Vec<dactor::system_actors::WatchNotification> {
+        let node = self.node_mut(node_id);
+        node.watch_manager.on_terminated(terminated)
+    }
+
+    /// Register a cancellation token on a node's CancelManager.
+    pub fn register_cancel(
+        &mut self,
+        node_id: &str,
+        request_id: String,
+        token: tokio_util::sync::CancellationToken,
+    ) {
+        let node = self.node_mut(node_id);
+        node.cancel_manager.register(request_id, token);
+    }
+
+    /// Cancel a request on a node's CancelManager.
+    pub fn cancel_request(
+        &mut self,
+        node_id: &str,
+        request_id: &str,
+    ) -> dactor::system_actors::CancelResponse {
+        let node = self.node_mut(node_id);
+        node.cancel_manager.cancel(request_id)
     }
 }
