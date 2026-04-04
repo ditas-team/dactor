@@ -136,7 +136,9 @@ pub use remote::{
     ClusterDiscovery, ClusterState, HeaderRegistry, MessageSerializer, MessageVersionHandler,
     RemoteMessage, SerializationError, StaticSeeds, WireEnvelope, WireHeaders,
 };
-pub use remote_ref::{RemoteActorRef, RemoteActorRefBuilder};
+pub use remote_ref::{
+    ActorRefEnvelope, ActorRefTypeMismatch, RemoteActorRef, RemoteActorRefBuilder,
+};
 pub use stream::{BatchConfig, BatchReader, BatchWriter, StreamReceiver};
 pub use stream::{BoxStream, StreamSendError, StreamSender};
 pub use supervision::ChildTerminated;

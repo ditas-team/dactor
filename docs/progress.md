@@ -271,7 +271,8 @@ Each adapter runtime must wire the core system actors into its remote message ha
 | SE2 | TypeRegistry | §8.3, §9.2 | Map type names → deserializers for remote dispatch | ✅ PR #63 |
 | SE3 | HeaderRegistry | §5.1 | Deserializer registry for remote headers | ✅ PR #63 |
 | SE4 | Message versioning | §9.1 | MessageVersionHandler for schema evolution/migration | ✅ PR #63 (receive_envelope_body_versioned) |
-| SE5 | ActorRef serialization | §9.3 | Serialize/deserialize ActorRef for cross-node passing |
+| SE5 | ActorRef serialization | §9.3 | Serialize/deserialize ActorRef for cross-node passing | ✅ PR #72 (ActorRefEnvelope) |
+| SE6 | Protobuf system serialization | §9.1 | Replace JSON with protobuf for all system-level serialization (SpawnRequest/Response, WatchRequest/Notification, CancelRequest/Response, WireEnvelope framing). Protobuf provides smaller payloads, faster ser/deser, and native schema evolution via field numbering. Application messages remain pluggable via MessageSerializer. | 🔲 Not started |
 
 ### 4.4 Cluster Discovery & Health
 

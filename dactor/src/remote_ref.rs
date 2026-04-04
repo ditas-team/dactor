@@ -619,6 +619,153 @@ impl<A: Actor> RemoteActorRefBuilder<A> {
 }
 
 // ---------------------------------------------------------------------------
+// ActorRefEnvelope — serializable actor reference (SE5)
+// ---------------------------------------------------------------------------
+
+/// Wire-safe representation of an actor reference for cross-node passing.
+///
+/// # Security
+///
+/// `ActorRefEnvelope` assumes a **trusted cluster**. All fields are
+/// sender-supplied and not cryptographically verified:
+///
+/// - **Spoofing:** A malicious node can forge an envelope claiming to
+///   represent any actor. Applications requiring cross-trust-domain
+///   security must validate envelopes via `WireInterceptor` or
+///   application-level authentication.
+/// - **Type name instability:** `actor_type` uses `std::any::type_name()`
+///   which is not stable across Rust compiler versions. Suitable for
+///   same-binary clusters but may break across mixed-version deployments.
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// // Sender: extract envelope from any ActorRef
+/// let envelope = ActorRefEnvelope::from_ref(&my_actor_ref);
+/// remote.tell(RegisterService { actor: envelope })?;
+///
+/// // Receiver: reconstruct with type checking
+/// let builder = envelope.try_into_builder::<MyActor>(transport)?;
+/// let remote_ref = builder.register_tell::<Ping>().build();
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ActorRefEnvelope {
+    /// The actor's unique identity (node + local ID).
+    pub actor_id: ActorId,
+    /// The actor's human-readable name.
+    pub actor_name: String,
+    /// Rust type name of the actor (diagnostic, not stable across compiler versions).
+    pub actor_type: String,
+}
+
+/// Error returned when `ActorRefEnvelope` type checking fails.
+#[derive(Debug, Clone)]
+pub struct ActorRefTypeMismatch {
+    /// Expected actor type name.
+    pub expected: String,
+    /// Actual actor type name from the envelope.
+    pub actual: String,
+}
+
+impl std::fmt::Display for ActorRefTypeMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ActorRef type mismatch: expected '{}', got '{}'",
+            self.expected, self.actual
+        )
+    }
+}
+
+impl std::error::Error for ActorRefTypeMismatch {}
+
+impl ActorRefEnvelope {
+    /// Create an envelope from any `ActorRef` implementation.
+    pub fn from_ref<A: Actor, R: crate::actor::ActorRef<A>>(actor_ref: &R) -> Self {
+        Self {
+            actor_id: actor_ref.id(),
+            actor_name: actor_ref.name(),
+            actor_type: std::any::type_name::<A>().to_string(),
+        }
+    }
+
+    /// Create an envelope from raw components.
+    pub fn new(
+        actor_id: ActorId,
+        actor_name: impl Into<String>,
+        actor_type: impl Into<String>,
+    ) -> Self {
+        Self {
+            actor_id,
+            actor_name: actor_name.into(),
+            actor_type: actor_type.into(),
+        }
+    }
+
+    /// Reconstruct a [`RemoteActorRefBuilder`] with type checking.
+    ///
+    /// Returns `Err(ActorRefTypeMismatch)` if the envelope's `actor_type`
+    /// does not match `std::any::type_name::<A>()`.
+    pub fn try_into_builder<A: Actor>(
+        self,
+        transport: Arc<dyn Transport>,
+    ) -> Result<RemoteActorRefBuilder<A>, ActorRefTypeMismatch> {
+        let expected = std::any::type_name::<A>();
+        if self.actor_type != expected {
+            return Err(ActorRefTypeMismatch {
+                expected: expected.to_string(),
+                actual: self.actor_type,
+            });
+        }
+        Ok(RemoteActorRefBuilder::<A>::new(
+            self.actor_id,
+            self.actor_name,
+            transport,
+        ))
+    }
+
+    /// Reconstruct a [`RemoteActorRefBuilder`] without type checking.
+    ///
+    /// Use when the actor type is already validated externally or when
+    /// working with dynamically-typed actor references.
+    pub fn into_builder_unchecked<A: Actor>(
+        self,
+        transport: Arc<dyn Transport>,
+    ) -> RemoteActorRefBuilder<A> {
+        RemoteActorRefBuilder::<A>::new(self.actor_id, self.actor_name, transport)
+    }
+
+    /// Check if this envelope's actor type matches the expected type `A`.
+    ///
+    /// **Note:** Compares `std::any::type_name()` strings — not stable
+    /// across Rust compiler versions.
+    pub fn is_type<A: Actor>(&self) -> bool {
+        self.actor_type == std::any::type_name::<A>()
+    }
+}
+
+impl std::fmt::Display for ActorRefEnvelope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = if self.actor_name.len() > 128 {
+            &self.actor_name[..128]
+        } else {
+            &self.actor_name
+        };
+        let atype = if self.actor_type.len() > 128 {
+            &self.actor_type[..128]
+        } else {
+            &self.actor_type
+        };
+        write!(
+            f,
+            "ActorRef({}, name={}, type={})",
+            self.actor_id, name, atype
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1260,5 +1407,165 @@ mod tests {
         let result = remote.tell(Increment);
         assert!(result.is_err()); // rejected by second interceptor
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1); // first ran
+    }
+
+    // -- ActorRefEnvelope tests --
+
+    #[test]
+    fn envelope_from_remote_ref() {
+        let transport = Arc::new(InMemoryTransport::new(NodeId("local".into())));
+        let remote = RemoteActorRefBuilder::<Counter>::new(
+            ActorId {
+                node: NodeId("node-2".into()),
+                local: 42,
+            },
+            "counter",
+            transport,
+        )
+        .build();
+
+        let envelope = ActorRefEnvelope::from_ref::<Counter, _>(&remote);
+        assert_eq!(envelope.actor_id.local, 42);
+        assert_eq!(envelope.actor_name, "counter");
+        assert!(envelope.actor_type.contains("Counter"));
+        assert!(envelope.is_type::<Counter>());
+    }
+
+    #[test]
+    fn envelope_new_and_display() {
+        let envelope = ActorRefEnvelope::new(
+            ActorId {
+                node: NodeId("n1".into()),
+                local: 7,
+            },
+            "worker",
+            "myapp::Worker",
+        );
+        assert_eq!(envelope.actor_name, "worker");
+        let display = format!("{envelope}");
+        assert!(display.contains("worker"));
+        assert!(display.contains("myapp::Worker"));
+    }
+
+    #[test]
+    fn envelope_roundtrip_to_remote_ref() {
+        let transport = Arc::new(InMemoryTransport::new(NodeId("local".into())));
+
+        let envelope = ActorRefEnvelope::new(
+            ActorId {
+                node: NodeId("node-3".into()),
+                local: 99,
+            },
+            "service",
+            std::any::type_name::<Counter>(),
+        );
+
+        assert!(envelope.is_type::<Counter>());
+
+        // Checked reconstruction
+        let builder = match envelope
+            .try_into_builder::<Counter>(Arc::clone(&transport) as Arc<dyn Transport>)
+        {
+            Ok(b) => b,
+            Err(e) => panic!("type should match: {e}"),
+        };
+        let remote = builder.build();
+
+        assert_eq!(remote.id().local, 99);
+        assert_eq!(remote.name(), "service");
+    }
+
+    #[test]
+    fn envelope_into_builder() {
+        let transport = Arc::new(InMemoryTransport::new(NodeId("local".into())));
+
+        let envelope = ActorRefEnvelope::new(
+            ActorId {
+                node: NodeId("node-2".into()),
+                local: 5,
+            },
+            "actor",
+            std::any::type_name::<Counter>(),
+        );
+
+        let remote = envelope
+            .into_builder_unchecked::<Counter>(Arc::clone(&transport) as Arc<dyn Transport>)
+            .register_tell_with(
+                TypeId::of::<Increment>(),
+                "test::Increment",
+                |_any: &dyn Any| Ok(vec![1]),
+            )
+            .build();
+
+        assert_eq!(remote.id().local, 5);
+    }
+
+    #[test]
+    fn envelope_type_check() {
+        let envelope = ActorRefEnvelope::new(
+            ActorId {
+                node: NodeId("n".into()),
+                local: 1,
+            },
+            "x",
+            "other::Actor",
+        );
+        assert!(!envelope.is_type::<Counter>());
+    }
+
+    #[test]
+    fn envelope_type_mismatch_returns_error() {
+        let transport = Arc::new(InMemoryTransport::new(NodeId("local".into())));
+        let envelope = ActorRefEnvelope::new(
+            ActorId {
+                node: NodeId("n".into()),
+                local: 1,
+            },
+            "x",
+            "wrong::Type",
+        );
+        let result =
+            envelope.try_into_builder::<Counter>(Arc::clone(&transport) as Arc<dyn Transport>);
+        assert!(result.is_err());
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected type mismatch error"),
+        };
+        assert!(err.expected.contains("Counter"));
+        assert_eq!(err.actual, "wrong::Type");
+        assert!(err.to_string().contains("mismatch"));
+    }
+
+    #[test]
+    fn envelope_display_truncates_long_names() {
+        let long_name = "x".repeat(300);
+        let envelope = ActorRefEnvelope::new(
+            ActorId {
+                node: NodeId("n".into()),
+                local: 1,
+            },
+            &long_name,
+            "type",
+        );
+        let display = format!("{envelope}");
+        // Display should not contain the full 300-char name
+        assert!(display.len() < 300);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn envelope_serde_roundtrip() {
+        let envelope = ActorRefEnvelope::new(
+            ActorId {
+                node: NodeId("node-1".into()),
+                local: 42,
+            },
+            "counter",
+            "myapp::Counter",
+        );
+
+        let json = serde_json::to_string(&envelope).unwrap();
+        let deserialized: ActorRefEnvelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, envelope);
     }
 }
