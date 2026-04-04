@@ -637,23 +637,28 @@ where
 // Conformance Tests – Corner-Case Edge Tests
 // ══════════════════════════════════════════════════════
 
-/// Test: send 100 ask(Increment) in sequence with values 1..=100, verify final count = 5050.
-/// Validates FIFO ordering under load using ask (which awaits each reply).
+/// Test: send 100 ask(Increment) in sequence with values 1..=100, verify FIFO ordering.
+/// Each ask returns the reply after the increment, and we verify the running total
+/// matches the expected sum at each step — this detects reordering since addition
+/// of different values in wrong order produces wrong intermediate results.
 pub async fn test_message_ordering_under_load<R, F>(spawn: F)
 where
     R: ActorRef<ConformanceCounter>,
     F: FnOnce(&str, u64) -> R,
 {
     let actor = spawn("ordering-load", 0);
+    let mut expected_sum = 0u64;
     for i in 1..=100u64 {
+        expected_sum += i;
         actor.ask(Increment(i), None).unwrap().await.unwrap();
+        // Verify running total after each increment to detect reordering
+        let count = actor.ask(GetCount, None).unwrap().await.unwrap();
+        assert_eq!(
+            count, expected_sum,
+            "ordering: after Increment({}), expected {}, got {}",
+            i, expected_sum, count
+        );
     }
-    let count = actor.ask(GetCount, None).unwrap().await.unwrap();
-    assert_eq!(
-        count, 5050,
-        "ordering under load: expected 5050 (sum 1..=100), got {}",
-        count
-    );
 }
 
 /// Test: concurrent asks from 10 tasks don't corrupt actor state.
