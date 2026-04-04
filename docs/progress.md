@@ -511,6 +511,48 @@ impl<A: Actor> ActorRef<A> for PoolActorRef<A> {
 
 ---
 
+## Phase 9: Actor Lifecycle Handles (JoinHandle / Await-Stop)
+
+### Background
+
+Each actor backend handles task lifecycle differently:
+
+| Backend | Spawn Return | Await Completion | Stop Signal |
+|---------|-------------|-----------------|-------------|
+| **ractor** | `(ActorRef, JoinHandle)` | `.await` on JoinHandle | `actor_ref.stop()` |
+| **kameo** | `ActorRef` only | Not exposed — lifecycle via hooks | Drop all refs or `stop()` |
+| **coerce** | `ActorRef` only | Not exposed — tracked actors use `system.stop_actor()` | Drop refs (anonymous) or system API (tracked) |
+| **dactor (current)** | `AdapterActorRef` | Not supported — JoinHandle discarded | `actor_ref.stop()` |
+
+Ractor is the only backend that returns a `JoinHandle` from spawn. Kameo and
+coerce manage actor lifecycle internally — there is no task-level handle to
+await. Dactor currently discards ractor's JoinHandle (`_join` in
+`spawn_internal`).
+
+### Plan
+
+| # | Feature | Description | Status |
+|---|---------|-------------|--------|
+| JH1 | Store ractor JoinHandle | `RactorRuntime` stores JoinHandle in an internal map (`ActorId → JoinHandle`), cleaned up on actor stop | 🔲 Not started |
+| JH2 | `runtime.await_stop(id)` | Backend-agnostic API: returns a future that resolves when the actor finishes. Ractor: awaits stored JoinHandle. Kameo/coerce: uses a oneshot channel wired into `on_stop()` | 🔲 Not started |
+| JH3 | `runtime.await_all()` | Await all spawned actors — useful for graceful shutdown | 🔲 Not started |
+| JH4 | Propagate panics | If an actor panics in `post_stop`, `await_stop()` should return the error instead of silently swallowing it | 🔲 Not started |
+| JH5 | TestRuntime support | Wire `await_stop` into TestRuntime for test teardown verification | 🔲 Not started |
+
+### Design Notes
+
+- **Backend-agnostic abstraction is essential.** Exposing ractor's JoinHandle
+  directly would leak the backend. The `await_stop(id)` API works for all
+  backends by using different internal mechanisms.
+- **Kameo/coerce workaround:** Since these backends don't return a JoinHandle,
+  `await_stop` would wire a `tokio::sync::oneshot` into the actor's `on_stop()`
+  hook. The adapter's `post_stop()` / lifecycle callback sends on the channel.
+- **Priority:** Low — most users don't need to await actor completion. The
+  primary use case is graceful shutdown in production and test teardown.
+- **Depends on:** SA1-SA8 (system actor wiring) for lifecycle integration.
+
+---
+
 ## Not Planned / Out of Scope
 
 | Feature | Reason |
