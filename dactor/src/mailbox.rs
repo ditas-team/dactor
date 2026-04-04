@@ -12,7 +12,9 @@ pub enum MailboxConfig {
     /// **Note:** `capacity` must be > 0. A zero-capacity mailbox would
     /// reject all messages immediately.
     Bounded {
+        /// Maximum number of messages the mailbox can hold.
         capacity: usize,
+        /// Strategy when the mailbox is full.
         overflow: OverflowStrategy,
     },
 }

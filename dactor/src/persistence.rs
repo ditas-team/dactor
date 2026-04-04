@@ -10,6 +10,7 @@ use crate::actor::Actor;
 pub struct PersistenceId(pub String);
 
 impl PersistenceId {
+    /// Create a persistence ID from entity type and entity ID (joined by `:`).
     pub fn new(entity_type: &str, entity_id: &str) -> Self {
         Self(format!("{entity_type}:{entity_id}"))
     }
@@ -27,6 +28,7 @@ impl std::fmt::Display for PersistenceId {
 pub struct SequenceId(pub i64);
 
 impl SequenceId {
+    /// Return the next sequence ID.
     pub fn next(self) -> Self {
         Self(self.0 + 1)
     }
@@ -35,27 +37,38 @@ impl SequenceId {
 /// A single journal entry (event).
 #[derive(Debug, Clone)]
 pub struct JournalEntry {
+    /// Sequence number of this event.
     pub sequence_id: SequenceId,
+    /// Type name of the event (for deserialization dispatch).
     pub event_type: String,
+    /// Serialized event payload.
     pub payload: Vec<u8>,
 }
 
 /// A single snapshot entry.
 #[derive(Debug, Clone)]
 pub struct SnapshotEntry {
+    /// Sequence number at which the snapshot was taken.
     pub sequence_id: SequenceId,
+    /// Serialized snapshot payload.
     pub payload: Vec<u8>,
 }
 
 /// Errors from persistence operations.
 #[derive(Debug)]
 pub enum PersistError {
+    /// The backing store is unreachable or returned an error.
     StorageUnavailable(String),
+    /// Serialization or deserialization of the payload failed.
     SerializationFailed(String),
+    /// A stored entry is corrupt or cannot be decoded.
     CorruptEntry {
+        /// Sequence number of the corrupt entry.
         sequence_id: SequenceId,
+        /// Description of the corruption.
         detail: String,
     },
+    /// No storage provider has been configured.
     NotConfigured,
 }
 
@@ -79,12 +92,17 @@ impl std::error::Error for PersistError {}
 #[derive(Debug, Clone)]
 #[derive(Default)]
 pub enum RecoveryFailurePolicy {
+    /// Stop the actor on recovery failure (default).
     #[default]
     Stop,
+    /// Retry recovery with backoff.
     Retry {
+        /// Maximum number of retry attempts (None = unlimited).
         max_attempts: Option<u32>,
+        /// Initial delay before the first retry.
         initial_delay: Duration,
     },
+    /// Skip recovery and start with default state.
     SkipAndStart,
 }
 
@@ -93,11 +111,16 @@ pub enum RecoveryFailurePolicy {
 #[derive(Debug, Clone)]
 #[derive(Default)]
 pub enum PersistFailurePolicy {
+    /// Stop the actor on persist failure (default).
     #[default]
     Stop,
+    /// Return the error to the caller.
     ReturnError,
+    /// Retry the persist operation with backoff.
     Retry {
+        /// Maximum number of retry attempts (None = unlimited).
         max_attempts: Option<u32>,
+        /// Initial delay before the first retry.
         initial_delay: Duration,
     },
 }
@@ -107,9 +130,13 @@ pub enum PersistFailurePolicy {
 #[derive(Debug, Clone)]
 #[derive(Default)]
 pub struct SnapshotConfig {
+    /// Take a snapshot every N events (None = disabled).
     pub every_n_events: Option<u64>,
+    /// Take a snapshot at this interval (None = disabled).
     pub interval: Option<Duration>,
+    /// Keep at most N snapshots (None = keep all).
     pub retention_count: Option<u32>,
+    /// Whether to delete journal events after a successful snapshot.
     pub delete_events_on_snapshot: bool,
 }
 
@@ -118,7 +145,9 @@ pub struct SnapshotConfig {
 #[derive(Debug, Clone)]
 #[derive(Default)]
 pub struct SaveConfig {
+    /// Save state every N messages (None = disabled).
     pub every_n_messages: Option<u64>,
+    /// Save state at this interval (None = disabled).
     pub interval: Option<Duration>,
 }
 
@@ -128,6 +157,7 @@ pub struct SaveConfig {
 /// Pluggable journal storage for event-sourced actors.
 #[async_trait::async_trait]
 pub trait JournalStorage: Send + Sync + 'static {
+    /// Append a single event to the journal.
     async fn write_event(
         &self,
         persistence_id: &PersistenceId,
@@ -136,23 +166,27 @@ pub trait JournalStorage: Send + Sync + 'static {
         payload: &[u8],
     ) -> Result<(), PersistError>;
 
+    /// Append a batch of events to the journal atomically.
     async fn write_event_batch(
         &self,
         persistence_id: &PersistenceId,
         entries: &[(SequenceId, &str, &[u8])],
     ) -> Result<(), PersistError>;
 
+    /// Read all events starting from `from_sequence`.
     async fn read_events(
         &self,
         persistence_id: &PersistenceId,
         from_sequence: SequenceId,
     ) -> Result<Vec<JournalEntry>, PersistError>;
 
+    /// Read the highest sequence number in the journal.
     async fn read_highest_sequence(
         &self,
         persistence_id: &PersistenceId,
     ) -> Result<Option<SequenceId>, PersistError>;
 
+    /// Delete all events up to and including `to_sequence`.
     async fn delete_events_to(
         &self,
         persistence_id: &PersistenceId,
@@ -163,6 +197,7 @@ pub trait JournalStorage: Send + Sync + 'static {
 /// Pluggable snapshot storage.
 #[async_trait::async_trait]
 pub trait SnapshotStorage: Send + Sync + 'static {
+    /// Save a snapshot at the given sequence number.
     async fn save_snapshot(
         &self,
         persistence_id: &PersistenceId,
@@ -170,11 +205,13 @@ pub trait SnapshotStorage: Send + Sync + 'static {
         payload: &[u8],
     ) -> Result<(), PersistError>;
 
+    /// Load the most recent snapshot.
     async fn load_latest_snapshot(
         &self,
         persistence_id: &PersistenceId,
     ) -> Result<Option<SnapshotEntry>, PersistError>;
 
+    /// Delete all snapshots before the given sequence number.
     async fn delete_snapshots_before(
         &self,
         persistence_id: &PersistenceId,
@@ -185,17 +222,20 @@ pub trait SnapshotStorage: Send + Sync + 'static {
 /// Pluggable state store for durable state actors.
 #[async_trait::async_trait]
 pub trait StateStorage: Send + Sync + 'static {
+    /// Save the current state.
     async fn save_state(
         &self,
         persistence_id: &PersistenceId,
         payload: &[u8],
     ) -> Result<(), PersistError>;
 
+    /// Load the previously saved state, if any.
     async fn load_state(
         &self,
         persistence_id: &PersistenceId,
     ) -> Result<Option<Vec<u8>>, PersistError>;
 
+    /// Delete the saved state.
     async fn delete_state(
         &self,
         persistence_id: &PersistenceId,
@@ -218,6 +258,7 @@ pub struct InMemoryStorage {
 }
 
 impl InMemoryStorage {
+    /// Create a new empty in-memory storage.
     pub fn new() -> Self {
         Self {
             journals: Mutex::new(HashMap::new()),
@@ -555,6 +596,7 @@ pub struct InMemoryStorageProvider {
 }
 
 impl InMemoryStorageProvider {
+    /// Create a new in-memory storage provider.
     pub fn new() -> Self {
         Self {
             storage: Arc::new(InMemoryStorage::new()),

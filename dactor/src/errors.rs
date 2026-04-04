@@ -89,7 +89,9 @@ pub enum ErrorAction {
 /// Error returned when a runtime capability is not supported by the adapter.
 #[derive(Debug, Clone)]
 pub struct NotSupportedError {
+    /// The capability that is not supported.
     pub capability: String,
+    /// Detailed description of why it is not supported.
     pub message: String,
 }
 
@@ -114,10 +116,20 @@ pub enum RuntimeError {
     /// The operation timed out.
     Timeout,
     /// The operation was rejected by an interceptor.
-    Rejected { interceptor: String, reason: String },
+    Rejected {
+        /// Name of the interceptor that rejected the message.
+        interceptor: String,
+        /// Reason the message was rejected.
+        reason: String,
+    },
     /// An interceptor suggests the caller retry after the given duration.
     /// The message was NOT delivered.
-    RetryAfter { interceptor: String, retry_after: Duration },
+    RetryAfter {
+        /// Name of the interceptor that requested the retry.
+        interceptor: String,
+        /// Suggested delay before retrying.
+        retry_after: Duration,
+    },
     /// A handler-level error occurred.
     Actor(crate::actor::ActorError),
     /// The operation was cancelled via CancellationToken.

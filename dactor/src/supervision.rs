@@ -124,6 +124,7 @@ pub struct OneForOne {
 }
 
 impl OneForOne {
+    /// Create a new OneForOne strategy with the given restart limits.
     pub fn new(max_restarts: u32, within: Duration) -> Self {
         Self {
             tracker: RestartTracker::new(max_restarts, within),
@@ -158,6 +159,7 @@ pub struct AllForOne {
 }
 
 impl AllForOne {
+    /// Create a new AllForOne strategy with the given restart limits.
     pub fn new(max_restarts: u32, within: Duration) -> Self {
         Self {
             tracker: RestartTracker::new(max_restarts, within),
@@ -195,6 +197,7 @@ pub struct RestForOne {
 }
 
 impl RestForOne {
+    /// Create a new RestForOne strategy with the given restart limits.
     pub fn new(max_restarts: u32, within: Duration) -> Self {
         Self {
             tracker: RestartTracker::new(max_restarts, within),

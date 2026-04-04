@@ -29,10 +29,12 @@ pub trait MessageSerializer: Send + Sync + 'static {
 /// Error during serialization/deserialization.
 #[derive(Debug, Clone)]
 pub struct SerializationError {
+    /// Description of the serialization failure.
     pub message: String,
 }
 
 impl SerializationError {
+    /// Create a new serialization error with the given message.
     pub fn new(message: impl Into<String>) -> Self {
         Self { message: message.into() }
     }
@@ -72,21 +74,27 @@ pub struct WireEnvelope {
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WireHeaders {
+    /// Key-value pairs of serialized header data.
     pub entries: std::collections::HashMap<String, Vec<u8>>,
 }
 
 impl WireHeaders {
+    /// Create an empty wire headers map.
     pub fn new() -> Self { Self { entries: std::collections::HashMap::new() } }
 
+    /// Insert a header entry.
     pub fn insert(&mut self, name: String, value: Vec<u8>) {
         self.entries.insert(name, value);
     }
 
+    /// Get a header value by name.
     pub fn get(&self, name: &str) -> Option<&[u8]> {
         self.entries.get(name).map(|v| v.as_slice())
     }
 
+    /// Whether there are no headers.
     pub fn is_empty(&self) -> bool { self.entries.is_empty() }
+    /// Number of header entries.
     pub fn len(&self) -> usize { self.entries.len() }
 }
 
@@ -130,10 +138,12 @@ pub trait ClusterDiscovery: Send + Sync + 'static {
 
 /// Static list of seed nodes (simplest discovery mechanism).
 pub struct StaticSeeds {
+    /// List of seed node addresses.
     pub seeds: Vec<String>,
 }
 
 impl StaticSeeds {
+    /// Create a new static seeds discovery with the given addresses.
     pub fn new(seeds: Vec<String>) -> Self { Self { seeds } }
 }
 

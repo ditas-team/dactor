@@ -36,11 +36,17 @@ pub enum SendMode {
 /// [`InboundInterceptor::on_complete`] so interceptors can make
 /// context-aware decisions (e.g., rate-limit only remote messages).
 pub struct InboundContext<'a> {
+    /// The target actor's identity.
     pub actor_id: ActorId,
+    /// The target actor's name.
     pub actor_name: &'a str,
+    /// The Rust type name of the message.
     pub message_type: &'static str,
+    /// How the message was sent (Tell, Ask, Stream, Feed).
     pub send_mode: SendMode,
+    /// Whether the message originated from a remote node.
     pub remote: bool,
+    /// The originating node, if the message is remote.
     pub origin_node: Option<NodeId>,
 }
 
@@ -79,6 +85,7 @@ pub enum Disposition {
 /// Used by runtimes to log/route dropped messages to the dead letter handler
 /// with the interceptor's identity.
 pub struct InterceptResult {
+    /// The final disposition decision.
     pub disposition: Disposition,
     /// Name of the interceptor that produced a non-Continue disposition.
     /// Empty string if all interceptors returned Continue.
@@ -172,13 +179,25 @@ pub enum Outcome<'a> {
     TellSuccess,
     /// Ask: handler returned a reply successfully.
     /// The reply is type-erased for interceptor inspection.
-    AskSuccess { reply: &'a dyn Any },
+    AskSuccess {
+        /// Type-erased reply value.
+        reply: &'a dyn Any,
+    },
     /// Handler returned an error or panicked.
-    HandlerError { error: ActorError },
+    HandlerError {
+        /// The error from the handler.
+        error: ActorError,
+    },
     /// Stream completed normally (future use).
-    StreamCompleted { items_emitted: u64 },
+    StreamCompleted {
+        /// Number of items emitted before completion.
+        items_emitted: u64,
+    },
     /// Stream was cancelled (future use).
-    StreamCancelled { items_emitted: u64 },
+    StreamCancelled {
+        /// Number of items emitted before cancellation.
+        items_emitted: u64,
+    },
 }
 
 impl<'a> std::fmt::Debug for Outcome<'a> {

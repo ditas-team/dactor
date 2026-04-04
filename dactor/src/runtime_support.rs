@@ -21,9 +21,13 @@ use crate::stream::{BatchConfig, BatchReader, BatchWriter, BoxStream};
 /// Bundle this once per ActorRef and pass to all helper functions.
 #[derive(Clone)]
 pub struct OutboundPipeline {
+    /// The outbound interceptors to run.
     pub interceptors: Arc<Vec<Box<dyn OutboundInterceptor>>>,
+    /// Optional observer notified when items are dropped.
     pub drop_observer: Option<Arc<dyn DropObserver>>,
+    /// Identity of the target actor.
     pub target_id: ActorId,
+    /// Name of the target actor.
     pub target_name: String,
 }
 

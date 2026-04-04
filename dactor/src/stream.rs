@@ -141,6 +141,7 @@ impl Default for BatchConfig {
 }
 
 impl BatchConfig {
+    /// Create a new batch configuration with the given limits.
     pub fn new(max_items: usize, max_delay: Duration) -> Self {
         Self {
             max_items: max_items.max(1),
@@ -162,6 +163,7 @@ pub struct BatchWriter<T: Send + 'static> {
 }
 
 impl<T: Send + 'static> BatchWriter<T> {
+    /// Create a new batch writer with the given sender and configuration.
     pub fn new(sender: tokio::sync::mpsc::Sender<Vec<T>>, config: BatchConfig) -> Self {
         let cap = config.max_items;
         Self {
@@ -228,6 +230,7 @@ pub struct BatchReader<T: Send + 'static> {
 }
 
 impl<T: Send + 'static> BatchReader<T> {
+    /// Create a new batch reader from a receiver of batches.
     pub fn new(receiver: tokio::sync::mpsc::Receiver<Vec<T>>) -> Self {
         Self {
             receiver,

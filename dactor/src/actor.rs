@@ -85,7 +85,9 @@ impl std::error::Error for ActorError {}
 /// extract needed values rather than cloning the context.
 #[derive(Debug)]
 pub struct ActorContext {
+    /// Unique identity of the actor.
     pub actor_id: ActorId,
+    /// Human-readable name of the actor.
     pub actor_name: String,
     /// How the current message was sent (Tell, Ask, Stream, Feed).
     /// `None` during on_start/on_stop (no message being processed).

@@ -86,6 +86,7 @@ impl DispatchResult {
 
 /// Tell envelope: carries the message for fire-and-forget delivery.
 pub struct TypedDispatch<M: Message> {
+    /// The message payload.
     pub msg: M,
 }
 
@@ -127,8 +128,11 @@ where
 
 /// Ask envelope: carries the message and a oneshot sender for the reply.
 pub struct AskDispatch<M: Message> {
+    /// The message payload.
     pub msg: M,
+    /// Channel to send the reply back to the caller.
     pub reply_tx: tokio::sync::oneshot::Sender<Result<M::Reply, RuntimeError>>,
+    /// Optional cancellation token for the ask operation.
     pub cancel: Option<CancellationToken>,
 }
 
@@ -199,8 +203,11 @@ where
 
 /// Stream envelope: carries the message and a StreamSender for pushing items.
 pub struct StreamDispatch<M: Message> {
+    /// The message payload.
     pub msg: M,
+    /// Sender for pushing stream reply items.
     pub sender: StreamSender<M::Reply>,
+    /// Optional cancellation token for the stream.
     pub cancel: Option<CancellationToken>,
 }
 
@@ -242,8 +249,11 @@ where
 
 /// Feed envelope: carries a StreamReceiver for items and a oneshot for the reply.
 pub struct FeedDispatch<Item: Send + 'static, Reply: Send + 'static> {
+    /// Receiver for incoming stream items.
     pub receiver: StreamReceiver<Item>,
+    /// Channel to send the final reply back to the caller.
     pub reply_tx: tokio::sync::oneshot::Sender<Result<Reply, RuntimeError>>,
+    /// Optional cancellation token for the feed operation.
     pub cancel: Option<CancellationToken>,
 }
 

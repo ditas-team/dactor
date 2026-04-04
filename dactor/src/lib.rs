@@ -22,27 +22,48 @@
 //! - [`dactor-ractor`](https://crates.io/crates/dactor-ractor) — ractor adapter
 //! - [`dactor-kameo`](https://crates.io/crates/dactor-kameo) — kameo adapter
 
+/// Core actor traits and types (Actor, ActorRef, Handler, etc.).
 pub mod actor;
+/// Message dispatch envelopes for tell, ask, stream, and feed.
 pub mod dispatch;
+/// Error types for actor operations.
 pub mod errors;
+/// Cluster membership events and subscriptions.
 pub mod cluster;
+/// Dead letter handling for undeliverable messages.
 pub mod dead_letter;
+/// Inbound and outbound message interceptors.
 pub mod interceptor;
+/// Circuit breaker interceptor for fault isolation.
 pub mod circuit_breaker;
+/// Mailbox capacity and overflow configuration.
 pub mod mailbox;
+/// Message trait and header types.
 pub mod message;
+/// Persistence support: journals, snapshots, and durable state.
 pub mod persistence;
+/// Shared runtime helpers for adapter implementations.
 pub mod runtime_support;
+/// Streaming primitives (StreamSender, StreamReceiver, batching).
 pub mod stream;
+/// Supervision strategies (OneForOne, AllForOne, RestForOne).
 pub mod supervision;
 #[cfg(feature = "metrics")]
+/// Metrics collection interceptor and registry.
 pub mod metrics;
+/// Actor pool routing and configuration.
 pub mod pool;
+/// Named actor registry for service location.
 pub mod registry;
+/// Rate limiting for actors.
 pub mod throttle;
+/// Timer scheduling (send_after, send_interval).
 pub mod timer;
+/// Clock abstraction for deterministic testing.
 pub mod clock;
+/// Node and actor identity types.
 pub mod node;
+/// Remote actor types, wire format, and cluster discovery.
 pub mod remote;
 
 #[cfg(feature = "test-support")]

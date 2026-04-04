@@ -12,7 +12,10 @@ pub enum DeadLetterReason {
     /// The mailbox was full and overflow strategy rejected the message.
     MailboxFull,
     /// An interceptor dropped the message or stream item.
-    DroppedByInterceptor { interceptor: String },
+    DroppedByInterceptor {
+        /// Name of the interceptor that dropped the message.
+        interceptor: String,
+    },
 }
 
 impl std::fmt::Display for DeadLetterReason {
@@ -78,13 +81,18 @@ pub struct CollectingDeadLetterHandler {
 /// Simplified dead letter info for test assertions (without the type-erased message).
 #[derive(Debug, Clone)]
 pub struct DeadLetterInfo {
+    /// The intended target actor.
     pub target_id: ActorId,
+    /// The Rust type name of the message.
     pub message_type: String,
+    /// How the message was sent.
     pub send_mode: SendMode,
+    /// Why the message could not be delivered.
     pub reason: DeadLetterReason,
 }
 
 impl CollectingDeadLetterHandler {
+    /// Create a new empty collecting handler.
     pub fn new() -> Self {
         Self {
             events: std::sync::Mutex::new(Vec::new()),

@@ -17,6 +17,7 @@ pub struct ActorRegistry {
 }
 
 impl ActorRegistry {
+    /// Create a new empty actor registry.
     pub fn new() -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
