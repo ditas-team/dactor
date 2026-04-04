@@ -95,6 +95,9 @@ pub use actor::{AskReply, Handler, StreamHandler};
 pub use async_trait::async_trait;
 pub use circuit_breaker::{CircuitBreakerInterceptor, CircuitState};
 pub use clock::{Clock, SystemClock};
+pub use cluster::{
+    AdapterCluster, ClusterEventEmitter, HealthChecker, HealthStatus, UnreachableHandler,
+};
 pub use cluster::{ClusterEvent, ClusterEvents, SubscriptionId};
 pub use dead_letter::{
     CollectingDeadLetterHandler, DeadLetterEvent, DeadLetterHandler, DeadLetterInfo,

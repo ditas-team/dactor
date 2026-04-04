@@ -4,14 +4,14 @@
 
 ---
 
-## Current Status (PR #65)
+## Current Status (PR #66)
 - Phase 3: ✅ Complete (features, examples, conformance, batching)
-- Phase 4: R1-R3 ✅, S1-S4 ✅, SE1-SE4 ✅ — R4-R5 & SE5 pending
+- Phase 4: R1-R3 ✅, S1-S4 ✅, SE1-SE4 ✅, C1-C5 ✅ — R4-R5 & SE5 & P1-P3 pending
 - Phase 6: ✅ Complete (supervision, pools, timers, on_reply, message comparer)
 - Phase 7: ✅ Complete (metrics, dead letters, circuit breaker, drop observer)
 - Phase 8: NR1 done (actor registry), NR2-NR4 need Phase 4
 - Zero clippy warnings, cargo doc clean
-- Next: Phase 4 C1-C5 (Cluster Discovery & Health) + R4 (Connection management)
+- Next: Phase 4 R4-R5 (Connection mgmt, Batched remote sends) + P1-P3 (Remote spawn)
 
 ---
 
@@ -133,6 +133,7 @@
 | 2026-04-04 | PR R2 | WireEnvelope pipeline: TypeRegistry, JsonSerializer, HeaderRegistry, wire send/receive helpers |
 | 2026-04-04 | PR R3 | RemoteActorRef: location-transparent remote actor ref with tell/ask via transport |
 | 2026-04-04 | PR S1-S4 | System actors: SpawnManager, WatchManager, CancelManager, NodeDirectory |
+| 2026-04-04 | PR C1-C5 | Cluster management: ClusterEventEmitter, AdapterCluster, HealthChecker, UnreachableHandler |
 
 ---
 
@@ -252,13 +253,13 @@ Wire format, cross-node communication, and system actors for remote operations.
 
 ### 4.4 Cluster Discovery & Health
 
-| # | Feature | Design Section | Description |
-|---|---------|----------------|-------------|
-| C1 | ClusterDiscovery wiring | §10.1 | Wire discovery into adapter startup |
-| C2 | ClusterEventEmitter | §10.1 | Emit node_joined/node_left events |
-| C3 | ClusterState API | §10.4 | runtime.cluster_state() for topology queries |
-| C4 | PeerStatus tracking | §10.4 | Connected, Connecting, Unreachable, Disconnected |
-| C5 | Health delegation | §10.3 | Delegate health checks to provider, on_node_unreachable |
+| # | Feature | Design Section | Description | Status |
+|---|---------|----------------|-------------|--------|
+| C1 | ClusterDiscovery wiring | §10.1 | Wire discovery into adapter startup | ✅ PR #66 (StaticSeeds + AdapterCluster) |
+| C2 | ClusterEventEmitter | §10.1 | Emit node_joined/node_left events | ✅ PR #66 |
+| C3 | ClusterState API | §10.4 | runtime.cluster_state() for topology queries | ✅ PR #21 (ClusterState struct) |
+| C4 | PeerStatus tracking | §10.4 | Connected, Connecting, Unreachable, Disconnected | ✅ PR #65 (NodeDirectory) |
+| C5 | Health delegation | §10.3 | Delegate health checks to provider, on_node_unreachable | ✅ PR #66 (HealthChecker + UnreachableHandler) |
 
 ### 4.5 Remote Spawn & Placement
 
