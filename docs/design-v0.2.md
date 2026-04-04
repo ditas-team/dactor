@@ -5381,6 +5381,23 @@ pub enum WireDisposition {
 | **Can modify headers** | No (read-only) | Yes | Yes |
 | **Use case** | Load shedding | Auth, logging, metrics | Trace propagation, auth injection |
 
+**`WireEnvelope.target_name`:** The envelope carries the target actor's
+human-readable name (in addition to the `ActorId`) so wire interceptors
+can make decisions based on actor name without additional lookups.
+
+> **Security note:** `target_name` is sender-supplied metadata and is NOT
+> validated against the receiver's actor registry. Wire interceptors should
+> treat it as a hint for logging/metrics, not as an authoritative identity
+> for policy enforcement. Use `target` (`ActorId`) for authoritative routing.
+
+**Metrics and dead letter integration:** Wire interceptor Drop/Reject
+decisions are reported to:
+- **`RuntimeMetrics`**: `wire_dropped`, `wire_rejected`, `wire_delayed` counters
+- **`DeadLetterHandler`**: via `DeadLetterReason::WireInterceptorDrop` and
+  `DeadLetterReason::WireInterceptorReject` — the envelope's `target`,
+  `target_name`, `message_type`, and `send_mode` are preserved in the dead
+  letter event without deserializing the body.
+
 ### 9.1 Serialization Contract
 
 **Problem:** When messages cross node boundaries, they must be serialized.
