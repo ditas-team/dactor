@@ -73,6 +73,8 @@ pub mod timer;
 pub mod transport;
 /// Type registry for remote message deserialization and actor factories.
 pub mod type_registry;
+/// Envelope-level interceptor for incoming remote messages.
+pub mod wire_interceptor;
 
 #[cfg(feature = "test-support")]
 pub mod test_support;
@@ -150,6 +152,10 @@ pub use timer::{send_after, send_interval};
 pub use tokio_util::sync::CancellationToken;
 pub use transport::{InMemoryTransport, Transport, TransportError, TransportRegistry};
 pub use type_registry::TypeRegistry;
+pub use wire_interceptor::{
+    MaxBodySizeInterceptor, RateLimitWireInterceptor, WireDisposition, WireInterceptor,
+    WireInterceptorPipeline, WireProcessResult, WireRejectError,
+};
 
 // Backward-compatible re-export of TestClock (feature-gated)
 #[cfg(feature = "test-support")]
