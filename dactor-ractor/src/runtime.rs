@@ -939,26 +939,30 @@ impl RactorRuntime {
     /// Process a remote spawn request.
     ///
     /// Looks up the actor type in the registry, deserializes Args from bytes,
-    /// and returns a [`SpawnResponse`]. On success, the caller is responsible
-    /// for actually spawning the actor via `spawn()` or `spawn_with_deps()`.
-    pub fn handle_spawn_request(&mut self, request: &SpawnRequest) -> SpawnResponse {
+    /// and returns the constructed actor along with its assigned [`ActorId`].
+    /// The caller is responsible for actually spawning the actor via
+    /// `spawn()` or `spawn_with_deps()`.
+    ///
+    /// Returns `Ok((actor_id, actor))` on success, or `Err(SpawnResponse::Failure)`
+    /// if the type is not found or deserialization fails.
+    pub fn handle_spawn_request(
+        &mut self,
+        request: &SpawnRequest,
+    ) -> Result<(ActorId, Box<dyn std::any::Any + Send>), SpawnResponse> {
         match self.spawn_manager.create_actor(request) {
-            Ok(_actor) => {
+            Ok(actor) => {
                 let local = self.next_local.fetch_add(1, Ordering::SeqCst);
                 let actor_id = ActorId {
                     node: self.node_id.clone(),
                     local,
                 };
                 self.spawn_manager.record_spawn(actor_id.clone());
-                SpawnResponse::Success {
-                    request_id: request.request_id.clone(),
-                    actor_id,
-                }
+                Ok((actor_id, actor))
             }
-            Err(e) => SpawnResponse::Failure {
+            Err(e) => Err(SpawnResponse::Failure {
                 request_id: request.request_id.clone(),
                 error: e.to_string(),
-            },
+            }),
         }
     }
 
@@ -1032,8 +1036,18 @@ impl RactorRuntime {
     }
 
     /// Register a peer node in the directory.
+    ///
+    /// If the peer already exists, updates its status to `Connected` and
+    /// preserves the existing address when `address` is `None`.
     pub fn connect_peer(&mut self, peer_id: NodeId, address: Option<String>) {
-        self.node_directory.add_peer(peer_id.clone(), address);
+        if let Some(existing) = self.node_directory.get_peer(&peer_id) {
+            // Preserve existing address if new address is None
+            let resolved_address = address.or_else(|| existing.address.clone());
+            self.node_directory.remove_peer(&peer_id);
+            self.node_directory.add_peer(peer_id.clone(), resolved_address);
+        } else {
+            self.node_directory.add_peer(peer_id.clone(), address);
+        }
         self.node_directory.set_status(&peer_id, PeerStatus::Connected);
     }
 

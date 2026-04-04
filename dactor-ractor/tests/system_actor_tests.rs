@@ -4,9 +4,7 @@
 //! WatchManager, CancelManager, and NodeDirectory for remote operations.
 
 use dactor::node::{ActorId, NodeId};
-use dactor::system_actors::{
-    CancelResponse, PeerStatus, SpawnRequest, SpawnResponse,
-};
+use dactor::system_actors::{CancelResponse, PeerStatus, SpawnRequest};
 use dactor_ractor::RactorRuntime;
 use tokio_util::sync::CancellationToken;
 
@@ -36,14 +34,16 @@ fn sa1_register_factory_and_create() {
         request_id: "req-1".into(),
     };
 
-    let response = runtime.handle_spawn_request(&request);
-    match response {
-        SpawnResponse::Success { request_id, actor_id } => {
-            assert_eq!(request_id, "req-1");
+    let result = runtime.handle_spawn_request(&request);
+    match result {
+        Ok((actor_id, actor)) => {
             assert_eq!(actor_id.node, NodeId("ractor-node".into()));
+            // Verify the created actor is the correct type and value
+            let value = actor.downcast::<i32>().expect("should be i32");
+            assert_eq!(*value, 42);
         }
-        SpawnResponse::Failure { error, .. } => {
-            panic!("spawn should succeed, got: {error}");
+        Err(resp) => {
+            panic!("spawn should succeed, got: {resp:?}");
         }
     }
     assert_eq!(runtime.spawn_manager().spawned_actors().len(), 1);
@@ -59,8 +59,8 @@ fn sa1_spawn_unknown_type_fails() {
         request_id: "req-2".into(),
     };
 
-    let response = runtime.handle_spawn_request(&request);
-    assert!(matches!(response, SpawnResponse::Failure { .. }));
+    let result = runtime.handle_spawn_request(&request);
+    assert!(result.is_err());
     assert_eq!(runtime.spawn_manager().spawned_actors().len(), 0);
 }
 
@@ -76,13 +76,13 @@ fn sa1_with_node_id() {
         request_id: "req-3".into(),
     };
 
-    let response = runtime.handle_spawn_request(&request);
-    match response {
-        SpawnResponse::Success { actor_id, .. } => {
+    let result = runtime.handle_spawn_request(&request);
+    match result {
+        Ok((actor_id, _actor)) => {
             assert_eq!(actor_id.node, NodeId("node-42".into()));
         }
-        SpawnResponse::Failure { error, .. } => {
-            panic!("spawn should succeed, got: {error}");
+        Err(resp) => {
+            panic!("spawn should succeed, got: {resp:?}");
         }
     }
 }
@@ -100,7 +100,7 @@ fn sa1_multiple_spawns_get_unique_ids() {
             name: format!("actor-{i}"),
             request_id: format!("req-{i}"),
         };
-        if let SpawnResponse::Success { actor_id, .. } = runtime.handle_spawn_request(&request) {
+        if let Ok((actor_id, _)) = runtime.handle_spawn_request(&request) {
             ids.push(actor_id);
         }
     }
@@ -335,4 +335,115 @@ fn with_node_id_initializes_all_system_actors() {
     assert_eq!(runtime.watch_manager().watched_count(), 0);
     assert_eq!(runtime.cancel_manager().active_count(), 0);
     assert_eq!(runtime.node_directory().peer_count(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Edge cases from review feedback
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sa1_spawn_returns_actor_for_caller_to_use() {
+    let mut runtime = RactorRuntime::new();
+    runtime.register_factory("test::Pair", |bytes: &[u8]| {
+        let pair: (String, u32) = serde_json::from_slice(bytes)
+            .map_err(|e| dactor::remote::SerializationError::new(e.to_string()))?;
+        Ok(Box::new(pair))
+    });
+
+    let request = SpawnRequest {
+        type_name: "test::Pair".into(),
+        args_bytes: serde_json::to_vec(&("hello".to_string(), 99u32)).unwrap(),
+        name: "pair-actor".into(),
+        request_id: "req-typed".into(),
+    };
+
+    let (actor_id, actor) = runtime.handle_spawn_request(&request).unwrap();
+    let pair = actor.downcast::<(String, u32)>().expect("should be (String, u32)");
+    assert_eq!(*pair, ("hello".to_string(), 99));
+    assert_eq!(actor_id.node, *runtime.node_id());
+}
+
+#[test]
+fn sa1_malformed_bytes_returns_error() {
+    let mut runtime = RactorRuntime::new();
+    runtime.register_factory("test::Counter", |bytes: &[u8]| {
+        let _: i32 = serde_json::from_slice(bytes)
+            .map_err(|e| dactor::remote::SerializationError::new(e.to_string()))?;
+        Ok(Box::new(()))
+    });
+
+    let request = SpawnRequest {
+        type_name: "test::Counter".into(),
+        args_bytes: b"not valid json".to_vec(),
+        name: "bad-actor".into(),
+        request_id: "req-bad".into(),
+    };
+
+    let result = runtime.handle_spawn_request(&request);
+    assert!(result.is_err());
+}
+
+#[test]
+fn sa4_reconnect_preserves_address() {
+    let mut runtime = RactorRuntime::new();
+    let peer = NodeId("peer-1".into());
+
+    // First connect with an address
+    runtime.connect_peer(peer.clone(), Some("10.0.0.1:4697".into()));
+    assert_eq!(
+        runtime.node_directory().get_peer(&peer).unwrap().address.as_deref(),
+        Some("10.0.0.1:4697")
+    );
+
+    // Disconnect then reconnect without address — should preserve
+    runtime.disconnect_peer(&peer);
+    runtime.connect_peer(peer.clone(), None);
+    assert!(runtime.is_peer_connected(&peer));
+    assert_eq!(
+        runtime.node_directory().get_peer(&peer).unwrap().address.as_deref(),
+        Some("10.0.0.1:4697"),
+        "address should be preserved on reconnect without explicit address"
+    );
+}
+
+#[test]
+fn sa4_reconnect_updates_address() {
+    let mut runtime = RactorRuntime::new();
+    let peer = NodeId("peer-1".into());
+
+    runtime.connect_peer(peer.clone(), Some("10.0.0.1:4697".into()));
+    runtime.disconnect_peer(&peer);
+
+    // Reconnect with a new address — should update
+    runtime.connect_peer(peer.clone(), Some("10.0.0.2:4697".into()));
+    assert_eq!(
+        runtime.node_directory().get_peer(&peer).unwrap().address.as_deref(),
+        Some("10.0.0.2:4697"),
+        "address should be updated when explicitly provided"
+    );
+}
+
+#[test]
+fn sa2_unwatch_nonexistent_is_noop() {
+    let mut runtime = RactorRuntime::new();
+    let target = ActorId { node: NodeId("n1".into()), local: 1 };
+    let watcher = ActorId { node: NodeId("n2".into()), local: 2 };
+
+    // Unwatching a target that was never watched should not panic
+    runtime.remote_unwatch(&target, &watcher);
+    assert_eq!(runtime.watch_manager().watched_count(), 0);
+}
+
+#[test]
+fn sa3_double_cancel_returns_not_found() {
+    let mut runtime = RactorRuntime::new();
+    let token = CancellationToken::new();
+    runtime.register_cancel("req-1".into(), token);
+
+    let first = runtime.cancel_request("req-1");
+    assert!(matches!(first, CancelResponse::Acknowledged));
+
+    // Second cancel should return NotFound (token already consumed)
+    let second = runtime.cancel_request("req-1");
+    assert!(matches!(second, CancelResponse::NotFound { .. }));
 }
