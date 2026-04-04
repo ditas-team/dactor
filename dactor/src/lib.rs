@@ -50,6 +50,8 @@ pub mod message;
 pub mod metrics;
 /// Node and actor identity types.
 pub mod node;
+/// OpenTelemetry-compatible tracing interceptor.
+pub mod otel;
 /// Per-destination outbound priority queue for remote messages.
 pub mod outbound_queue;
 /// Persistence support: journals, snapshots, and durable state.
@@ -130,6 +132,7 @@ pub use metrics::{
     ActorMetricsHandle, ActorMetricsSnapshot, MetricsInterceptor, MetricsRegistry, RuntimeMetrics,
 };
 pub use node::{ActorId, NodeId};
+pub use otel::OtelInterceptor;
 pub use outbound_queue::OutboundPriorityQueue;
 pub use persistence::{
     recover_durable_state, recover_event_sourced, DurableState, EventSourced, InMemoryStorage,

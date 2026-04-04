@@ -473,7 +473,7 @@ impl<A: Actor> ActorRef<A> for PoolActorRef<A> {
 | O1 | MetricsInterceptor wiring | §11.2 | Wire built-in metrics into runtimes | ✅ PR #55 (per-actor ActorMetricsHandle, windowed buckets) |
 | O2 | MetricsStore query API | §11.3 | Query per-actor and per-message-type metrics | ✅ PR #55 (MetricsRegistry with register/snapshot) |
 | O3 | RuntimeMetrics | §11.6 | System-level: actor count, mailbox depth, uptime | ✅ PR #55 (message_rate, error_rate, windowed) |
-| O4 | OtelInterceptor | §11.4 | OpenTelemetry tracing integration | 🔲 Not started (needs opentelemetry crate) |
+| O4 | OtelInterceptor | §11.4 | OpenTelemetry tracing integration via tracing crate | ✅ PR #75 |
 | O5 | CircuitBreakerInterceptor | §11.4 | Error-rate circuit breaker | ✅ PR #56 |
 
 ### 7.2 Dead Letter Routing

@@ -112,6 +112,7 @@ impl OutboundPriorityQueue {
     /// Enqueue an envelope into the appropriate priority lane.
     ///
     /// Returns `Err(envelope)` if the queue is at capacity.
+    #[allow(clippy::result_large_err)]
     pub fn push(&mut self, envelope: WireEnvelope) -> Result<(), WireEnvelope> {
         if self.capacity > 0 && self.total >= self.capacity {
             return Err(envelope);
@@ -301,11 +302,12 @@ mod tests {
         let mut q = OutboundPriorityQueue::new();
 
         // Enqueue in reverse priority order
-        q.push(envelope_with_priority(Priority::BACKGROUND));
-        q.push(envelope_with_priority(Priority::LOW));
-        q.push(envelope_with_priority(Priority::NORMAL));
-        q.push(envelope_with_priority(Priority::HIGH));
-        q.push(envelope_with_priority(Priority::CRITICAL));
+        q.push(envelope_with_priority(Priority::BACKGROUND))
+            .unwrap();
+        q.push(envelope_with_priority(Priority::LOW)).unwrap();
+        q.push(envelope_with_priority(Priority::NORMAL)).unwrap();
+        q.push(envelope_with_priority(Priority::HIGH)).unwrap();
+        q.push(envelope_with_priority(Priority::CRITICAL)).unwrap();
 
         assert_eq!(q.len(), 5);
 
@@ -343,7 +345,7 @@ mod tests {
     #[test]
     fn no_priority_header_defaults_to_normal() {
         let mut q = OutboundPriorityQueue::new();
-        q.push(envelope_no_priority());
+        q.push(envelope_no_priority()).unwrap();
 
         let counts = q.lane_counts();
         assert_eq!(counts[2], 1); // Normal lane
@@ -355,8 +357,8 @@ mod tests {
         let mut q = OutboundPriorityQueue::new();
 
         // Enqueue normal first, then high
-        q.push(envelope_with_priority(Priority::NORMAL));
-        q.push(envelope_with_priority(Priority::HIGH));
+        q.push(envelope_with_priority(Priority::NORMAL)).unwrap();
+        q.push(envelope_with_priority(Priority::HIGH)).unwrap();
 
         // High should come out first
         assert_eq!(q.pop().unwrap().body, vec![Priority::HIGH.0]);
@@ -366,8 +368,8 @@ mod tests {
     #[test]
     fn peek_returns_highest_priority() {
         let mut q = OutboundPriorityQueue::new();
-        q.push(envelope_with_priority(Priority::LOW));
-        q.push(envelope_with_priority(Priority::CRITICAL));
+        q.push(envelope_with_priority(Priority::LOW)).unwrap();
+        q.push(envelope_with_priority(Priority::CRITICAL)).unwrap();
 
         let peeked = q.peek().unwrap();
         assert_eq!(peeked.body, vec![Priority::CRITICAL.0]);
@@ -377,9 +379,9 @@ mod tests {
     #[test]
     fn drain_ordered_returns_all_by_priority() {
         let mut q = OutboundPriorityQueue::new();
-        q.push(envelope_with_priority(Priority::LOW));
-        q.push(envelope_with_priority(Priority::CRITICAL));
-        q.push(envelope_with_priority(Priority::NORMAL));
+        q.push(envelope_with_priority(Priority::LOW)).unwrap();
+        q.push(envelope_with_priority(Priority::CRITICAL)).unwrap();
+        q.push(envelope_with_priority(Priority::NORMAL)).unwrap();
 
         let drained = q.drain_ordered();
         assert_eq!(drained.len(), 3);
@@ -392,12 +394,13 @@ mod tests {
     #[test]
     fn lane_counts() {
         let mut q = OutboundPriorityQueue::new();
-        q.push(envelope_with_priority(Priority::CRITICAL));
-        q.push(envelope_with_priority(Priority::CRITICAL));
-        q.push(envelope_with_priority(Priority::HIGH));
-        q.push(envelope_with_priority(Priority::NORMAL));
-        q.push(envelope_with_priority(Priority::LOW));
-        q.push(envelope_with_priority(Priority::BACKGROUND));
+        q.push(envelope_with_priority(Priority::CRITICAL)).unwrap();
+        q.push(envelope_with_priority(Priority::CRITICAL)).unwrap();
+        q.push(envelope_with_priority(Priority::HIGH)).unwrap();
+        q.push(envelope_with_priority(Priority::NORMAL)).unwrap();
+        q.push(envelope_with_priority(Priority::LOW)).unwrap();
+        q.push(envelope_with_priority(Priority::BACKGROUND))
+            .unwrap();
 
         let counts = q.lane_counts();
         assert_eq!(counts, [2, 1, 1, 1, 1]);
@@ -406,9 +409,9 @@ mod tests {
     #[test]
     fn clear_empties_all_lanes() {
         let mut q = OutboundPriorityQueue::new();
-        q.push(envelope_with_priority(Priority::CRITICAL));
-        q.push(envelope_with_priority(Priority::HIGH));
-        q.push(envelope_with_priority(Priority::NORMAL));
+        q.push(envelope_with_priority(Priority::CRITICAL)).unwrap();
+        q.push(envelope_with_priority(Priority::HIGH)).unwrap();
+        q.push(envelope_with_priority(Priority::NORMAL)).unwrap();
 
         q.clear();
         assert!(q.is_empty());
@@ -420,11 +423,11 @@ mod tests {
         let mut q = OutboundPriorityQueue::new();
 
         // Simulate real traffic: mostly normal, some high, rare critical
-        q.push(envelope_with_priority(Priority::NORMAL));
-        q.push(envelope_with_priority(Priority::NORMAL));
-        q.push(envelope_with_priority(Priority::HIGH));
-        q.push(envelope_with_priority(Priority::NORMAL));
-        q.push(envelope_with_priority(Priority::CRITICAL));
+        q.push(envelope_with_priority(Priority::NORMAL)).unwrap();
+        q.push(envelope_with_priority(Priority::NORMAL)).unwrap();
+        q.push(envelope_with_priority(Priority::HIGH)).unwrap();
+        q.push(envelope_with_priority(Priority::NORMAL)).unwrap();
+        q.push(envelope_with_priority(Priority::CRITICAL)).unwrap();
 
         // Critical first, then high, then normals in FIFO
         assert_eq!(q.pop().unwrap().body, vec![Priority::CRITICAL.0]);

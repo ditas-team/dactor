@@ -6923,6 +6923,13 @@ pub struct MessageTypeMetrics {
 
 ### 11.4 Custom Interceptor Examples
 
+> **Implementation:** `OtelInterceptor` in `otel.rs` provides built-in
+> OpenTelemetry integration via `tracing` spans. No direct `opentelemetry`
+> crate dependency — users wire OTel via `tracing-opentelemetry` subscriber
+> layer. Works as both inbound and outbound interceptor:
+> - Inbound: `actor.recv` + `actor.recv.complete` spans with latency/status
+> - Outbound: `actor.send` + `actor.send.reply` spans with remote flag
+
 The built-in `MetricsInterceptor` covers common needs. For specialized
 observability, users write custom interceptors:
 
