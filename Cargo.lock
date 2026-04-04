@@ -183,6 +183,7 @@ dependencies = [
  "async-trait",
  "dactor",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 
