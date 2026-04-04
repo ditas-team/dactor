@@ -4,14 +4,14 @@
 
 ---
 
-## Current Status (PR #59)
-- 61 commits, 16 examples, 358 tests across workspace
+## Current Status (PR #63)
 - Phase 3: ✅ Complete (features, examples, conformance, batching)
+- Phase 4: R1 ✅ (Transport trait), R2 ✅ (WireEnvelope pipeline), R3-R5 pending
 - Phase 6: ✅ Complete (supervision, pools, timers, on_reply, message comparer)
 - Phase 7: ✅ Complete (metrics, dead letters, circuit breaker, drop observer)
 - Phase 8: NR1 done (actor registry), NR2-NR4 need Phase 4
 - Zero clippy warnings, cargo doc clean
-- Next: Phase 4 (Remote Transport) — system actors, WireEnvelope, transport
+- Next: Phase 4 R3 (RemoteActorRef) — location-transparent remote actor refs
 
 ---
 
@@ -129,6 +129,8 @@
 | 2026-04-01 | PR M2 | Mock cluster: node fault injection, delivery checks |
 | 2026-04-01 | PR R4 | Ractor watch/unwatch + mailbox config |
 | 2026-04-01 | PR K2 | Kameo watch/unwatch + mailbox config |
+| 2026-04-04 | PR R1 | Transport trait, InMemoryTransport, TransportRegistry |
+| 2026-04-04 | PR R2 | WireEnvelope pipeline: TypeRegistry, JsonSerializer, HeaderRegistry, wire send/receive helpers |
 
 ---
 
@@ -219,10 +221,10 @@ Wire format, cross-node communication, and system actors for remote operations.
 
 ### 4.1 Transport Layer
 
-| # | Feature | Design Section | Description |
-|---|---------|----------------|-------------|
-| R1 | Transport trait | §9 | Abstract transport interface (gRPC, TCP, etc.) |
-| R2 | WireEnvelope send/receive | §9.1 | Serialize messages → WireEnvelope → transport → deserialize |
+| # | Feature | Design Section | Description | Status |
+|---|---------|----------------|-------------|--------|
+| R1 | Transport trait | §9 | Abstract transport interface (gRPC, TCP, etc.) | ✅ PR #62 |
+| R2 | WireEnvelope send/receive | §9.1 | Serialize messages → WireEnvelope → transport → deserialize | ✅ PR #63 |
 | R3 | RemoteActorRef | §9.3 | ActorRef impl that serializes + sends via transport |
 | R4 | Connection management | §10.2 | AdapterCluster: connect(), disconnect(), reconnect |
 | R5 | Batched remote sends | §4.11.1 | BatchWriter batches items → single WireEnvelope per batch |
@@ -238,12 +240,12 @@ Wire format, cross-node communication, and system actors for remote operations.
 
 ### 4.3 Serialization & Schema
 
-| # | Feature | Design Section | Description |
-|---|---------|----------------|-------------|
-| SE1 | MessageSerializer integration | §9.1 | Wire MessageSerializer into transport layer |
-| SE2 | TypeRegistry | §8.3, §9.2 | Map type names → deserializers for remote dispatch |
-| SE3 | HeaderRegistry | §5.1 | Deserializer registry for remote headers |
-| SE4 | Message versioning | §9.1 | MessageVersionHandler for schema evolution/migration |
+| # | Feature | Design Section | Description | Status |
+|---|---------|----------------|-------------|--------|
+| SE1 | MessageSerializer integration | §9.1 | Wire MessageSerializer into transport layer | ✅ PR #63 (JsonSerializer) |
+| SE2 | TypeRegistry | §8.3, §9.2 | Map type names → deserializers for remote dispatch | ✅ PR #63 |
+| SE3 | HeaderRegistry | §5.1 | Deserializer registry for remote headers | ✅ PR #63 |
+| SE4 | Message versioning | §9.1 | MessageVersionHandler for schema evolution/migration | ✅ PR #63 (receive_envelope_body_versioned) |
 | SE5 | ActorRef serialization | §9.3 | Serialize/deserialize ActorRef for cross-node passing |
 
 ### 4.4 Cluster Discovery & Health

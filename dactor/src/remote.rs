@@ -110,6 +110,81 @@ impl WireHeaders {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+
+    /// Reconstruct typed [`Headers`](crate::message::Headers) from wire format
+    /// using a [`HeaderRegistry`] to look up deserializers by name.
+    pub fn to_headers(&self, registry: &HeaderRegistry) -> crate::message::Headers {
+        let mut headers = crate::message::Headers::new();
+        for (name, bytes) in &self.entries {
+            if let Some(header_value) = registry.deserialize(name, bytes) {
+                headers.insert_boxed(header_value);
+            }
+        }
+        headers
+    }
+}
+
+/// A function that deserializes header bytes into a typed header value.
+pub type HeaderDeserializerFn =
+    Box<dyn Fn(&[u8]) -> Option<Box<dyn crate::message::HeaderValue>> + Send + Sync>;
+
+/// Registry for deserializing wire header bytes back to typed
+/// [`HeaderValue`](crate::message::HeaderValue) instances.
+///
+/// Populated at startup with one entry per header type that can arrive
+/// from remote nodes.
+pub struct HeaderRegistry {
+    /// header_name → deserializer function.
+    deserializers: std::collections::HashMap<String, HeaderDeserializerFn>,
+}
+
+impl HeaderRegistry {
+    /// Create an empty registry.
+    pub fn new() -> Self {
+        Self {
+            deserializers: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Register a deserializer for a named header.
+    pub fn register(
+        &mut self,
+        header_name: impl Into<String>,
+        deserializer: impl Fn(&[u8]) -> Option<Box<dyn crate::message::HeaderValue>>
+            + Send
+            + Sync
+            + 'static,
+    ) {
+        self.deserializers
+            .insert(header_name.into(), Box::new(deserializer));
+    }
+
+    /// Deserialize header bytes using the registered deserializer.
+    /// Returns `None` if no deserializer is registered or deserialization fails.
+    pub fn deserialize(
+        &self,
+        header_name: &str,
+        bytes: &[u8],
+    ) -> Option<Box<dyn crate::message::HeaderValue>> {
+        let deser = self.deserializers.get(header_name)?;
+        deser(bytes)
+    }
+
+    /// Number of registered header deserializers.
+    pub fn len(&self) -> usize {
+        self.deserializers.len()
+    }
+
+    /// Whether the registry is empty.
+    pub fn is_empty(&self) -> bool {
+        self.deserializers.is_empty()
+    }
+}
+
+impl Default for HeaderRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Handler for message version migration.
@@ -169,6 +244,150 @@ impl ClusterDiscovery for StaticSeeds {
     fn discover(&self) -> Vec<String> {
         self.seeds.clone()
     }
+}
+
+// ---------------------------------------------------------------------------
+// JsonSerializer (serde feature)
+// ---------------------------------------------------------------------------
+
+/// JSON-based message serializer using `serde_json`.
+///
+/// Human-readable format, good for debugging and interop. Slightly slower
+/// and larger than binary formats but excellent for development and
+/// diagnostics.
+#[cfg(feature = "serde")]
+pub struct JsonSerializer;
+
+#[cfg(feature = "serde")]
+impl JsonSerializer {
+    /// Serialize a value to JSON bytes.
+    pub fn serialize_typed<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, SerializationError> {
+        serde_json::to_vec(value)
+            .map_err(|e| SerializationError::new(format!("json serialize: {e}")))
+    }
+
+    /// Deserialize JSON bytes to a typed value.
+    pub fn deserialize_typed<T: serde::de::DeserializeOwned>(
+        bytes: &[u8],
+    ) -> Result<T, SerializationError> {
+        serde_json::from_slice(bytes)
+            .map_err(|e| SerializationError::new(format!("json deserialize: {e}")))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Wire pipeline helpers
+// ---------------------------------------------------------------------------
+
+/// Build a [`WireEnvelope`] for a remote tell (fire-and-forget).
+///
+/// Serializes the message body to bytes and packages it with the target,
+/// headers, and metadata into a wire-ready envelope.
+#[cfg(feature = "serde")]
+pub fn build_tell_envelope<M: serde::Serialize>(
+    target: crate::node::ActorId,
+    msg: &M,
+    headers: WireHeaders,
+) -> Result<WireEnvelope, SerializationError> {
+    let body = JsonSerializer::serialize_typed(msg)?;
+    Ok(WireEnvelope {
+        target,
+        message_type: std::any::type_name::<M>().to_string(),
+        send_mode: crate::interceptor::SendMode::Tell,
+        headers,
+        body,
+        request_id: None,
+        version: None,
+    })
+}
+
+/// Build a [`WireEnvelope`] for a remote ask (request-reply).
+///
+/// Includes a `request_id` for correlating the reply.
+#[cfg(feature = "serde")]
+pub fn build_ask_envelope<M: serde::Serialize>(
+    target: crate::node::ActorId,
+    msg: &M,
+    headers: WireHeaders,
+    request_id: uuid::Uuid,
+) -> Result<WireEnvelope, SerializationError> {
+    let body = JsonSerializer::serialize_typed(msg)?;
+    Ok(WireEnvelope {
+        target,
+        message_type: std::any::type_name::<M>().to_string(),
+        send_mode: crate::interceptor::SendMode::Ask,
+        headers,
+        body,
+        request_id: Some(request_id),
+        version: None,
+    })
+}
+
+/// Build a [`WireEnvelope`] with an explicit send mode and optional request ID.
+///
+/// Lower-level builder for stream and feed modes.
+#[cfg(feature = "serde")]
+pub fn build_wire_envelope<M: serde::Serialize>(
+    target: crate::node::ActorId,
+    msg: &M,
+    send_mode: crate::interceptor::SendMode,
+    headers: WireHeaders,
+    request_id: Option<uuid::Uuid>,
+    version: Option<u32>,
+) -> Result<WireEnvelope, SerializationError> {
+    let body = JsonSerializer::serialize_typed(msg)?;
+    Ok(WireEnvelope {
+        target,
+        message_type: std::any::type_name::<M>().to_string(),
+        send_mode,
+        headers,
+        body,
+        request_id,
+        version,
+    })
+}
+
+/// Receive-side: deserialize a [`WireEnvelope`]'s body using a
+/// [`TypeRegistry`](crate::type_registry::TypeRegistry).
+///
+/// Returns the type-erased deserialized message. The caller can downcast
+/// to the concrete type using `Any::downcast::<M>()`.
+pub fn receive_envelope_body(
+    envelope: &WireEnvelope,
+    registry: &crate::type_registry::TypeRegistry,
+) -> Result<Box<dyn std::any::Any + Send>, SerializationError> {
+    registry.deserialize(&envelope.message_type, &envelope.body)
+}
+
+/// Receive-side with version checking: deserialize a [`WireEnvelope`]'s body,
+/// applying version migration if a [`MessageVersionHandler`] is registered.
+pub fn receive_envelope_body_versioned(
+    envelope: &WireEnvelope,
+    registry: &crate::type_registry::TypeRegistry,
+    version_handlers: &std::collections::HashMap<String, Box<dyn MessageVersionHandler>>,
+    expected_version: Option<u32>,
+) -> Result<Box<dyn std::any::Any + Send>, SerializationError> {
+    let body = match (envelope.version, expected_version) {
+        (Some(received), Some(expected)) if received != expected => {
+            // Version mismatch — try migration
+            if let Some(handler) = version_handlers.get(&envelope.message_type) {
+                handler
+                    .migrate(&envelope.body, received, expected)
+                    .ok_or_else(|| {
+                        SerializationError::new(format!(
+                            "{}: cannot migrate from v{received} to v{expected}",
+                            envelope.message_type
+                        ))
+                    })?
+            } else {
+                // No handler registered — use body as-is (rely on serde defaults)
+                envelope.body.clone()
+            }
+        }
+        _ => envelope.body.clone(),
+    };
+
+    registry.deserialize(&envelope.message_type, &body)
 }
 
 #[cfg(test)]
@@ -255,5 +474,344 @@ mod tests {
         };
         assert!(envelope.request_id.is_some());
         assert_eq!(envelope.send_mode, SendMode::Ask);
+    }
+
+    #[test]
+    fn test_header_registry_roundtrip() {
+        use crate::message::HeaderValue;
+        use std::any::Any;
+
+        #[derive(Debug, Clone)]
+        struct TraceId(String);
+        impl HeaderValue for TraceId {
+            fn header_name(&self) -> &'static str {
+                "trace-id"
+            }
+            fn to_bytes(&self) -> Option<Vec<u8>> {
+                Some(self.0.as_bytes().to_vec())
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+
+        // Set up header registry
+        let mut registry = HeaderRegistry::new();
+        registry.register("trace-id", |bytes: &[u8]| {
+            let s = String::from_utf8(bytes.to_vec()).ok()?;
+            Some(Box::new(TraceId(s)) as Box<dyn HeaderValue>)
+        });
+
+        assert_eq!(registry.len(), 1);
+        assert!(!registry.is_empty());
+
+        // Create typed headers and convert to wire
+        let mut headers = crate::message::Headers::new();
+        headers.insert(TraceId("abc-123".into()));
+        let wire = headers.to_wire();
+
+        assert_eq!(wire.len(), 1);
+        assert_eq!(wire.get("trace-id").unwrap(), b"abc-123");
+
+        // Convert wire back to typed headers via registry
+        let restored = wire.to_headers(&registry);
+        let trace = restored.get::<TraceId>().unwrap();
+        assert_eq!(trace.0, "abc-123");
+    }
+
+    #[test]
+    fn test_header_registry_missing_deserializer() {
+        let registry = HeaderRegistry::new();
+        assert!(registry.deserialize("unknown", &[]).is_none());
+    }
+
+    #[test]
+    fn test_headers_to_wire_skips_local_only() {
+        use crate::message::HeaderValue;
+        use std::any::Any;
+
+        #[derive(Debug)]
+        struct LocalOnlyHeader;
+        impl HeaderValue for LocalOnlyHeader {
+            fn header_name(&self) -> &'static str {
+                "local-only"
+            }
+            fn to_bytes(&self) -> Option<Vec<u8>> {
+                None
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+
+        let mut headers = crate::message::Headers::new();
+        headers.insert(LocalOnlyHeader);
+        let wire = headers.to_wire();
+        assert!(wire.is_empty());
+    }
+
+    #[test]
+    fn test_receive_envelope_body() {
+        let mut registry = crate::type_registry::TypeRegistry::new();
+        registry.register("test::Amount", |bytes: &[u8]| {
+            if bytes.len() != 8 {
+                return Err(SerializationError::new("expected 8 bytes"));
+            }
+            let val = u64::from_be_bytes(bytes.try_into().unwrap());
+            Ok(Box::new(val))
+        });
+
+        let envelope = WireEnvelope {
+            target: ActorId {
+                node: NodeId("n".into()),
+                local: 1,
+            },
+            message_type: "test::Amount".into(),
+            send_mode: SendMode::Tell,
+            headers: WireHeaders::new(),
+            body: 42u64.to_be_bytes().to_vec(),
+            request_id: None,
+            version: None,
+        };
+
+        let any = receive_envelope_body(&envelope, &registry).unwrap();
+        let val = any.downcast::<u64>().unwrap();
+        assert_eq!(*val, 42);
+    }
+
+    #[test]
+    fn test_receive_envelope_body_unknown_type() {
+        let registry = crate::type_registry::TypeRegistry::new();
+        let envelope = WireEnvelope {
+            target: ActorId {
+                node: NodeId("n".into()),
+                local: 1,
+            },
+            message_type: "unknown::Type".into(),
+            send_mode: SendMode::Tell,
+            headers: WireHeaders::new(),
+            body: vec![],
+            request_id: None,
+            version: None,
+        };
+
+        let result = receive_envelope_body(&envelope, &registry);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message.contains("no deserializer"));
+    }
+
+    #[test]
+    fn test_version_mismatch_with_handler() {
+        let mut registry = crate::type_registry::TypeRegistry::new();
+        // Register v2 deserializer (u64 big-endian)
+        registry.register("test::Versioned", |bytes: &[u8]| {
+            if bytes.len() != 8 {
+                return Err(SerializationError::new("expected 8 bytes"));
+            }
+            let val = u64::from_be_bytes(bytes.try_into().unwrap());
+            Ok(Box::new(val))
+        });
+
+        // Version handler that doubles the value during migration
+        struct DoubleMigrator;
+        impl MessageVersionHandler for DoubleMigrator {
+            fn message_type(&self) -> &'static str {
+                "test::Versioned"
+            }
+            fn migrate(&self, payload: &[u8], _from: u32, _to: u32) -> Option<Vec<u8>> {
+                if payload.len() != 8 {
+                    return None;
+                }
+                let val = u64::from_be_bytes(payload.try_into().unwrap());
+                Some((val * 2).to_be_bytes().to_vec())
+            }
+        }
+
+        let mut version_handlers: std::collections::HashMap<
+            String,
+            Box<dyn MessageVersionHandler>,
+        > = std::collections::HashMap::new();
+        version_handlers.insert("test::Versioned".into(), Box::new(DoubleMigrator));
+
+        let envelope = WireEnvelope {
+            target: ActorId {
+                node: NodeId("n".into()),
+                local: 1,
+            },
+            message_type: "test::Versioned".into(),
+            send_mode: SendMode::Tell,
+            headers: WireHeaders::new(),
+            body: 21u64.to_be_bytes().to_vec(),
+            request_id: None,
+            version: Some(1), // sender is v1
+        };
+
+        let any = receive_envelope_body_versioned(
+            &envelope,
+            &registry,
+            &version_handlers,
+            Some(2), // we expect v2
+        )
+        .unwrap();
+        let val = any.downcast::<u64>().unwrap();
+        assert_eq!(*val, 42); // 21 * 2 = 42 (migrated)
+    }
+
+    #[test]
+    fn test_version_match_skips_migration() {
+        let mut registry = crate::type_registry::TypeRegistry::new();
+        registry.register("test::Same", |bytes: &[u8]| Ok(Box::new(bytes.to_vec())));
+
+        let version_handlers: std::collections::HashMap<String, Box<dyn MessageVersionHandler>> =
+            std::collections::HashMap::new();
+
+        let envelope = WireEnvelope {
+            target: ActorId {
+                node: NodeId("n".into()),
+                local: 1,
+            },
+            message_type: "test::Same".into(),
+            send_mode: SendMode::Tell,
+            headers: WireHeaders::new(),
+            body: vec![1, 2, 3],
+            request_id: None,
+            version: Some(2),
+        };
+
+        let any = receive_envelope_body_versioned(
+            &envelope,
+            &registry,
+            &version_handlers,
+            Some(2), // same version
+        )
+        .unwrap();
+        let val = any.downcast::<Vec<u8>>().unwrap();
+        assert_eq!(*val, vec![1, 2, 3]);
+    }
+
+    #[cfg(feature = "serde")]
+    mod serde_tests {
+        use super::*;
+
+        #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        struct Increment {
+            amount: u64,
+        }
+
+        #[test]
+        fn json_serializer_roundtrip() {
+            let msg = Increment { amount: 42 };
+            let bytes = JsonSerializer::serialize_typed(&msg).unwrap();
+            let deserialized: Increment = JsonSerializer::deserialize_typed(&bytes).unwrap();
+            assert_eq!(deserialized, msg);
+        }
+
+        #[test]
+        fn json_serializer_invalid_bytes() {
+            let result = JsonSerializer::deserialize_typed::<Increment>(b"not json");
+            assert!(result.is_err());
+            assert!(result.unwrap_err().message.contains("json deserialize"));
+        }
+
+        #[test]
+        fn build_tell_envelope_roundtrip() {
+            let target = ActorId {
+                node: NodeId("node-2".into()),
+                local: 7,
+            };
+            let msg = Increment { amount: 100 };
+            let envelope = build_tell_envelope(target.clone(), &msg, WireHeaders::new()).unwrap();
+
+            assert_eq!(envelope.target, target);
+            assert_eq!(envelope.send_mode, SendMode::Tell);
+            assert!(envelope.request_id.is_none());
+            assert!(envelope.message_type.contains("Increment"));
+
+            // Deserialize body back
+            let deserialized: Increment =
+                JsonSerializer::deserialize_typed(&envelope.body).unwrap();
+            assert_eq!(deserialized.amount, 100);
+        }
+
+        #[test]
+        fn build_ask_envelope_roundtrip() {
+            let target = ActorId {
+                node: NodeId("node-3".into()),
+                local: 42,
+            };
+            let msg = Increment { amount: 5 };
+            let request_id = Uuid::new_v4();
+            let envelope =
+                build_ask_envelope(target.clone(), &msg, WireHeaders::new(), request_id).unwrap();
+
+            assert_eq!(envelope.target, target);
+            assert_eq!(envelope.send_mode, SendMode::Ask);
+            assert_eq!(envelope.request_id, Some(request_id));
+        }
+
+        #[test]
+        fn full_pipeline_send_and_receive() {
+            // 1. Build envelope (sender side)
+            let target = ActorId {
+                node: NodeId("node-2".into()),
+                local: 1,
+            };
+            let msg = Increment { amount: 77 };
+            let envelope = build_tell_envelope(target, &msg, WireHeaders::new()).unwrap();
+
+            // 2. Register type on receiver side
+            let mut registry = crate::type_registry::TypeRegistry::new();
+            registry.register_type::<Increment>();
+
+            // 3. Receive and deserialize
+            let any = receive_envelope_body(&envelope, &registry).unwrap();
+            let received = any.downcast::<Increment>().unwrap();
+            assert_eq!(received.amount, 77);
+        }
+
+        #[test]
+        fn full_pipeline_with_headers() {
+            use crate::message::HeaderValue;
+            use std::any::Any;
+
+            #[derive(Debug, Clone)]
+            struct Priority(u8);
+            impl HeaderValue for Priority {
+                fn header_name(&self) -> &'static str {
+                    "priority"
+                }
+                fn to_bytes(&self) -> Option<Vec<u8>> {
+                    Some(vec![self.0])
+                }
+                fn as_any(&self) -> &dyn Any {
+                    self
+                }
+            }
+
+            // Sender: typed headers → wire
+            let mut headers = crate::message::Headers::new();
+            headers.insert(Priority(5));
+            let wire_headers = headers.to_wire();
+
+            let target = ActorId {
+                node: NodeId("node-2".into()),
+                local: 1,
+            };
+            let msg = Increment { amount: 10 };
+            let envelope = build_tell_envelope(target, &msg, wire_headers).unwrap();
+
+            // Receiver: wire headers → typed (via registry)
+            let mut header_registry = HeaderRegistry::new();
+            header_registry.register("priority", |bytes: &[u8]| {
+                if bytes.len() != 1 {
+                    return None;
+                }
+                Some(Box::new(Priority(bytes[0])) as Box<dyn HeaderValue>)
+            });
+
+            let restored_headers = envelope.headers.to_headers(&header_registry);
+            let priority = restored_headers.get::<Priority>().unwrap();
+            assert_eq!(priority.0, 5);
+        }
     }
 }

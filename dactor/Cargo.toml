@@ -26,9 +26,13 @@ version = "1"
 features = ["derive"]
 optional = true
 
+[dependencies.serde_json]
+version = "1"
+optional = true
+
 [features]
 default = ["metrics"]
-serde = ["dep:serde", "uuid/serde"]
+serde = ["dep:serde", "dep:serde_json", "uuid/serde"]
 metrics = []
 test-support = ["tokio/test-util"]
 

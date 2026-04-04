@@ -67,6 +67,8 @@ pub mod throttle;
 pub mod timer;
 /// Abstract transport for remote actor communication.
 pub mod transport;
+/// Type registry for remote message deserialization and actor factories.
+pub mod type_registry;
 
 #[cfg(feature = "test-support")]
 pub mod test_support;
@@ -118,9 +120,12 @@ pub use persistence::{
 };
 pub use pool::{Keyed, PoolConfig, PoolRef, PoolRouting};
 pub use registry::ActorRegistry;
+#[cfg(feature = "serde")]
+pub use remote::{build_ask_envelope, build_tell_envelope, build_wire_envelope, JsonSerializer};
+pub use remote::{receive_envelope_body, receive_envelope_body_versioned};
 pub use remote::{
-    ClusterDiscovery, ClusterState, MessageSerializer, MessageVersionHandler, RemoteMessage,
-    SerializationError, StaticSeeds, WireEnvelope, WireHeaders,
+    ClusterDiscovery, ClusterState, HeaderRegistry, MessageSerializer, MessageVersionHandler,
+    RemoteMessage, SerializationError, StaticSeeds, WireEnvelope, WireHeaders,
 };
 pub use stream::{BatchConfig, BatchReader, BatchWriter, StreamReceiver};
 pub use stream::{BoxStream, StreamSendError, StreamSender};
@@ -131,6 +136,7 @@ pub use timer::TimerHandle;
 pub use timer::{send_after, send_interval};
 pub use tokio_util::sync::CancellationToken;
 pub use transport::{InMemoryTransport, Transport, TransportError, TransportRegistry};
+pub use type_registry::TypeRegistry;
 
 // Backward-compatible re-export of TestClock (feature-gated)
 #[cfg(feature = "test-support")]

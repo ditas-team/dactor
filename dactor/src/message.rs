@@ -67,6 +67,13 @@ impl Headers {
         self.map.remove(&TypeId::of::<H>())
     }
 
+    /// Insert a boxed header value. Used by wire deserialization to insert
+    /// headers whose concrete type is resolved at runtime via a registry.
+    pub fn insert_boxed(&mut self, value: Box<dyn HeaderValue>) {
+        let type_id = value.as_any().type_id();
+        self.map.insert(type_id, value);
+    }
+
     /// Check if the headers collection is empty.
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
@@ -75,6 +82,20 @@ impl Headers {
     /// Number of headers.
     pub fn len(&self) -> usize {
         self.map.len()
+    }
+
+    /// Convert typed headers to wire-format [`WireHeaders`](crate::remote::WireHeaders).
+    ///
+    /// Iterates all headers and calls [`HeaderValue::to_bytes()`] on each.
+    /// Headers that return `None` (local-only) are skipped.
+    pub fn to_wire(&self) -> crate::remote::WireHeaders {
+        let mut wire = crate::remote::WireHeaders::new();
+        for value in self.map.values() {
+            if let Some(bytes) = value.to_bytes() {
+                wire.insert(value.header_name().to_string(), bytes);
+            }
+        }
+        wire
     }
 }
 
