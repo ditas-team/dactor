@@ -296,10 +296,10 @@ Each adapter runtime must wire the core system actors into its remote message ha
 | SA2 | dactor-ractor | WatchManager wiring | RactorRuntime starts WatchManager, translates ractor's native watch into WatchManager entries, sends WatchNotification on termination | ✅ PR #80 |
 | SA3 | dactor-ractor | CancelManager wiring | RactorRuntime registers CancellationTokens with CancelManager, handles incoming CancelRequest from remote nodes | ✅ PR #80 |
 | SA4 | dactor-ractor | NodeDirectory wiring | RactorRuntime populates NodeDirectory from ractor_cluster membership, updates PeerStatus on connect/disconnect | ✅ PR #80 |
-| SA5 | dactor-kameo | SpawnManager wiring | KameoRuntime starts SpawnManager, routes SpawnRequest via kameo's distributed actor layer | 🔲 Not started |
-| SA6 | dactor-kameo | WatchManager wiring | KameoRuntime wires kameo's actor lifecycle into WatchManager for remote watch delivery | 🔲 Not started |
-| SA7 | dactor-kameo | CancelManager wiring | KameoRuntime registers tokens with CancelManager, handles remote cancel | 🔲 Not started |
-| SA8 | dactor-kameo | NodeDirectory wiring | KameoRuntime populates NodeDirectory from kameo/libp2p peer discovery | 🔲 Not started |
+| SA5 | dactor-kameo | SpawnManager wiring | KameoRuntime starts SpawnManager, routes SpawnRequest via kameo's distributed actor layer | ✅ PR #81 |
+| SA6 | dactor-kameo | WatchManager wiring | KameoRuntime wires kameo's actor lifecycle into WatchManager for remote watch delivery | ✅ PR #81 |
+| SA7 | dactor-kameo | CancelManager wiring | KameoRuntime registers tokens with CancelManager, handles remote cancel | ✅ PR #81 |
+| SA8 | dactor-kameo | NodeDirectory wiring | KameoRuntime populates NodeDirectory from kameo/libp2p peer discovery | ✅ PR #81 |
 | SA9 | dactor-mock | System actor wiring | MockCluster wires SpawnManager + WatchManager + CancelManager + NodeDirectory, auto-connects peers | ✅ PR #78 |
 | SA10 | dactor-coerce | System actor wiring | CoerceRuntime wires system actors (stub — depends on coerce sharding integration) | 🔲 Not started |
 
