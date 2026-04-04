@@ -337,8 +337,7 @@ impl crate::test_support::test_runtime::TestRuntime {
             })
             .collect();
 
-        let pool = PoolRef::new(workers, routing);
-        pool
+        PoolRef::new(workers, routing)
     }
 }
 

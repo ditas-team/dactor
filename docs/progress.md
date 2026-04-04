@@ -4,11 +4,14 @@
 
 ---
 
-## Current Status (PR #57)
-- 59 commits, 16 examples, ~230 tests
+## Current Status (PR #59)
+- 61 commits, 16 examples, 358 tests across workspace
 - Phase 3: ✅ Complete (features, examples, conformance, batching)
-- Phase 4-8: Design documented, some items implemented ahead of schedule
-- Next: Phase 4 (Remote Transport) or additional standalone features
+- Phase 6: ✅ Complete (supervision, pools, timers, on_reply, message comparer)
+- Phase 7: ✅ Complete (metrics, dead letters, circuit breaker, drop observer)
+- Phase 8: NR1 done (actor registry), NR2-NR4 need Phase 4
+- Zero clippy warnings, cargo doc clean
+- Next: Phase 4 (Remote Transport) — system actors, WireEnvelope, transport
 
 ---
 
@@ -429,10 +432,10 @@ impl<A: Actor> ActorRef<A> for PoolActorRef<A> {
 
 ## Phase 8: Named Registry & Cluster Events
 
-| # | Feature | Design Section | Description |
-|---|---------|----------------|-------------|
-| NR1 | Actor naming & registry | §8.3 | runtime.lookup(name) for named actor discovery |
-| NR2 | ClusterEvent enum | §10.1, §10.4 | NodeJoined, NodeLeft push events |
+| # | Feature | Design Section | Description | Status |
+|---|---------|----------------|-------------|--------|
+| NR1 | Actor naming & registry | §8.3 | runtime.lookup(name) for named actor discovery | ✅ PR #58 |
+| NR2 | ClusterEvent enum | §10.1, §10.4 | NodeJoined, NodeLeft push events | 🔲 Depends on Phase 4 |
 | NR3 | Cluster event handlers | §10.4 | Actors subscribe to membership changes |
 | NR4 | Processing groups | §2.2 | Actor group pub/sub (ractor pg, coerce sharding) |
 
