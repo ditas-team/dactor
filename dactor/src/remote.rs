@@ -61,6 +61,8 @@ impl std::error::Error for SerializationError {}
 pub struct WireEnvelope {
     /// Target actor ID.
     pub target: ActorId,
+    /// Target actor's human-readable name.
+    pub target_name: String,
     /// Rust type name of the message (for deserialization dispatch).
     pub message_type: String,
     /// How the message was sent (Tell, Ask, Stream, Feed).
@@ -286,12 +288,14 @@ impl JsonSerializer {
 #[cfg(feature = "serde")]
 pub fn build_tell_envelope<M: serde::Serialize>(
     target: crate::node::ActorId,
+    target_name: impl Into<String>,
     msg: &M,
     headers: WireHeaders,
 ) -> Result<WireEnvelope, SerializationError> {
     let body = JsonSerializer::serialize_typed(msg)?;
     Ok(WireEnvelope {
         target,
+        target_name: target_name.into(),
         message_type: std::any::type_name::<M>().to_string(),
         send_mode: crate::interceptor::SendMode::Tell,
         headers,
@@ -307,6 +311,7 @@ pub fn build_tell_envelope<M: serde::Serialize>(
 #[cfg(feature = "serde")]
 pub fn build_ask_envelope<M: serde::Serialize>(
     target: crate::node::ActorId,
+    target_name: impl Into<String>,
     msg: &M,
     headers: WireHeaders,
     request_id: uuid::Uuid,
@@ -314,6 +319,7 @@ pub fn build_ask_envelope<M: serde::Serialize>(
     let body = JsonSerializer::serialize_typed(msg)?;
     Ok(WireEnvelope {
         target,
+        target_name: target_name.into(),
         message_type: std::any::type_name::<M>().to_string(),
         send_mode: crate::interceptor::SendMode::Ask,
         headers,
@@ -329,6 +335,7 @@ pub fn build_ask_envelope<M: serde::Serialize>(
 #[cfg(feature = "serde")]
 pub fn build_wire_envelope<M: serde::Serialize>(
     target: crate::node::ActorId,
+    target_name: impl Into<String>,
     msg: &M,
     send_mode: crate::interceptor::SendMode,
     headers: WireHeaders,
@@ -338,6 +345,7 @@ pub fn build_wire_envelope<M: serde::Serialize>(
     let body = JsonSerializer::serialize_typed(msg)?;
     Ok(WireEnvelope {
         target,
+        target_name: target_name.into(),
         message_type: std::any::type_name::<M>().to_string(),
         send_mode,
         headers,
@@ -403,6 +411,7 @@ mod tests {
                 node: NodeId("node-1".into()),
                 local: 42,
             },
+            target_name: "test".into(),
             message_type: "my_crate::Increment".into(),
             send_mode: SendMode::Tell,
             headers: WireHeaders::new(),
@@ -465,6 +474,7 @@ mod tests {
                 node: NodeId("n".into()),
                 local: 1,
             },
+            target_name: "test".into(),
             message_type: "Ask".into(),
             send_mode: SendMode::Ask,
             headers: WireHeaders::new(),
@@ -566,6 +576,7 @@ mod tests {
                 node: NodeId("n".into()),
                 local: 1,
             },
+            target_name: "test".into(),
             message_type: "test::Amount".into(),
             send_mode: SendMode::Tell,
             headers: WireHeaders::new(),
@@ -587,6 +598,7 @@ mod tests {
                 node: NodeId("n".into()),
                 local: 1,
             },
+            target_name: "test".into(),
             message_type: "unknown::Type".into(),
             send_mode: SendMode::Tell,
             headers: WireHeaders::new(),
@@ -638,6 +650,7 @@ mod tests {
                 node: NodeId("n".into()),
                 local: 1,
             },
+            target_name: "test".into(),
             message_type: "test::Versioned".into(),
             send_mode: SendMode::Tell,
             headers: WireHeaders::new(),
@@ -670,6 +683,7 @@ mod tests {
                 node: NodeId("n".into()),
                 local: 1,
             },
+            target_name: "test".into(),
             message_type: "test::Same".into(),
             send_mode: SendMode::Tell,
             headers: WireHeaders::new(),
@@ -720,7 +734,8 @@ mod tests {
                 local: 7,
             };
             let msg = Increment { amount: 100 };
-            let envelope = build_tell_envelope(target.clone(), &msg, WireHeaders::new()).unwrap();
+            let envelope =
+                build_tell_envelope(target.clone(), "counter", &msg, WireHeaders::new()).unwrap();
 
             assert_eq!(envelope.target, target);
             assert_eq!(envelope.send_mode, SendMode::Tell);
@@ -741,8 +756,14 @@ mod tests {
             };
             let msg = Increment { amount: 5 };
             let request_id = Uuid::new_v4();
-            let envelope =
-                build_ask_envelope(target.clone(), &msg, WireHeaders::new(), request_id).unwrap();
+            let envelope = build_ask_envelope(
+                target.clone(),
+                "counter",
+                &msg,
+                WireHeaders::new(),
+                request_id,
+            )
+            .unwrap();
 
             assert_eq!(envelope.target, target);
             assert_eq!(envelope.send_mode, SendMode::Ask);
@@ -757,7 +778,8 @@ mod tests {
                 local: 1,
             };
             let msg = Increment { amount: 77 };
-            let envelope = build_tell_envelope(target, &msg, WireHeaders::new()).unwrap();
+            let envelope =
+                build_tell_envelope(target, "counter", &msg, WireHeaders::new()).unwrap();
 
             // 2. Register type on receiver side
             let mut registry = crate::type_registry::TypeRegistry::new();
@@ -798,7 +820,7 @@ mod tests {
                 local: 1,
             };
             let msg = Increment { amount: 10 };
-            let envelope = build_tell_envelope(target, &msg, wire_headers).unwrap();
+            let envelope = build_tell_envelope(target, "counter", &msg, wire_headers).unwrap();
 
             // Receiver: wire headers → typed (via registry)
             let mut header_registry = HeaderRegistry::new();

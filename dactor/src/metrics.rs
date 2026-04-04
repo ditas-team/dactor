@@ -38,6 +38,12 @@ pub struct RuntimeMetrics {
     pub error_rate: f64,
     /// The window duration used for this snapshot.
     pub window: Duration,
+    /// Wire envelopes dropped by wire interceptors (all-time).
+    pub wire_dropped: u64,
+    /// Wire envelopes rejected by wire interceptors (all-time).
+    pub wire_rejected: u64,
+    /// Wire envelopes delayed by wire interceptors (all-time).
+    pub wire_delayed: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +317,12 @@ pub struct MetricsRegistry {
     handles: Arc<Mutex<HashMap<ActorId, Arc<ActorMetricsHandle>>>>,
     window: Duration,
     bucket_duration: Duration,
+    /// Wire envelopes dropped by wire interceptors (all-time).
+    wire_dropped: Arc<AtomicU64>,
+    /// Wire envelopes rejected by wire interceptors (all-time).
+    wire_rejected: Arc<AtomicU64>,
+    /// Wire envelopes delayed by wire interceptors (all-time).
+    wire_delayed: Arc<AtomicU64>,
 }
 
 impl MetricsRegistry {
@@ -324,6 +336,9 @@ impl MetricsRegistry {
             handles: Arc::new(Mutex::new(HashMap::new())),
             window,
             bucket_duration,
+            wire_dropped: Arc::new(AtomicU64::new(0)),
+            wire_rejected: Arc::new(AtomicU64::new(0)),
+            wire_delayed: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -416,7 +431,25 @@ impl MetricsRegistry {
                 0.0
             },
             window: self.window,
+            wire_dropped: self.wire_dropped.load(Ordering::Relaxed),
+            wire_rejected: self.wire_rejected.load(Ordering::Relaxed),
+            wire_delayed: self.wire_delayed.load(Ordering::Relaxed),
         }
+    }
+
+    /// Record that a wire interceptor dropped an envelope.
+    pub fn record_wire_dropped(&self) {
+        self.wire_dropped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record that a wire interceptor rejected an envelope.
+    pub fn record_wire_rejected(&self) {
+        self.wire_rejected.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record that a wire interceptor delayed an envelope.
+    pub fn record_wire_delayed(&self) {
+        self.wire_delayed.fetch_add(1, Ordering::Relaxed);
     }
 }
 

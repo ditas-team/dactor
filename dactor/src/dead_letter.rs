@@ -16,6 +16,18 @@ pub enum DeadLetterReason {
         /// Name of the interceptor that dropped the message.
         interceptor: String,
     },
+    /// A wire interceptor dropped the envelope before message body deserialization.
+    WireInterceptorDrop {
+        /// Name of the wire interceptor that dropped the envelope.
+        interceptor: String,
+    },
+    /// A wire interceptor rejected the envelope before message body deserialization.
+    WireInterceptorReject {
+        /// Name of the wire interceptor that rejected the envelope.
+        interceptor: String,
+        /// Reason for rejection.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for DeadLetterReason {
@@ -26,6 +38,19 @@ impl std::fmt::Display for DeadLetterReason {
             Self::MailboxFull => write!(f, "mailbox full"),
             Self::DroppedByInterceptor { interceptor } => {
                 write!(f, "dropped by interceptor '{}'", interceptor)
+            }
+            Self::WireInterceptorDrop { interceptor } => {
+                write!(f, "dropped by wire interceptor '{}'", interceptor)
+            }
+            Self::WireInterceptorReject {
+                interceptor,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "rejected by wire interceptor '{}': {}",
+                    interceptor, reason
+                )
             }
         }
     }

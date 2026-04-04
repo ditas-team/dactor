@@ -267,6 +267,7 @@ impl<A: Actor + Sync> ActorRef<A> for RemoteActorRef<A> {
         let wire_headers = headers.to_wire();
         let envelope = WireEnvelope {
             target: self.id.clone(),
+            target_name: self.name.clone(),
             message_type: type_name,
             send_mode: SendMode::Tell,
             headers: wire_headers,
@@ -342,6 +343,7 @@ impl<A: Actor + Sync> ActorRef<A> for RemoteActorRef<A> {
         let request_id = uuid::Uuid::new_v4();
         let envelope = WireEnvelope {
             target: self.id.clone(),
+            target_name: self.name.clone(),
             message_type: type_name,
             send_mode: SendMode::Ask,
             headers: wire_headers,
@@ -868,6 +870,7 @@ mod tests {
                 node: NodeId("local".into()),
                 local: 0,
             },
+            target_name: "reply".into(),
             message_type: "reply".into(),
             send_mode: SendMode::Ask,
             headers: WireHeaders::new(),
@@ -1023,6 +1026,7 @@ mod tests {
                             node: NodeId("local".into()),
                             local: 0,
                         },
+                        target_name: "reply".into(),
                         message_type: "reply".into(),
                         send_mode: SendMode::Ask,
                         headers: WireHeaders::new(),

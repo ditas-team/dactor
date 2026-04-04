@@ -296,6 +296,7 @@ mod tests {
                 node: NodeId("n1".into()),
                 local: 1,
             },
+            target_name: "test".into(),
             message_type: "test::Msg".into(),
             send_mode: SendMode::Tell,
             headers: WireHeaders::new(),
