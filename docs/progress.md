@@ -4,14 +4,14 @@
 
 ---
 
-## Current Status (PR #64)
+## Current Status (PR #65)
 - Phase 3: ✅ Complete (features, examples, conformance, batching)
-- Phase 4: R1-R3 ✅ (Transport, WireEnvelope pipeline, RemoteActorRef), R4-R5 pending
+- Phase 4: R1-R3 ✅, S1-S4 ✅, SE1-SE4 ✅ — R4-R5 & SE5 pending
 - Phase 6: ✅ Complete (supervision, pools, timers, on_reply, message comparer)
 - Phase 7: ✅ Complete (metrics, dead letters, circuit breaker, drop observer)
 - Phase 8: NR1 done (actor registry), NR2-NR4 need Phase 4
 - Zero clippy warnings, cargo doc clean
-- Next: Phase 4 S1-S4 (System Actors) — SpawnManager, WatchManager, CancelManager, NodeDirectory
+- Next: Phase 4 C1-C5 (Cluster Discovery & Health) + R4 (Connection management)
 
 ---
 
@@ -132,6 +132,7 @@
 | 2026-04-04 | PR R1 | Transport trait, InMemoryTransport, TransportRegistry |
 | 2026-04-04 | PR R2 | WireEnvelope pipeline: TypeRegistry, JsonSerializer, HeaderRegistry, wire send/receive helpers |
 | 2026-04-04 | PR R3 | RemoteActorRef: location-transparent remote actor ref with tell/ask via transport |
+| 2026-04-04 | PR S1-S4 | System actors: SpawnManager, WatchManager, CancelManager, NodeDirectory |
 
 ---
 
@@ -232,12 +233,12 @@ Wire format, cross-node communication, and system actors for remote operations.
 
 ### 4.2 System Actors
 
-| # | Feature | Design Section | Description |
-|---|---------|----------------|-------------|
-| S1 | SpawnManager | §8.2 | Process remote actor spawn requests |
-| S2 | WatchManager | §8.2, §6.2 | Handle remote watch/unwatch, deliver ChildTerminated |
-| S3 | CancelManager | §8.2, §4.13 | Process remote cancellation requests |
-| S4 | NodeDirectory | §8.3 | Map NodeId → peer system actor refs |
+| # | Feature | Design Section | Description | Status |
+|---|---------|----------------|-------------|--------|
+| S1 | SpawnManager | §8.2 | Process remote actor spawn requests | ✅ PR #65 |
+| S2 | WatchManager | §8.2, §6.2 | Handle remote watch/unwatch, deliver ChildTerminated | ✅ PR #65 |
+| S3 | CancelManager | §8.2, §4.13 | Process remote cancellation requests | ✅ PR #65 |
+| S4 | NodeDirectory | §8.3 | Map NodeId → peer system actor refs | ✅ PR #65 |
 
 ### 4.3 Serialization & Schema
 

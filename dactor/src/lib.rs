@@ -63,6 +63,8 @@ pub mod runtime_support;
 pub mod stream;
 /// Supervision strategies (OneForOne, AllForOne, RestForOne).
 pub mod supervision;
+/// System actors for remote operations (spawn, watch, cancel, directory).
+pub mod system_actors;
 /// Rate limiting for actors.
 pub mod throttle;
 /// Timer scheduling (send_after, send_interval).
@@ -134,6 +136,11 @@ pub use stream::{BatchConfig, BatchReader, BatchWriter, StreamReceiver};
 pub use stream::{BoxStream, StreamSendError, StreamSender};
 pub use supervision::ChildTerminated;
 pub use supervision::{AllForOne, OneForOne, RestForOne, SupervisionAction, SupervisionStrategy};
+pub use system_actors::{
+    CancelManager, CancelRequest, CancelResponse, NodeDirectory, PeerInfo, PeerStatus,
+    SpawnManager, SpawnRequest, SpawnResponse, UnwatchRequest, WatchManager, WatchNotification,
+    WatchRequest,
+};
 pub use throttle::ActorRateLimiter;
 pub use timer::TimerHandle;
 pub use timer::{send_after, send_interval};
