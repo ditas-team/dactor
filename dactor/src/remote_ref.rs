@@ -32,10 +32,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::actor::{Actor, ActorRef, AskReply, FeedHandler, Handler, StreamHandler};
 use crate::errors::{ActorSendError, RuntimeError};
-use crate::interceptor::SendMode;
-use crate::message::Message;
+use crate::interceptor::{Disposition, OutboundContext, OutboundInterceptor, SendMode};
+use crate::message::{Headers, Message, RuntimeHeaders};
 use crate::node::ActorId;
-use crate::remote::{SerializationError, WireEnvelope, WireHeaders};
+use crate::remote::{SerializationError, WireEnvelope};
 use crate::stream::{BatchConfig, BoxStream};
 use crate::transport::Transport;
 
@@ -67,6 +67,21 @@ struct AskEntry {
 /// [`Transport`]. Message types must be pre-registered using
 /// [`RemoteActorRefBuilder`] so the ref knows how to serialize each type.
 ///
+/// # Outbound Interceptor Pipeline
+///
+/// When outbound interceptors are registered (via the builder), they run
+/// **before serialization** on every `tell()` and `ask()` call:
+///
+/// 1. `on_send()` — each interceptor can inspect/modify headers, inspect
+///    the message via `&dyn Any`, and return a [`Disposition`]:
+///    - `Continue` — proceed to next interceptor / serialize
+///    - `Reject(reason)` — abort the send, return error to caller
+///    - `Drop` — silently discard (tell) or return error (ask)
+///    - `Delay(d)` — pause before sending (applied in spawned task)
+/// 2. `Headers::to_wire()` — typed headers convert to wire format
+/// 3. Serialize message body → build `WireEnvelope` → send via transport
+/// 4. `on_reply()` — (ask only) interceptors observe the deserialized reply
+///
 /// # Tell (fire-and-forget)
 ///
 /// `tell()` spawns a background task to send the serialized message.
@@ -86,6 +101,8 @@ pub struct RemoteActorRef<A: Actor> {
     tell_serializers: Arc<HashMap<TypeId, SerializeFn>>,
     /// TypeId → (serialize, deserialize_reply) (for ask messages).
     ask_entries: Arc<HashMap<TypeId, AskEntry>>,
+    /// Outbound interceptors run before serialization on every send.
+    outbound_interceptors: Arc<Vec<Arc<dyn OutboundInterceptor>>>,
     _phantom: PhantomData<A>,
 }
 
@@ -97,15 +114,87 @@ impl<A: Actor> Clone for RemoteActorRef<A> {
             transport: Arc::clone(&self.transport),
             tell_serializers: Arc::clone(&self.tell_serializers),
             ask_entries: Arc::clone(&self.ask_entries),
+            outbound_interceptors: Arc::clone(&self.outbound_interceptors),
             _phantom: PhantomData,
         }
     }
+}
+
+/// Result of the outbound interceptor pipeline.
+enum PipelineResult {
+    /// All interceptors returned Continue.
+    Continue,
+    /// An interceptor requested a delay before sending.
+    Delay(std::time::Duration),
+    /// An interceptor silently dropped the message (tell only).
+    Dropped,
 }
 
 impl<A: Actor> RemoteActorRef<A> {
     /// The target node ID.
     pub fn target_node(&self) -> &crate::node::NodeId {
         &self.id.node
+    }
+
+    /// Run the outbound interceptor pipeline. Returns `Err` if any
+    /// interceptor rejects the message. Returns `Ok(PipelineResult)` to
+    /// indicate whether to continue, delay, or drop.
+    fn run_outbound_pipeline(
+        &self,
+        message_type: &'static str,
+        send_mode: SendMode,
+        headers: &mut Headers,
+        message: &dyn Any,
+    ) -> Result<PipelineResult, ActorSendError> {
+        if self.outbound_interceptors.is_empty() {
+            return Ok(PipelineResult::Continue);
+        }
+
+        let runtime_headers = RuntimeHeaders::new();
+        let ctx = OutboundContext {
+            target_id: self.id.clone(),
+            target_name: &self.name,
+            message_type,
+            send_mode,
+            remote: true,
+        };
+
+        let mut delay = None;
+
+        for interceptor in self.outbound_interceptors.iter() {
+            match interceptor.on_send(&ctx, &runtime_headers, headers, message) {
+                Disposition::Continue => {}
+                Disposition::Reject(reason) => {
+                    return Err(ActorSendError(format!(
+                        "rejected by outbound interceptor '{}': {}",
+                        interceptor.name(),
+                        reason
+                    )));
+                }
+                Disposition::Drop => {
+                    return Ok(PipelineResult::Dropped);
+                }
+                Disposition::Delay(d) => {
+                    // Use the largest delay requested by any interceptor.
+                    delay = Some(match delay {
+                        Some(existing) if existing > d => existing,
+                        _ => d,
+                    });
+                }
+                Disposition::Retry(retry_after) => {
+                    return Err(ActorSendError(format!(
+                        "retry after {:?} (from outbound interceptor '{}')",
+                        retry_after,
+                        interceptor.name()
+                    )));
+                }
+            }
+        }
+
+        Ok(match delay {
+            Some(d) => PipelineResult::Delay(d),
+            None => PipelineResult::Continue,
+        })
     }
 }
 
@@ -147,36 +236,57 @@ impl<A: Actor + Sync> ActorRef<A> for RemoteActorRef<A> {
         A: Handler<M>,
         M: Message<Reply = ()>,
     {
+        // 1. Run outbound interceptor pipeline (before serialization)
+        let mut headers = Headers::new();
+        let pipeline_result = self.run_outbound_pipeline(
+            std::any::type_name::<M>(),
+            SendMode::Tell,
+            &mut headers,
+            &msg as &dyn Any,
+        )?;
+
+        // Drop is silent for tell — interceptor discarded the message
+        if matches!(pipeline_result, PipelineResult::Dropped) {
+            return Ok(());
+        }
+
+        // 2. Serialize message body
         let type_id = TypeId::of::<M>();
-        let serializer = self
-            .tell_serializers
-            .get(&type_id)
-            .or_else(|| self.ask_entries.get(&type_id).map(|e| &e.serialize))
-            .ok_or_else(|| {
-                ActorSendError(format!(
-                    "message type '{}' not registered for remote send to {}",
-                    std::any::type_name::<M>(),
-                    self.id
-                ))
-            })?;
+        let serializer = self.tell_serializers.get(&type_id).ok_or_else(|| {
+            ActorSendError(format!(
+                "message type '{}' not registered for remote send to {}",
+                std::any::type_name::<M>(),
+                self.id
+            ))
+        })?;
 
         let (type_name, body) = serializer(&msg as &dyn Any)
             .map_err(|e| ActorSendError(format!("serialization failed: {}", e.message)))?;
 
+        // 3. Convert headers to wire format and build envelope
+        let wire_headers = headers.to_wire();
         let envelope = WireEnvelope {
             target: self.id.clone(),
             message_type: type_name,
             send_mode: SendMode::Tell,
-            headers: WireHeaders::new(),
+            headers: wire_headers,
             body,
             request_id: None,
             version: None,
         };
 
+        // 4. Send via transport (fire-and-forget, with optional delay)
         let transport = Arc::clone(&self.transport);
         let target_node = self.id.node.clone();
+        let delay = match pipeline_result {
+            PipelineResult::Delay(d) => Some(d),
+            _ => None,
+        };
 
         tokio::spawn(async move {
+            if let Some(d) = delay {
+                tokio::time::sleep(d).await;
+            }
             if let Err(e) = transport.send(&target_node, envelope).await {
                 tracing::error!(
                     target_node = %target_node,
@@ -198,6 +308,23 @@ impl<A: Actor + Sync> ActorRef<A> for RemoteActorRef<A> {
         A: Handler<M>,
         M: Message,
     {
+        // 1. Run outbound interceptor pipeline (before serialization)
+        let mut headers = Headers::new();
+        let pipeline_result = self.run_outbound_pipeline(
+            std::any::type_name::<M>(),
+            SendMode::Ask,
+            &mut headers,
+            &msg as &dyn Any,
+        )?;
+
+        // Drop returns error for ask — caller needs to know the send didn't happen
+        if matches!(pipeline_result, PipelineResult::Dropped) {
+            return Err(ActorSendError(
+                "message dropped by outbound interceptor".into(),
+            ));
+        }
+
+        // 2. Serialize message body
         let type_id = TypeId::of::<M>();
         let entry = self.ask_entries.get(&type_id).ok_or_else(|| {
             ActorSendError(format!(
@@ -210,23 +337,38 @@ impl<A: Actor + Sync> ActorRef<A> for RemoteActorRef<A> {
         let (type_name, body) = (entry.serialize)(&msg as &dyn Any)
             .map_err(|e| ActorSendError(format!("serialization failed: {}", e.message)))?;
 
+        // 3. Convert headers to wire format and build envelope
+        let wire_headers = headers.to_wire();
         let request_id = uuid::Uuid::new_v4();
         let envelope = WireEnvelope {
             target: self.id.clone(),
             message_type: type_name,
             send_mode: SendMode::Ask,
-            headers: WireHeaders::new(),
+            headers: wire_headers,
             body,
             request_id: Some(request_id),
             version: None,
         };
 
+        // 4. Send via transport and await reply
         let (tx, rx) = oneshot::channel::<Result<M::Reply, RuntimeError>>();
         let transport = Arc::clone(&self.transport);
         let target_node = self.id.node.clone();
         let deserialize_reply = Arc::clone(&entry.deserialize_reply);
+        let outbound_interceptors = Arc::clone(&self.outbound_interceptors);
+        let ref_id = self.id.clone();
+        let ref_name = self.name.clone();
+        let request_headers = headers;
+        let delay = match pipeline_result {
+            PipelineResult::Delay(d) => Some(d),
+            _ => None,
+        };
 
         tokio::spawn(async move {
+            if let Some(d) = delay {
+                tokio::time::sleep(d).await;
+            }
+
             let result = if let Some(cancel_token) = cancel {
                 tokio::select! {
                     result = transport.send_request(&target_node, envelope) => result,
@@ -239,11 +381,32 @@ impl<A: Actor + Sync> ActorRef<A> for RemoteActorRef<A> {
                 transport.send_request(&target_node, envelope).await
             };
 
+            // Notify interceptors about the outcome (success or failure)
+            let notify_interceptors = |outcome: &crate::interceptor::Outcome<'_>| {
+                if !outbound_interceptors.is_empty() {
+                    let ctx = OutboundContext {
+                        target_id: ref_id.clone(),
+                        target_name: &ref_name,
+                        message_type: std::any::type_name::<M>(),
+                        send_mode: SendMode::Ask,
+                        remote: true,
+                    };
+                    let runtime_headers = RuntimeHeaders::new();
+                    for interceptor in outbound_interceptors.iter() {
+                        interceptor.on_reply(&ctx, &runtime_headers, &request_headers, outcome);
+                    }
+                }
+            };
+
             match result {
                 Ok(reply_envelope) => match deserialize_reply(&reply_envelope.body) {
                     Ok(any_reply) => {
                         if let Ok(reply) = (any_reply as Box<dyn Any + Send>).downcast::<M::Reply>()
                         {
+                            let outcome = crate::interceptor::Outcome::AskSuccess {
+                                reply: reply.as_ref(),
+                            };
+                            notify_interceptors(&outcome);
                             let _ = tx.send(Ok(*reply));
                         } else {
                             let _ = tx.send(Err(RuntimeError::Send(ActorSendError(
@@ -252,17 +415,21 @@ impl<A: Actor + Sync> ActorRef<A> for RemoteActorRef<A> {
                         }
                     }
                     Err(e) => {
-                        let _ = tx.send(Err(RuntimeError::Send(ActorSendError(format!(
-                            "reply deserialization failed: {}",
-                            e.message
-                        )))));
+                        let error_msg = format!("reply deserialization failed: {}", e.message);
+                        let outcome = crate::interceptor::Outcome::HandlerError {
+                            error: crate::actor::ActorError::internal(&error_msg),
+                        };
+                        notify_interceptors(&outcome);
+                        let _ = tx.send(Err(RuntimeError::Send(ActorSendError(error_msg))));
                     }
                 },
                 Err(e) => {
-                    let _ = tx.send(Err(RuntimeError::Send(ActorSendError(format!(
-                        "remote ask failed: {}",
-                        e
-                    )))));
+                    let error_msg = format!("remote ask failed: {}", e);
+                    let outcome = crate::interceptor::Outcome::HandlerError {
+                        error: crate::actor::ActorError::internal(&error_msg),
+                    };
+                    notify_interceptors(&outcome);
+                    let _ = tx.send(Err(RuntimeError::Send(ActorSendError(error_msg))));
                 }
             }
         });
@@ -318,6 +485,7 @@ pub struct RemoteActorRefBuilder<A: Actor> {
     transport: Arc<dyn Transport>,
     tell_serializers: HashMap<TypeId, SerializeFn>,
     ask_entries: HashMap<TypeId, AskEntry>,
+    outbound_interceptors: Vec<Arc<dyn OutboundInterceptor>>,
     _phantom: PhantomData<A>,
 }
 
@@ -330,8 +498,19 @@ impl<A: Actor> RemoteActorRefBuilder<A> {
             transport,
             tell_serializers: HashMap::new(),
             ask_entries: HashMap::new(),
+            outbound_interceptors: Vec::new(),
             _phantom: PhantomData,
         }
+    }
+
+    /// Add an outbound interceptor to the pipeline.
+    ///
+    /// Interceptors run in registration order before every `tell()` and
+    /// `ask()` call. They can inspect the message, modify headers,
+    /// or reject the send.
+    pub fn add_outbound_interceptor(mut self, interceptor: Arc<dyn OutboundInterceptor>) -> Self {
+        self.outbound_interceptors.push(interceptor);
+        self
     }
 
     /// Register a tell message type with a custom serializer function.
@@ -431,6 +610,7 @@ impl<A: Actor> RemoteActorRefBuilder<A> {
             transport: self.transport,
             tell_serializers: Arc::new(self.tell_serializers),
             ask_entries: Arc::new(self.ask_entries),
+            outbound_interceptors: Arc::new(self.outbound_interceptors),
             _phantom: PhantomData,
         }
     }
@@ -444,6 +624,7 @@ impl<A: Actor> RemoteActorRefBuilder<A> {
 mod tests {
     use super::*;
     use crate::node::NodeId;
+    use crate::remote::WireHeaders;
     use crate::transport::InMemoryTransport;
     use async_trait::async_trait;
 
@@ -856,5 +1037,224 @@ mod tests {
             let value = reply_future.await.unwrap();
             assert_eq!(value, 77);
         }
+    }
+
+    // -- Outbound interceptor tests --
+
+    /// Test interceptor that stamps a header on every outgoing message.
+    struct HeaderStamper;
+    impl OutboundInterceptor for HeaderStamper {
+        fn name(&self) -> &'static str {
+            "header-stamper"
+        }
+        fn on_send(
+            &self,
+            _ctx: &OutboundContext<'_>,
+            _runtime_headers: &RuntimeHeaders,
+            headers: &mut Headers,
+            _message: &dyn Any,
+        ) -> Disposition {
+            use crate::message::HeaderValue;
+            #[derive(Debug)]
+            struct Stamp;
+            impl HeaderValue for Stamp {
+                fn header_name(&self) -> &'static str {
+                    "x-stamp"
+                }
+                fn to_bytes(&self) -> Option<Vec<u8>> {
+                    Some(b"stamped".to_vec())
+                }
+                fn as_any(&self) -> &dyn Any {
+                    self
+                }
+            }
+            headers.insert(Stamp);
+            Disposition::Continue
+        }
+    }
+
+    /// Test interceptor that rejects all messages.
+    struct RejectAll;
+    impl OutboundInterceptor for RejectAll {
+        fn name(&self) -> &'static str {
+            "reject-all"
+        }
+        fn on_send(
+            &self,
+            _ctx: &OutboundContext<'_>,
+            _runtime_headers: &RuntimeHeaders,
+            _headers: &mut Headers,
+            _message: &dyn Any,
+        ) -> Disposition {
+            Disposition::Reject("blocked by policy".into())
+        }
+    }
+
+    /// Test interceptor that counts calls.
+    struct CallCounter(Arc<std::sync::atomic::AtomicU64>);
+    impl OutboundInterceptor for CallCounter {
+        fn name(&self) -> &'static str {
+            "call-counter"
+        }
+        fn on_send(
+            &self,
+            _ctx: &OutboundContext<'_>,
+            _runtime_headers: &RuntimeHeaders,
+            _headers: &mut Headers,
+            _message: &dyn Any,
+        ) -> Disposition {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Disposition::Continue
+        }
+    }
+
+    #[test]
+    fn outbound_interceptor_rejects_tell() {
+        let transport = Arc::new(InMemoryTransport::new(NodeId("local".into())));
+        let remote = RemoteActorRefBuilder::<Counter>::new(
+            ActorId {
+                node: NodeId("node-2".into()),
+                local: 1,
+            },
+            "counter",
+            Arc::clone(&transport) as Arc<dyn Transport>,
+        )
+        .register_tell_with(
+            TypeId::of::<Increment>(),
+            "test::Increment",
+            |_any: &dyn Any| Ok(vec![1]),
+        )
+        .add_outbound_interceptor(Arc::new(RejectAll))
+        .build();
+
+        let result = remote.tell(Increment);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("rejected"));
+        assert!(err.to_string().contains("blocked by policy"));
+    }
+
+    #[test]
+    fn outbound_interceptor_rejects_ask() {
+        let transport = Arc::new(InMemoryTransport::new(NodeId("local".into())));
+        let remote = RemoteActorRefBuilder::<Counter>::new(
+            ActorId {
+                node: NodeId("node-2".into()),
+                local: 1,
+            },
+            "counter",
+            Arc::clone(&transport) as Arc<dyn Transport>,
+        )
+        .register_ask_with(
+            TypeId::of::<GetCount>(),
+            "test::GetCount",
+            |_any: &dyn Any| Ok(vec![0]),
+            |bytes: &[u8]| {
+                let val = u64::from_be_bytes(bytes.try_into().unwrap());
+                Ok(Box::new(val) as Box<dyn Any + Send>)
+            },
+        )
+        .add_outbound_interceptor(Arc::new(RejectAll))
+        .build();
+
+        let result = remote.ask(GetCount, None);
+        assert!(result.is_err());
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert!(err.to_string().contains("rejected"));
+    }
+
+    #[tokio::test]
+    async fn outbound_interceptor_stamps_headers_on_tell() {
+        let transport = Arc::new(InMemoryTransport::new(NodeId("local".into())));
+        let mut rx = transport.register_node(NodeId("node-2".into())).await;
+        transport.connect(&NodeId("node-2".into())).await.unwrap();
+
+        let remote = RemoteActorRefBuilder::<Counter>::new(
+            ActorId {
+                node: NodeId("node-2".into()),
+                local: 1,
+            },
+            "counter",
+            Arc::clone(&transport) as Arc<dyn Transport>,
+        )
+        .register_tell_with(
+            TypeId::of::<Increment>(),
+            "test::Increment",
+            |_any: &dyn Any| Ok(vec![1]),
+        )
+        .add_outbound_interceptor(Arc::new(HeaderStamper))
+        .build();
+
+        remote.tell(Increment).unwrap();
+
+        let received = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Verify the header was stamped by the interceptor
+        assert_eq!(received.headers.get("x-stamp").unwrap(), b"stamped");
+    }
+
+    #[tokio::test]
+    async fn outbound_interceptor_counter_tracks_sends() {
+        let transport = Arc::new(InMemoryTransport::new(NodeId("local".into())));
+        let _rx = transport.register_node(NodeId("node-2".into())).await;
+        transport.connect(&NodeId("node-2".into())).await.unwrap();
+
+        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        let remote = RemoteActorRefBuilder::<Counter>::new(
+            ActorId {
+                node: NodeId("node-2".into()),
+                local: 1,
+            },
+            "counter",
+            Arc::clone(&transport) as Arc<dyn Transport>,
+        )
+        .register_tell_with(
+            TypeId::of::<Increment>(),
+            "test::Increment",
+            |_any: &dyn Any| Ok(vec![1]),
+        )
+        .add_outbound_interceptor(Arc::new(CallCounter(Arc::clone(&count))))
+        .build();
+
+        remote.tell(Increment).unwrap();
+        remote.tell(Increment).unwrap();
+        remote.tell(Increment).unwrap();
+
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn outbound_interceptor_chain_runs_in_order() {
+        let transport = Arc::new(InMemoryTransport::new(NodeId("local".into())));
+        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        // First interceptor counts, second rejects
+        let remote = RemoteActorRefBuilder::<Counter>::new(
+            ActorId {
+                node: NodeId("node-2".into()),
+                local: 1,
+            },
+            "counter",
+            Arc::clone(&transport) as Arc<dyn Transport>,
+        )
+        .register_tell_with(
+            TypeId::of::<Increment>(),
+            "test::Increment",
+            |_any: &dyn Any| Ok(vec![1]),
+        )
+        .add_outbound_interceptor(Arc::new(CallCounter(Arc::clone(&count))))
+        .add_outbound_interceptor(Arc::new(RejectAll))
+        .build();
+
+        let result = remote.tell(Increment);
+        assert!(result.is_err()); // rejected by second interceptor
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1); // first ran
     }
 }

@@ -5239,6 +5239,102 @@ sequenceDiagram
 
 ## 9. Remote Actors
 
+### 9.0 Transport Abstraction
+
+**Problem:** Remote actor communication requires a network transport, but
+different adapters use different protocols (gRPC, TCP, QUIC, libp2p). The
+framework needs an abstract transport layer that adapters can implement.
+
+**Design:** The `Transport` trait defines how nodes send and receive
+`WireEnvelope`s. It is adapter-agnostic — implementations plug in the
+adapter's native networking.
+
+```rust
+/// Abstract transport for sending WireEnvelopes between nodes.
+#[async_trait]
+pub trait Transport: Send + Sync + 'static {
+    /// Fire-and-forget: send an envelope to a remote node.
+    async fn send(&self, target: &NodeId, envelope: WireEnvelope) -> Result<(), TransportError>;
+
+    /// Request-reply: send an envelope and wait for a reply.
+    async fn send_request(&self, target: &NodeId, envelope: WireEnvelope)
+        -> Result<WireEnvelope, TransportError>;
+
+    /// Check if a node is reachable.
+    async fn is_reachable(&self, node: &NodeId) -> bool;
+
+    /// Establish / tear down connections.
+    async fn connect(&self, node: &NodeId) -> Result<(), TransportError>;
+    async fn disconnect(&self, node: &NodeId) -> Result<(), TransportError>;
+}
+```
+
+**`InMemoryTransport`:** Channel-based transport for testing without real
+networking. Two transports can be `link()`ed for bidirectional communication.
+`complete_request()` simulates remote replies for ask flows.
+
+**`TransportRegistry`:** Maps `NodeId` → `Arc<dyn Transport>` for multi-node
+routing. When a message needs to reach a remote node, the registry is
+consulted to find the appropriate transport.
+
+**`RemoteActorRef<A>`:** Implements `ActorRef<A>` for actors on remote nodes.
+Constructed via `RemoteActorRefBuilder` which registers message serializers
+and outbound interceptors. `tell()` serializes and spawns a fire-and-forget
+send task; `ask()` spawns a task that sends and awaits a reply via
+`Transport::send_request()`.
+
+```rust
+let remote = RemoteActorRefBuilder::<Counter>::new(actor_id, "counter", transport)
+    .register_tell::<Increment>()       // serde_json serializer
+    .register_ask::<GetCount>()          // serializer + reply deserializer
+    .add_outbound_interceptor(Arc::new(TracePropagator))
+    .build();
+
+// Location-transparent — same API as local ActorRef:
+remote.tell(Increment(1))?;
+let count = remote.ask(GetCount, None)?.await?;
+```
+
+### 9.0.1 Connection Management (AdapterCluster)
+
+Adapters implement the `AdapterCluster` trait for connection lifecycle:
+
+```rust
+#[async_trait]
+pub trait AdapterCluster: Send + Sync + 'static {
+    async fn connect(&self, node: &NodeId) -> Result<(), ClusterError>;
+    async fn disconnect(&self, node: &NodeId) -> Result<(), ClusterError>;
+    async fn reconnect(&self, node: &NodeId) -> Result<(), ClusterError>;
+    async fn is_reachable(&self, node: &NodeId) -> bool;
+    async fn connected_nodes(&self) -> Vec<NodeId>;
+}
+```
+
+### 9.0.2 Cluster Event Emitter
+
+`ClusterEventEmitter` dispatches `NodeJoined`/`NodeLeft` events to
+subscribers. Adapters call `emit()` when the cluster topology changes.
+Subscribers receive events via callbacks registered with `subscribe()`.
+
+### 9.0.3 Health Checking
+
+```rust
+/// Result of a node health check.
+pub enum HealthStatus { Healthy, Unhealthy { reason: String }, Timeout }
+
+/// Adapters delegate health checks to the provider's mechanism.
+#[async_trait]
+pub trait HealthChecker: Send + Sync + 'static {
+    async fn check(&self, node: &NodeId) -> HealthStatus;
+}
+
+/// Called when a node becomes unreachable.
+#[async_trait]
+pub trait UnreachableHandler: Send + Sync + 'static {
+    async fn on_node_unreachable(&self, node: &NodeId);
+}
+```
+
 ### 9.1 Serialization Contract
 
 **Problem:** When messages cross node boundaries, they must be serialized.
@@ -6175,6 +6271,72 @@ and returns `ActorNotFound`. If the remote **node** doesn't exist (wrong
 | Never existed | `Err(Send)` | `Err(Actor { ActorNotFound })` | Yes |
 | Remote node down | `Err(Send)` | `Err(Send)` after timeout | Yes |
 | Remote actor stopped | `Err(Send)` | `Err(Actor { ActorNotFound })` | Yes (on remote) |
+
+### 9.6 Outbound Interceptors on Remote Actor Refs
+
+**Problem:** `RemoteActorRef` must run the outbound interceptor pipeline
+**before serialization**, just as the design specifies in §5.3. Without this,
+cross-cutting concerns like trace propagation, auth token injection, and
+sender-side rate limiting cannot work for remote calls.
+
+**Design:** `RemoteActorRef` stores an optional `Vec<Arc<dyn OutboundInterceptor>>`
+and runs the pipeline synchronously in `tell()` and `ask()` before the message
+body is serialized:
+
+```
+Caller → on_send() pipeline → serialize body → Headers::to_wire() → WireEnvelope → Transport
+                                                                          ↓ (ask only)
+                                                              reply arrives via Transport
+                                                                          ↓
+                                                              deserialize reply body
+                                                                          ↓
+                                                              on_reply() pipeline → AskReply
+```
+
+**`tell()` flow:**
+
+1. Create empty `Headers` and `RuntimeHeaders`
+2. Build `OutboundContext { remote: true, ... }`
+3. For each interceptor: call `on_send(ctx, runtime_headers, headers, &msg)`
+   - `Continue` → proceed to next
+   - `Reject(reason)` → return `Err(ActorSendError)` immediately
+   - `Drop` → return `Err(ActorSendError)` immediately
+   - `Delay(d)` → applied in the spawned send task (future enhancement)
+4. Serialize the message body via the registered serializer
+5. Convert `Headers` to `WireHeaders` via `to_wire()` (local-only headers excluded)
+6. Build `WireEnvelope` with wire headers and serialized body
+7. Spawn task: `transport.send(target_node, envelope)`
+
+**`ask()` flow:** Same as tell steps 1-6, then:
+7. Spawn task: `transport.send_request(target_node, envelope)`
+8. On reply: deserialize reply body
+9. Call `on_reply(ctx, runtime_headers, headers, &Outcome::AskSuccess { reply })`
+   for each interceptor (observation only, no disposition)
+10. Deliver reply via `AskReply` oneshot channel
+
+**Registration via builder:**
+
+```rust
+let remote = RemoteActorRefBuilder::<MyActor>::new(actor_id, "name", transport)
+    .add_outbound_interceptor(Arc::new(TraceContextPropagator))
+    .add_outbound_interceptor(Arc::new(AuthTokenInjector::new(token)))
+    .register_tell::<Increment>()
+    .register_ask::<GetCount>()
+    .build();
+
+// Headers are now stamped automatically on every send:
+remote.tell(Increment(1))?;  // trace-id + auth headers injected
+let count = remote.ask(GetCount, None)?.await?;
+```
+
+**Key design choices:**
+
+| Decision | Rationale |
+|---|---|
+| Interceptors run before serialization | Interceptors see the typed message (`&dyn Any`) for inspection/routing, and stamp typed `Headers` which convert to `WireHeaders` |
+| `Reject`/`Drop` return `Err` synchronously | Caller gets immediate feedback; no background task is spawned |
+| `on_reply` runs in the spawned task | Reply arrives asynchronously; interceptors observe but don't control delivery |
+| Interceptors are `Arc`-shared | `RemoteActorRef` is `Clone`; all clones share the same interceptor pipeline |
 
 ---
 
