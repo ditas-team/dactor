@@ -186,6 +186,7 @@ Real multi-process cluster tests using dactor-test-harness with gRPC control:
 | T8 | Corner case: send to stopped actor | all | 🔲 Not started |
 | T9 | Corner case: concurrent asks from multiple callers | all | 🔲 Not started |
 | T10 | Corner case: stream with slow consumer | all | 🔲 Not started |
+| T11 | E2E: remote ask with version breaking change — sender v1, receiver v2, verify MessageVersionHandler migration or rejection | all | 🔲 Not started |
 
 ### 3.4 Stream/Feed Batching (PR #42)
 
@@ -229,8 +230,10 @@ Wire format, cross-node communication, and system actors for remote operations.
 | R1 | Transport trait | §9 | Abstract transport interface (gRPC, TCP, etc.) | ✅ PR #62 |
 | R2 | WireEnvelope send/receive | §9.1 | Serialize messages → WireEnvelope → transport → deserialize | ✅ PR #63 |
 | R3 | RemoteActorRef | §9.3 | ActorRef impl that serializes + sends via transport | ✅ PR #64 |
+| R3b | RemoteActorRef outbound interceptors | §5.3, §9.3 | Wire OutboundInterceptor pipeline into RemoteActorRef tell/ask (on_send, on_reply, header stamping) | 🔲 Not started |
 | R4 | Connection management | §10.2 | AdapterCluster: connect(), disconnect(), reconnect |
 | R5 | Batched remote sends | §4.11.1 | BatchWriter batches items → single WireEnvelope per batch |
+| R6 | WireInterceptor (envelope-level) | new | Intercept WireEnvelopes at the transport boundary using only headers + body bytes (no deserialization). Enables runtime-level load control: delay, reject, drop, rate-limit, prioritize remote messages before they enter the actor mailbox. Runs on receiver side between Transport and dispatch. | 🔲 Not started |
 
 ### 4.2 System Actors
 
@@ -240,6 +243,23 @@ Wire format, cross-node communication, and system actors for remote operations.
 | S2 | WatchManager | §8.2, §6.2 | Handle remote watch/unwatch, deliver ChildTerminated | ✅ PR #65 |
 | S3 | CancelManager | §8.2, §4.13 | Process remote cancellation requests | ✅ PR #65 |
 | S4 | NodeDirectory | §8.3 | Map NodeId → peer system actor refs | ✅ PR #65 |
+
+#### 4.2.1 Adapter Integration for System Actors
+
+Each adapter runtime must wire the core system actors into its remote message handling:
+
+| # | Adapter | Feature | Description | Status |
+|---|---------|---------|-------------|--------|
+| SA1 | dactor-ractor | SpawnManager wiring | RactorRuntime starts SpawnManager, routes incoming SpawnRequest via ractor's remote channel, calls create_actor + local spawn | 🔲 Not started |
+| SA2 | dactor-ractor | WatchManager wiring | RactorRuntime starts WatchManager, translates ractor's native watch into WatchManager entries, sends WatchNotification on termination | 🔲 Not started |
+| SA3 | dactor-ractor | CancelManager wiring | RactorRuntime registers CancellationTokens with CancelManager, handles incoming CancelRequest from remote nodes | 🔲 Not started |
+| SA4 | dactor-ractor | NodeDirectory wiring | RactorRuntime populates NodeDirectory from ractor_cluster membership, updates PeerStatus on connect/disconnect | 🔲 Not started |
+| SA5 | dactor-kameo | SpawnManager wiring | KameoRuntime starts SpawnManager, routes SpawnRequest via kameo's distributed actor layer | 🔲 Not started |
+| SA6 | dactor-kameo | WatchManager wiring | KameoRuntime wires kameo's actor lifecycle into WatchManager for remote watch delivery | 🔲 Not started |
+| SA7 | dactor-kameo | CancelManager wiring | KameoRuntime registers tokens with CancelManager, handles remote cancel | 🔲 Not started |
+| SA8 | dactor-kameo | NodeDirectory wiring | KameoRuntime populates NodeDirectory from kameo/libp2p peer discovery | 🔲 Not started |
+| SA9 | dactor-mock | System actor wiring | MockCluster wires SpawnManager + WatchManager + CancelManager for simulated multi-node testing | 🔲 Not started |
+| SA10 | dactor-coerce | System actor wiring | CoerceRuntime wires system actors (stub — depends on coerce sharding integration) | 🔲 Not started |
 
 ### 4.3 Serialization & Schema
 
