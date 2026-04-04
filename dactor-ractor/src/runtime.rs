@@ -33,6 +33,11 @@ use dactor::stream::{
     BatchConfig, BatchReader, BatchWriter, BoxStream, StreamReceiver, StreamSender,
 };
 use dactor::supervision::ChildTerminated;
+use dactor::system_actors::{
+    CancelManager, CancelResponse, NodeDirectory, PeerStatus, SpawnManager, SpawnRequest,
+    SpawnResponse, WatchManager, WatchNotification,
+};
+use dactor::type_registry::TypeRegistry;
 
 use crate::cluster::RactorClusterEvents;
 
@@ -668,6 +673,14 @@ impl Default for SpawnOptions {
 /// Actors are spawned as real ractor actors via [`ractor::Actor::spawn`].
 /// Messages are delivered through ractor's mailbox as type-erased dispatch
 /// envelopes, supporting multiple `Handler<M>` impls per actor.
+///
+/// ## System Actors
+///
+/// The runtime includes system actors for remote operations:
+/// - [`SpawnManager`] — handles remote actor spawn requests
+/// - [`WatchManager`] — handles remote watch/unwatch subscriptions
+/// - [`CancelManager`] — handles remote cancellation requests
+/// - [`NodeDirectory`] — tracks peer node connection state
 pub struct RactorRuntime {
     node_id: NodeId,
     next_local: AtomicU64,
@@ -676,6 +689,14 @@ pub struct RactorRuntime {
     drop_observer: Option<Arc<dyn DropObserver>>,
     dead_letter_handler: Arc<Option<Arc<dyn DeadLetterHandler>>>,
     watchers: WatcherMap,
+    /// Manages remote actor spawn requests for this node.
+    spawn_manager: SpawnManager,
+    /// Manages remote watch/unwatch subscriptions for this node.
+    watch_manager: WatchManager,
+    /// Manages remote cancellation requests for this node.
+    cancel_manager: CancelManager,
+    /// Tracks peer node connection state.
+    node_directory: NodeDirectory,
 }
 
 impl RactorRuntime {
@@ -689,7 +710,33 @@ impl RactorRuntime {
             drop_observer: None,
             dead_letter_handler: Arc::new(None),
             watchers: Arc::new(Mutex::new(HashMap::new())),
+            spawn_manager: SpawnManager::new(TypeRegistry::new()),
+            watch_manager: WatchManager::new(),
+            cancel_manager: CancelManager::new(),
+            node_directory: NodeDirectory::new(),
         }
+    }
+
+    /// Create a new `RactorRuntime` with a specific node ID.
+    pub fn with_node_id(node_id: NodeId) -> Self {
+        Self {
+            node_id,
+            next_local: AtomicU64::new(1),
+            cluster_events: RactorClusterEvents::new(),
+            outbound_interceptors: Arc::new(Vec::new()),
+            drop_observer: None,
+            dead_letter_handler: Arc::new(None),
+            watchers: Arc::new(Mutex::new(HashMap::new())),
+            spawn_manager: SpawnManager::new(TypeRegistry::new()),
+            watch_manager: WatchManager::new(),
+            cancel_manager: CancelManager::new(),
+            node_directory: NodeDirectory::new(),
+        }
+    }
+
+    /// Returns the node ID of this runtime.
+    pub fn node_id(&self) -> &NodeId {
+        &self.node_id
     }
 
     /// Add a global outbound interceptor.
@@ -855,6 +902,149 @@ impl RactorRuntime {
                 watchers.remove(target_id);
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // SA1: SpawnManager wiring
+    // -----------------------------------------------------------------------
+
+    /// Access the spawn manager.
+    pub fn spawn_manager(&self) -> &SpawnManager {
+        &self.spawn_manager
+    }
+
+    /// Access the spawn manager mutably (for registering actor factories).
+    pub fn spawn_manager_mut(&mut self) -> &mut SpawnManager {
+        &mut self.spawn_manager
+    }
+
+    /// Register an actor type for remote spawning on this node.
+    ///
+    /// The factory closure deserializes actor `Args` from bytes and returns
+    /// the constructed actor as `Box<dyn Any + Send>`. The runtime is
+    /// responsible for actually spawning the returned actor.
+    pub fn register_factory(
+        &mut self,
+        type_name: impl Into<String>,
+        factory: impl Fn(&[u8]) -> Result<Box<dyn std::any::Any + Send>, dactor::remote::SerializationError>
+            + Send
+            + Sync
+            + 'static,
+    ) {
+        self.spawn_manager
+            .type_registry_mut()
+            .register_factory(type_name, factory);
+    }
+
+    /// Process a remote spawn request.
+    ///
+    /// Looks up the actor type in the registry, deserializes Args from bytes,
+    /// and returns a [`SpawnResponse`]. On success, the caller is responsible
+    /// for actually spawning the actor via `spawn()` or `spawn_with_deps()`.
+    pub fn handle_spawn_request(&mut self, request: &SpawnRequest) -> SpawnResponse {
+        match self.spawn_manager.create_actor(request) {
+            Ok(_actor) => {
+                let local = self.next_local.fetch_add(1, Ordering::SeqCst);
+                let actor_id = ActorId {
+                    node: self.node_id.clone(),
+                    local,
+                };
+                self.spawn_manager.record_spawn(actor_id.clone());
+                SpawnResponse::Success {
+                    request_id: request.request_id.clone(),
+                    actor_id,
+                }
+            }
+            Err(e) => SpawnResponse::Failure {
+                request_id: request.request_id.clone(),
+                error: e.to_string(),
+            },
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // SA2: WatchManager wiring
+    // -----------------------------------------------------------------------
+
+    /// Access the watch manager (for remote watch subscriptions).
+    pub fn watch_manager(&self) -> &WatchManager {
+        &self.watch_manager
+    }
+
+    /// Access the watch manager mutably.
+    pub fn watch_manager_mut(&mut self) -> &mut WatchManager {
+        &mut self.watch_manager
+    }
+
+    /// Register a remote watch: a remote watcher wants to know when a local
+    /// actor terminates.
+    pub fn remote_watch(&mut self, target: ActorId, watcher: ActorId) {
+        self.watch_manager.watch(target, watcher);
+    }
+
+    /// Remove a remote watch subscription.
+    pub fn remote_unwatch(&mut self, target: &ActorId, watcher: &ActorId) {
+        self.watch_manager.unwatch(target, watcher);
+    }
+
+    /// Called when a local actor terminates. Returns notifications for all
+    /// remote watchers that should be sent to their respective nodes.
+    pub fn notify_terminated(&mut self, terminated: &ActorId) -> Vec<WatchNotification> {
+        self.watch_manager.on_terminated(terminated)
+    }
+
+    // -----------------------------------------------------------------------
+    // SA3: CancelManager wiring
+    // -----------------------------------------------------------------------
+
+    /// Access the cancel manager.
+    pub fn cancel_manager(&self) -> &CancelManager {
+        &self.cancel_manager
+    }
+
+    /// Access the cancel manager mutably.
+    pub fn cancel_manager_mut(&mut self) -> &mut CancelManager {
+        &mut self.cancel_manager
+    }
+
+    /// Register a cancellation token for a request (for remote cancel support).
+    pub fn register_cancel(&mut self, request_id: String, token: CancellationToken) {
+        self.cancel_manager.register(request_id, token);
+    }
+
+    /// Process a remote cancellation request.
+    pub fn cancel_request(&mut self, request_id: &str) -> CancelResponse {
+        self.cancel_manager.cancel(request_id)
+    }
+
+    // -----------------------------------------------------------------------
+    // SA4: NodeDirectory wiring
+    // -----------------------------------------------------------------------
+
+    /// Access the node directory.
+    pub fn node_directory(&self) -> &NodeDirectory {
+        &self.node_directory
+    }
+
+    /// Access the node directory mutably.
+    pub fn node_directory_mut(&mut self) -> &mut NodeDirectory {
+        &mut self.node_directory
+    }
+
+    /// Register a peer node in the directory.
+    pub fn connect_peer(&mut self, peer_id: NodeId, address: Option<String>) {
+        self.node_directory.add_peer(peer_id.clone(), address);
+        self.node_directory.set_status(&peer_id, PeerStatus::Connected);
+    }
+
+    /// Mark a peer as disconnected.
+    pub fn disconnect_peer(&mut self, peer_id: &NodeId) {
+        self.node_directory.set_status(peer_id, PeerStatus::Disconnected);
+    }
+
+    /// Check if a peer node is connected.
+    pub fn is_peer_connected(&self, peer_id: &NodeId) -> bool {
+        self.node_directory.is_connected(peer_id)
     }
 }
 
