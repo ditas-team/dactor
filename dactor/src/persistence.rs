@@ -89,8 +89,7 @@ impl std::fmt::Display for PersistError {
 impl std::error::Error for PersistError {}
 
 /// What to do when recovery fails.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub enum RecoveryFailurePolicy {
     /// Stop the actor on recovery failure (default).
     #[default]
@@ -106,10 +105,8 @@ pub enum RecoveryFailurePolicy {
     SkipAndStart,
 }
 
-
 /// What to do when a persist operation fails.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub enum PersistFailurePolicy {
     /// Stop the actor on persist failure (default).
     #[default]
@@ -125,10 +122,8 @@ pub enum PersistFailurePolicy {
     },
 }
 
-
 /// Controls automatic snapshotting for event-sourced actors.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SnapshotConfig {
     /// Take a snapshot every N events (None = disabled).
     pub every_n_events: Option<u64>,
@@ -140,17 +135,14 @@ pub struct SnapshotConfig {
     pub delete_events_on_snapshot: bool,
 }
 
-
 /// Controls automatic state saving for durable state actors.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SaveConfig {
     /// Save state every N messages (None = disabled).
     pub every_n_messages: Option<u64>,
     /// Save state at this interval (None = disabled).
     pub interval: Option<Duration>,
 }
-
 
 // ── Storage Traits ──────────────────────────────────
 
@@ -236,10 +228,7 @@ pub trait StateStorage: Send + Sync + 'static {
     ) -> Result<Option<Vec<u8>>, PersistError>;
 
     /// Delete the saved state.
-    async fn delete_state(
-        &self,
-        persistence_id: &PersistenceId,
-    ) -> Result<(), PersistError>;
+    async fn delete_state(&self, persistence_id: &PersistenceId) -> Result<(), PersistError>;
 }
 
 // ── In-Memory Storage (for testing) ─────────────────
@@ -411,10 +400,7 @@ impl StateStorage for InMemoryStorage {
         Ok(states.get(&persistence_id.0).cloned())
     }
 
-    async fn delete_state(
-        &self,
-        persistence_id: &PersistenceId,
-    ) -> Result<(), PersistError> {
+    async fn delete_state(&self, persistence_id: &PersistenceId) -> Result<(), PersistError> {
         let mut states = self.states.lock().unwrap();
         states.remove(&persistence_id.0);
         Ok(())
@@ -518,10 +504,7 @@ pub trait EventSourced: PersistentActor {
     }
 
     /// Create a snapshot of the current state.
-    async fn snapshot(
-        &self,
-        snapshots: &dyn SnapshotStorage,
-    ) -> Result<(), PersistError> {
+    async fn snapshot(&self, snapshots: &dyn SnapshotStorage) -> Result<(), PersistError> {
         let payload = self.snapshot_payload()?;
         snapshots
             .save_snapshot(&self.persistence_id(), self.last_sequence_id(), &payload)
@@ -562,10 +545,7 @@ pub trait DurableState: PersistentActor {
     fn restore_state(&mut self, payload: Vec<u8>) -> Result<(), PersistError>;
 
     /// Save the current state to storage.
-    async fn save_state(
-        &self,
-        storage: &dyn StateStorage,
-    ) -> Result<(), PersistError> {
+    async fn save_state(&self, storage: &dyn StateStorage) -> Result<(), PersistError> {
         let payload = self.serialize_state()?;
         storage.save_state(&self.persistence_id(), &payload).await
     }
@@ -651,7 +631,10 @@ pub async fn recover_event_sourced<A: EventSourced>(
         Ok(()) => Ok(()),
         Err(e) => match policy {
             RecoveryFailurePolicy::Stop => Err(e),
-            RecoveryFailurePolicy::Retry { max_attempts, initial_delay } => {
+            RecoveryFailurePolicy::Retry {
+                max_attempts,
+                initial_delay,
+            } => {
                 let attempts = max_attempts.unwrap_or(3);
                 let mut delay = initial_delay;
                 for _ in 1..attempts {
@@ -726,7 +709,10 @@ pub async fn recover_durable_state<A: DurableState>(
         Ok(()) => Ok(()),
         Err(e) => match policy {
             RecoveryFailurePolicy::Stop => Err(e),
-            RecoveryFailurePolicy::Retry { max_attempts, initial_delay } => {
+            RecoveryFailurePolicy::Retry {
+                max_attempts,
+                initial_delay,
+            } => {
                 let attempts = max_attempts.unwrap_or(3);
                 let mut delay = initial_delay;
                 for _ in 1..attempts {
@@ -1238,7 +1224,7 @@ mod tests {
     #[tokio::test]
     async fn test_durable_state_save_and_recover() {
         let storage = InMemoryStorage::new();
-        let pid = PersistenceId::new("Config", "ds");
+        let _pid = PersistenceId::new("Config", "ds");
 
         // Save state via trait default impl
         let mut actor = ConfigActor::new("ds");

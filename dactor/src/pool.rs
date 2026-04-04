@@ -18,11 +18,11 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
-#[cfg(feature = "metrics")]
-use crate::metrics::ActorMetricsHandle;
 use crate::actor::{Actor, ActorRef, AskReply, FeedHandler, Handler, StreamHandler};
 use crate::errors::ActorSendError;
 use crate::message::Message;
+#[cfg(feature = "metrics")]
+use crate::metrics::ActorMetricsHandle;
 use crate::node::{ActorId, NodeId};
 use crate::stream::{BatchConfig, BoxStream};
 
@@ -283,7 +283,8 @@ impl<A: Actor, R: ActorRef<A>> ActorRef<A> for PoolRef<A, R> {
         A: StreamHandler<M>,
         M: Message,
     {
-        self.select_worker().stream(msg, buffer, batch_config, cancel)
+        self.select_worker()
+            .stream(msg, buffer, batch_config, cancel)
     }
 
     fn feed<Item, Reply>(
@@ -298,7 +299,8 @@ impl<A: Actor, R: ActorRef<A>> ActorRef<A> for PoolRef<A, R> {
         Item: Send + 'static,
         Reply: Send + 'static,
     {
-        self.select_worker().feed(input, buffer, batch_config, cancel)
+        self.select_worker()
+            .feed(input, buffer, batch_config, cancel)
     }
 }
 
@@ -314,7 +316,7 @@ impl crate::test_support::test_runtime::TestRuntime {
     /// `"{name}-{i}"` where `i` is the zero-based worker index.
     ///
     /// When metrics are enabled, all workers share a single
-    /// [`ActorMetricsHandle`](crate::metrics::ActorMetricsHandle) registered
+    /// [`ActorMetricsHandle`] registered
     /// under the pool's [`ActorId`]. This means the pool's metrics reflect
     /// aggregate throughput across all workers without per-worker overhead.
     pub fn spawn_pool<A>(
@@ -329,12 +331,7 @@ impl crate::test_support::test_runtime::TestRuntime {
         A::Args: Clone,
     {
         let workers: Vec<_> = (0..pool_size)
-            .map(|i| {
-                self.spawn(
-                    &format!("{}-{}", name, i),
-                    args.clone(),
-                )
-            })
+            .map(|i| self.spawn(&format!("{}-{}", name, i), args.clone()))
             .collect();
 
         PoolRef::new(workers, routing)
@@ -348,7 +345,6 @@ impl crate::test_support::test_runtime::TestRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 

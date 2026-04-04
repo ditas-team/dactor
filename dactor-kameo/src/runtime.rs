@@ -12,27 +12,26 @@ use futures::FutureExt;
 use tokio_util::sync::CancellationToken;
 
 use dactor::actor::{
-    Actor, ActorContext, ActorError, AskReply, FeedHandler, Handler, StreamHandler,
-    ActorRef,
+    Actor, ActorContext, ActorError, ActorRef, AskReply, FeedHandler, Handler, StreamHandler,
 };
-use dactor::dispatch::{
-    AskDispatch, Dispatch, FeedDispatch, StreamDispatch, TypedDispatch,
-};
-use dactor::errors::{ActorSendError, ErrorAction, RuntimeError};
-use dactor::mailbox::MailboxConfig;
-use dactor::supervision::ChildTerminated;
 use dactor::dead_letter::{DeadLetterEvent, DeadLetterHandler, DeadLetterReason};
+use dactor::dispatch::{AskDispatch, Dispatch, FeedDispatch, StreamDispatch, TypedDispatch};
+use dactor::errors::{ActorSendError, ErrorAction, RuntimeError};
 use dactor::interceptor::{
-    Disposition, DropObserver, InboundContext, InboundInterceptor,
-    OutboundInterceptor, Outcome, SendMode,
+    Disposition, DropObserver, InboundContext, InboundInterceptor, OutboundInterceptor, Outcome,
+    SendMode,
 };
+use dactor::mailbox::MailboxConfig;
 use dactor::message::{Headers, Message, RuntimeHeaders};
 use dactor::node::{ActorId, NodeId};
 use dactor::runtime_support::{
-    OutboundPipeline, wrap_batched_stream_with_interception, wrap_stream_with_interception,
-    spawn_feed_drain, spawn_feed_batched_drain,
+    spawn_feed_batched_drain, spawn_feed_drain, wrap_batched_stream_with_interception,
+    wrap_stream_with_interception, OutboundPipeline,
 };
-use dactor::stream::{BatchConfig, BatchReader, BatchWriter, BoxStream, StreamReceiver, StreamSender};
+use dactor::stream::{
+    BatchConfig, BatchReader, BatchWriter, BoxStream, StreamReceiver, StreamSender,
+};
+use dactor::supervision::ChildTerminated;
 
 use crate::cluster::KameoClusterEvents;
 
@@ -236,10 +235,9 @@ impl<A: Actor + 'static> kameo::message::Message<DactorMsg<A>> for KameoDactorAc
 
         // Dispatch with panic catching and cancellation racing
         let result = if let Some(ref token) = cancel_token {
-            let dispatch_fut = std::panic::AssertUnwindSafe(
-                dispatch.dispatch(&mut self.actor, &mut self.ctx),
-            )
-            .catch_unwind();
+            let dispatch_fut =
+                std::panic::AssertUnwindSafe(dispatch.dispatch(&mut self.actor, &mut self.ctx))
+                    .catch_unwind();
             tokio::select! {
                 biased;
                 r = dispatch_fut => r,
@@ -252,11 +250,9 @@ impl<A: Actor + 'static> kameo::message::Message<DactorMsg<A>> for KameoDactorAc
                 }
             }
         } else {
-            std::panic::AssertUnwindSafe(
-                dispatch.dispatch(&mut self.actor, &mut self.ctx),
-            )
-            .catch_unwind()
-            .await
+            std::panic::AssertUnwindSafe(dispatch.dispatch(&mut self.actor, &mut self.ctx))
+                .catch_unwind()
+                .await
         };
 
         self.ctx.set_cancellation_token(None);
@@ -274,7 +270,9 @@ impl<A: Actor + 'static> kameo::message::Message<DactorMsg<A>> for KameoDactorAc
         match result {
             Ok(dispatch_result) => {
                 let outcome = match (&dispatch_result.reply, send_mode) {
-                    (Some(reply), SendMode::Ask) => Outcome::AskSuccess { reply: reply.as_ref() },
+                    (Some(reply), SendMode::Ask) => Outcome::AskSuccess {
+                        reply: reply.as_ref(),
+                    },
                     _ => Outcome::TellSuccess,
                 };
 
@@ -315,7 +313,9 @@ impl<A: Actor + 'static> kameo::message::Message<DactorMsg<A>> for KameoDactorAc
                         // the kameo message::Context here.
                         //
                         // Re-panic to let kameo's on_panic handler deal with it.
-                        std::panic::resume_unwind(Box::new("dactor: actor stop requested after panic"));
+                        std::panic::resume_unwind(Box::new(
+                            "dactor: actor stop requested after panic",
+                        ));
                     }
                     ErrorAction::Restart => {
                         tracing::warn!("Restart not fully implemented, treating as Resume");
@@ -372,7 +372,12 @@ impl<A: Actor> KameoActorRef<A> {
         }
     }
 
-    fn notify_dead_letter(&self, message_type: &'static str, send_mode: SendMode, reason: DeadLetterReason) {
+    fn notify_dead_letter(
+        &self,
+        message_type: &'static str,
+        send_mode: SendMode,
+        reason: DeadLetterReason,
+    ) {
         if let Some(ref handler) = *self.dead_letter_handler {
             let event = DeadLetterEvent {
                 target_id: self.id.clone(),
@@ -424,7 +429,11 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
             .tell(DactorMsg(dispatch))
             .try_send()
             .map_err(|e| {
-                self.notify_dead_letter(std::any::type_name::<M>(), SendMode::Tell, DeadLetterReason::ActorStopped);
+                self.notify_dead_letter(
+                    std::any::type_name::<M>(),
+                    SendMode::Tell,
+                    DeadLetterReason::ActorStopped,
+                );
                 ActorSendError(e.to_string())
             })
     }
@@ -478,7 +487,11 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
             .tell(DactorMsg(dispatch))
             .try_send()
             .map_err(|e| {
-                self.notify_dead_letter(std::any::type_name::<M>(), SendMode::Ask, DeadLetterReason::ActorStopped);
+                self.notify_dead_letter(
+                    std::any::type_name::<M>(),
+                    SendMode::Ask,
+                    DeadLetterReason::ActorStopped,
+                );
                 ActorSendError(e.to_string())
             })?;
         Ok(AskReply::new(rx))
@@ -518,7 +531,11 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
         let buffer = buffer.max(1);
         let (tx, rx) = tokio::sync::mpsc::channel(buffer);
         let sender = StreamSender::new(tx);
-        let dispatch: Box<dyn Dispatch<A>> = Box::new(StreamDispatch { msg, sender, cancel });
+        let dispatch: Box<dyn Dispatch<A>> = Box::new(StreamDispatch {
+            msg,
+            sender,
+            cancel,
+        });
         self.inner
             .tell(DactorMsg(dispatch))
             .try_send()
@@ -550,7 +567,9 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
                         } else {
                             match rx.recv().await {
                                 Some(item) => {
-                                    if writer.push(item).await.is_err() { break; }
+                                    if writer.push(item).await.is_err() {
+                                        break;
+                                    }
                                 }
                                 None => break,
                             }
@@ -559,14 +578,18 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
                     let _ = writer.flush().await;
                 });
                 Ok(wrap_batched_stream_with_interception(
-                    reader, buffer, pipeline, std::any::type_name::<M>(),
+                    reader,
+                    buffer,
+                    pipeline,
+                    std::any::type_name::<M>(),
                 ))
             }
-            None => {
-                Ok(wrap_stream_with_interception(
-                    rx, buffer, pipeline, std::any::type_name::<M>(),
-                ))
-            }
+            None => Ok(wrap_stream_with_interception(
+                rx,
+                buffer,
+                pipeline,
+                std::any::type_name::<M>(),
+            )),
         }
     }
 
@@ -600,11 +623,23 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
         match batch_config {
             Some(batch_config) => {
                 spawn_feed_batched_drain(
-                    input, item_tx, buffer, batch_config, cancel, pipeline, std::any::type_name::<Item>(),
+                    input,
+                    item_tx,
+                    buffer,
+                    batch_config,
+                    cancel,
+                    pipeline,
+                    std::any::type_name::<Item>(),
                 );
             }
             None => {
-                spawn_feed_drain(input, item_tx, cancel, pipeline, std::any::type_name::<Item>());
+                spawn_feed_drain(
+                    input,
+                    item_tx,
+                    cancel,
+                    pipeline,
+                    std::any::type_name::<Item>(),
+                );
             }
         }
 
@@ -716,12 +751,7 @@ impl KameoRuntime {
     }
 
     /// Spawn an actor with explicit dependencies.
-    pub fn spawn_with_deps<A>(
-        &self,
-        name: &str,
-        args: A::Args,
-        deps: A::Deps,
-    ) -> KameoActorRef<A>
+    pub fn spawn_with_deps<A>(&self, name: &str, args: A::Args, deps: A::Deps) -> KameoActorRef<A>
     where
         A: Actor + 'static,
     {
@@ -774,10 +804,8 @@ impl KameoRuntime {
         };
 
         // kameo's Spawn::spawn_with_mailbox is synchronous (internally calls tokio::spawn)
-        let actor_ref = KameoDactorActor::<A>::spawn_with_mailbox(
-            spawn_args,
-            kameo::mailbox::unbounded(),
-        );
+        let actor_ref =
+            KameoDactorActor::<A>::spawn_with_mailbox(spawn_args, kameo::mailbox::unbounded());
 
         KameoActorRef {
             id: actor_id,

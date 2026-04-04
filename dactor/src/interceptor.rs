@@ -95,7 +95,10 @@ pub struct InterceptResult {
 impl InterceptResult {
     /// All interceptors returned Continue.
     pub fn continued() -> Self {
-        Self { disposition: Disposition::Continue, interceptor_name: "" }
+        Self {
+            disposition: Disposition::Continue,
+            interceptor_name: "",
+        }
     }
 
     /// Whether the disposition is `Continue`.
@@ -142,10 +145,7 @@ pub trait DropObserver: Send + Sync + 'static {
 /// Notify the drop observer when an interceptor drops an item.
 /// If no observer is registered, the drop is silent — the application
 /// is responsible for registering an observer if it wants visibility.
-pub fn notify_drop(
-    observer: &Option<Arc<dyn DropObserver>>,
-    notice: DropNotice,
-) {
+pub fn notify_drop(observer: &Option<Arc<dyn DropObserver>>, notice: DropNotice) {
     if let Some(obs) = observer {
         obs.on_drop(notice);
     }
@@ -163,7 +163,10 @@ pub fn intercept_outbound_stream_item(
     for interceptor in interceptors {
         let d = interceptor.on_stream_item(ctx, headers, seq, item);
         if !matches!(d, Disposition::Continue) {
-            return InterceptResult { disposition: d, interceptor_name: interceptor.name() };
+            return InterceptResult {
+                disposition: d,
+                interceptor_name: interceptor.name(),
+            };
         }
     }
     InterceptResult::continued()
@@ -206,8 +209,12 @@ impl<'a> std::fmt::Debug for Outcome<'a> {
             Self::TellSuccess => write!(f, "TellSuccess"),
             Self::AskSuccess { .. } => write!(f, "AskSuccess"),
             Self::HandlerError { error } => write!(f, "HandlerError({:?})", error),
-            Self::StreamCompleted { items_emitted } => write!(f, "StreamCompleted({})", items_emitted),
-            Self::StreamCancelled { items_emitted } => write!(f, "StreamCancelled({})", items_emitted),
+            Self::StreamCompleted { items_emitted } => {
+                write!(f, "StreamCompleted({})", items_emitted)
+            }
+            Self::StreamCancelled { items_emitted } => {
+                write!(f, "StreamCancelled({})", items_emitted)
+            }
         }
     }
 }

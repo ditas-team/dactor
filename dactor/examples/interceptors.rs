@@ -7,10 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use dactor::actor::{Actor, ActorContext, Handler, ActorRef};
+use dactor::actor::{Actor, ActorContext, ActorRef, Handler};
 use dactor::interceptor::{
-    Disposition, InboundContext, InboundInterceptor, Outcome, OutboundContext,
-    OutboundInterceptor,
+    Disposition, InboundContext, InboundInterceptor, OutboundContext, OutboundInterceptor, Outcome,
 };
 use dactor::mailbox::MailboxConfig;
 use dactor::message::{Headers, Message, Priority, RuntimeHeaders};

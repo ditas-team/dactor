@@ -113,7 +113,9 @@ impl CircuitBreakerInterceptor {
     /// Returns `Closed` if the actor has no recorded state.
     pub fn state_for(&self, actor_id: &ActorId) -> CircuitState {
         let states = self.states.lock().unwrap();
-        states.get(actor_id).map_or(CircuitState::Closed, |s| s.state)
+        states
+            .get(actor_id)
+            .map_or(CircuitState::Closed, |s| s.state)
     }
 }
 
@@ -146,18 +148,12 @@ impl InboundInterceptor for CircuitBreakerInterceptor {
                         return Disposition::Continue;
                     }
                 }
-                Disposition::Reject(format!(
-                    "circuit breaker open: {}",
-                    ctx.actor_name
-                ))
+                Disposition::Reject(format!("circuit breaker open: {}", ctx.actor_name))
             }
             CircuitState::HalfOpen => {
                 if entry.probe_in_flight {
                     // A probe is already in flight; reject additional messages.
-                    Disposition::Reject(format!(
-                        "circuit breaker open: {}",
-                        ctx.actor_name
-                    ))
+                    Disposition::Reject(format!("circuit breaker open: {}", ctx.actor_name))
                 } else {
                     // Allow the probe message.
                     entry.probe_in_flight = true;
@@ -282,7 +278,8 @@ mod tests {
 
     #[test]
     fn messages_flow_normally_under_threshold() {
-        let cb = CircuitBreakerInterceptor::new(5, Duration::from_secs(60), Duration::from_secs(30));
+        let cb =
+            CircuitBreakerInterceptor::new(5, Duration::from_secs(60), Duration::from_secs(30));
         let id = make_actor_id(1);
 
         // 4 errors (threshold = 5) — circuit stays closed
@@ -300,7 +297,8 @@ mod tests {
 
     #[test]
     fn circuit_opens_after_n_errors() {
-        let cb = CircuitBreakerInterceptor::new(3, Duration::from_secs(60), Duration::from_secs(30));
+        let cb =
+            CircuitBreakerInterceptor::new(3, Duration::from_secs(60), Duration::from_secs(30));
         let id = make_actor_id(1);
 
         for _ in 0..3 {
@@ -311,7 +309,8 @@ mod tests {
 
     #[test]
     fn messages_rejected_when_circuit_is_open() {
-        let cb = CircuitBreakerInterceptor::new(2, Duration::from_secs(60), Duration::from_secs(30));
+        let cb =
+            CircuitBreakerInterceptor::new(2, Duration::from_secs(60), Duration::from_secs(30));
         let id = make_actor_id(1);
 
         // Trip the circuit
@@ -338,7 +337,8 @@ mod tests {
     #[test]
     fn circuit_transitions_to_half_open_after_cooldown() {
         // Use a tiny cooldown so the test is fast.
-        let cb = CircuitBreakerInterceptor::new(2, Duration::from_secs(60), Duration::from_millis(1));
+        let cb =
+            CircuitBreakerInterceptor::new(2, Duration::from_secs(60), Duration::from_millis(1));
         let id = make_actor_id(1);
 
         // Trip the circuit
@@ -362,7 +362,8 @@ mod tests {
 
     #[test]
     fn successful_probe_closes_circuit() {
-        let cb = CircuitBreakerInterceptor::new(2, Duration::from_secs(60), Duration::from_millis(1));
+        let cb =
+            CircuitBreakerInterceptor::new(2, Duration::from_secs(60), Duration::from_millis(1));
         let id = make_actor_id(1);
 
         // Trip the circuit
@@ -382,7 +383,8 @@ mod tests {
 
     #[test]
     fn failed_probe_reopens_circuit() {
-        let cb = CircuitBreakerInterceptor::new(2, Duration::from_secs(60), Duration::from_millis(1));
+        let cb =
+            CircuitBreakerInterceptor::new(2, Duration::from_secs(60), Duration::from_millis(1));
         let id = make_actor_id(1);
 
         // Trip the circuit
@@ -403,7 +405,8 @@ mod tests {
     #[test]
     fn errors_outside_window_are_pruned() {
         // Window of 1 ms, threshold of 3, cooldown irrelevant
-        let cb = CircuitBreakerInterceptor::new(3, Duration::from_millis(1), Duration::from_secs(30));
+        let cb =
+            CircuitBreakerInterceptor::new(3, Duration::from_millis(1), Duration::from_secs(30));
         let id = make_actor_id(1);
 
         // Record 2 errors
@@ -420,7 +423,8 @@ mod tests {
 
     #[test]
     fn independent_per_actor_state() {
-        let cb = CircuitBreakerInterceptor::new(2, Duration::from_secs(60), Duration::from_secs(30));
+        let cb =
+            CircuitBreakerInterceptor::new(2, Duration::from_secs(60), Duration::from_secs(30));
         let id1 = make_actor_id(1);
         let id2 = make_actor_id(2);
 
@@ -438,7 +442,8 @@ mod tests {
 
     #[test]
     fn half_open_rejects_extra_messages_while_probe_in_flight() {
-        let cb = CircuitBreakerInterceptor::new(2, Duration::from_secs(60), Duration::from_millis(1));
+        let cb =
+            CircuitBreakerInterceptor::new(2, Duration::from_secs(60), Duration::from_millis(1));
         let id = make_actor_id(1);
 
         // Trip the circuit

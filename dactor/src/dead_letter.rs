@@ -1,6 +1,6 @@
-use std::any::Any;
-use crate::node::ActorId;
 use crate::interceptor::SendMode;
+use crate::node::ActorId;
+use std::any::Any;
 
 /// Reason a message became a dead letter.
 #[derive(Debug, Clone)]
@@ -143,10 +143,7 @@ mod tests {
             format!("{}", DeadLetterReason::ActorStopped),
             "actor stopped"
         );
-        assert_eq!(
-            format!("{}", DeadLetterReason::MailboxFull),
-            "mailbox full"
-        );
+        assert_eq!(format!("{}", DeadLetterReason::MailboxFull), "mailbox full");
         assert_eq!(
             format!(
                 "{}",

@@ -16,15 +16,29 @@ async fn main() {
     println!("--- Journal Storage ---");
 
     // Write events
-    storage.write_event(&pid, SequenceId(1), "Deposited", b"100").await.unwrap();
-    storage.write_event(&pid, SequenceId(2), "Withdrawn", b"30").await.unwrap();
-    storage.write_event(&pid, SequenceId(3), "Deposited", b"50").await.unwrap();
+    storage
+        .write_event(&pid, SequenceId(1), "Deposited", b"100")
+        .await
+        .unwrap();
+    storage
+        .write_event(&pid, SequenceId(2), "Withdrawn", b"30")
+        .await
+        .unwrap();
+    storage
+        .write_event(&pid, SequenceId(3), "Deposited", b"50")
+        .await
+        .unwrap();
     println!("  Wrote 3 events to journal");
 
     // Read all events
     let events = storage.read_events(&pid, SequenceId(1)).await.unwrap();
     for e in &events {
-        println!("  Event seq={}: type={}, payload={:?}", e.sequence_id.0, e.event_type, String::from_utf8_lossy(&e.payload));
+        println!(
+            "  Event seq={}: type={}, payload={:?}",
+            e.sequence_id.0,
+            e.event_type,
+            String::from_utf8_lossy(&e.payload)
+        );
     }
 
     // Highest sequence
@@ -38,25 +52,46 @@ async fn main() {
     // ── Snapshots ───────────────────────────────────────────
     println!("\n--- Snapshot Storage ---");
 
-    storage.save_snapshot(&pid, SequenceId(2), b"balance=70").await.unwrap();
+    storage
+        .save_snapshot(&pid, SequenceId(2), b"balance=70")
+        .await
+        .unwrap();
     println!("  Saved snapshot at seq 2: balance=70");
 
-    storage.save_snapshot(&pid, SequenceId(3), b"balance=120").await.unwrap();
+    storage
+        .save_snapshot(&pid, SequenceId(3), b"balance=120")
+        .await
+        .unwrap();
     println!("  Saved snapshot at seq 3: balance=120");
 
     let latest = storage.load_latest_snapshot(&pid).await.unwrap().unwrap();
-    println!("  Latest snapshot: seq={}, state={:?}", latest.sequence_id.0, String::from_utf8_lossy(&latest.payload));
+    println!(
+        "  Latest snapshot: seq={}, state={:?}",
+        latest.sequence_id.0,
+        String::from_utf8_lossy(&latest.payload)
+    );
 
     // Recovery simulation: load snapshot + replay events after it
     println!("\n--- Recovery Simulation ---");
     let snap = storage.load_latest_snapshot(&pid).await.unwrap();
     match snap {
         Some(s) => {
-            println!("  Loaded snapshot at seq {}: {:?}", s.sequence_id.0, String::from_utf8_lossy(&s.payload));
-            let replay = storage.read_events(&pid, s.sequence_id.next()).await.unwrap();
+            println!(
+                "  Loaded snapshot at seq {}: {:?}",
+                s.sequence_id.0,
+                String::from_utf8_lossy(&s.payload)
+            );
+            let replay = storage
+                .read_events(&pid, s.sequence_id.next())
+                .await
+                .unwrap();
             println!("  Replaying {} events after snapshot", replay.len());
             for e in &replay {
-                println!("    Apply: {} ({:?})", e.event_type, String::from_utf8_lossy(&e.payload));
+                println!(
+                    "    Apply: {} ({:?})",
+                    e.event_type,
+                    String::from_utf8_lossy(&e.payload)
+                );
             }
         }
         None => println!("  No snapshot — replay all events"),
@@ -66,14 +101,20 @@ async fn main() {
     println!("\n--- State Storage (Durable State) ---");
 
     let config_pid = PersistenceId::new("Config", "app-settings");
-    storage.save_state(&config_pid, b"{\"theme\": \"dark\", \"lang\": \"en\"}").await.unwrap();
+    storage
+        .save_state(&config_pid, b"{\"theme\": \"dark\", \"lang\": \"en\"}")
+        .await
+        .unwrap();
     println!("  Saved state: theme=dark, lang=en");
 
     let state = storage.load_state(&config_pid).await.unwrap().unwrap();
     println!("  Loaded state: {:?}", String::from_utf8_lossy(&state));
 
     // Overwrite
-    storage.save_state(&config_pid, b"{\"theme\": \"light\", \"lang\": \"en\"}").await.unwrap();
+    storage
+        .save_state(&config_pid, b"{\"theme\": \"light\", \"lang\": \"en\"}")
+        .await
+        .unwrap();
     let updated = storage.load_state(&config_pid).await.unwrap().unwrap();
     println!("  Updated state: {:?}", String::from_utf8_lossy(&updated));
 
@@ -81,7 +122,10 @@ async fn main() {
     println!("\n--- Cleanup ---");
     storage.delete_events_to(&pid, SequenceId(2)).await.unwrap();
     let remaining = storage.read_events(&pid, SequenceId(1)).await.unwrap();
-    println!("  After deleting events to seq 2: {} events remain", remaining.len());
+    println!(
+        "  After deleting events to seq 2: {} events remain",
+        remaining.len()
+    );
 
     storage.delete_state(&config_pid).await.unwrap();
     let gone = storage.load_state(&config_pid).await.unwrap();

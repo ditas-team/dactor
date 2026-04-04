@@ -37,13 +37,17 @@ pub struct Headers {
 // Compile-time assertion that Headers is Send + Sync.
 const _: () = {
     fn _assert<T: Send + Sync>() {}
-    fn _check() { _assert::<Headers>(); }
+    fn _check() {
+        _assert::<Headers>();
+    }
 };
 
 impl Headers {
     /// Create an empty header collection.
     pub fn new() -> Self {
-        Self { map: HashMap::new() }
+        Self {
+            map: HashMap::new(),
+        }
     }
 
     /// Insert a typed header. Replaces any existing header of the same type.
@@ -152,17 +156,23 @@ impl Priority {
 }
 
 impl Default for Priority {
-    fn default() -> Self { Self::NORMAL }
+    fn default() -> Self {
+        Self::NORMAL
+    }
 }
 
 impl HeaderValue for Priority {
-    fn header_name(&self) -> &'static str { "dactor.Priority" }
+    fn header_name(&self) -> &'static str {
+        "dactor.Priority"
+    }
 
     fn to_bytes(&self) -> Option<Vec<u8>> {
         Some(vec![self.0])
     }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl std::fmt::Display for Priority {
@@ -182,7 +192,7 @@ impl std::fmt::Display for Priority {
 mod tests {
     use super::*;
 
-    struct Increment(u64);
+    struct Increment(#[allow(dead_code)] u64);
     impl Message for Increment {
         type Reply = ();
     }
@@ -249,9 +259,15 @@ mod tests {
         struct TraceId(String);
 
         impl HeaderValue for TraceId {
-            fn header_name(&self) -> &'static str { "app.TraceId" }
-            fn to_bytes(&self) -> Option<Vec<u8>> { Some(self.0.as_bytes().to_vec()) }
-            fn as_any(&self) -> &dyn Any { self }
+            fn header_name(&self) -> &'static str {
+                "app.TraceId"
+            }
+            fn to_bytes(&self) -> Option<Vec<u8>> {
+                Some(self.0.as_bytes().to_vec())
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
         }
 
         let mut headers = Headers::new();
@@ -287,10 +303,16 @@ mod tests {
 
     #[test]
     fn test_priority_constants() {
-        assert!(Priority::CRITICAL.0 < Priority::HIGH.0);
-        assert!(Priority::HIGH.0 < Priority::NORMAL.0);
-        assert!(Priority::NORMAL.0 < Priority::LOW.0);
-        assert!(Priority::LOW.0 < Priority::BACKGROUND.0);
+        // Use runtime values to avoid clippy::assertions_on_constants
+        let critical = Priority::CRITICAL.0;
+        let high = Priority::HIGH.0;
+        let normal = Priority::NORMAL.0;
+        let low = Priority::LOW.0;
+        let background = Priority::BACKGROUND.0;
+        assert!(critical < high);
+        assert!(high < normal);
+        assert!(normal < low);
+        assert!(low < background);
     }
 
     #[test]
@@ -319,12 +341,18 @@ mod tests {
     #[test]
     fn test_local_only_header() {
         #[derive(Debug)]
-        struct HandlerStartTime(Instant);
+        struct HandlerStartTime(#[allow(dead_code)] Instant);
 
         impl HeaderValue for HandlerStartTime {
-            fn header_name(&self) -> &'static str { "dactor.internal.HandlerStartTime" }
-            fn to_bytes(&self) -> Option<Vec<u8>> { None }
-            fn as_any(&self) -> &dyn Any { self }
+            fn header_name(&self) -> &'static str {
+                "dactor.internal.HandlerStartTime"
+            }
+            fn to_bytes(&self) -> Option<Vec<u8>> {
+                None
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
         }
 
         let mut headers = Headers::new();

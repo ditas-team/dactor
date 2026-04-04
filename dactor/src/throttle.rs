@@ -1,7 +1,7 @@
+use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
-use std::any::Any;
 
 use crate::interceptor::*;
 use crate::message::{Headers, RuntimeHeaders};

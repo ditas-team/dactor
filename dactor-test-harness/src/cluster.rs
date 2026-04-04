@@ -77,10 +77,7 @@ impl TestCluster {
     }
 
     /// Clear all faults on a node.
-    pub async fn clear_faults(
-        &mut self,
-        node_id: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn clear_faults(&mut self, node_id: &str) -> Result<(), Box<dyn std::error::Error>> {
         let handle = self.nodes.get_mut(node_id).ok_or("node not found")?;
         let client = handle.client.as_mut().ok_or("not connected")?;
         client.clear_faults(Empty {}).await?;
@@ -122,10 +119,7 @@ impl TestCluster {
     }
 
     /// Graceful shutdown of a specific node.
-    pub async fn shutdown_node(
-        &mut self,
-        node_id: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn shutdown_node(&mut self, node_id: &str) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(handle) = self.nodes.get_mut(node_id) {
             if let Some(client) = handle.client.as_mut() {
                 let _ = client

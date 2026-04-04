@@ -24,47 +24,49 @@
 
 /// Core actor traits and types (Actor, ActorRef, Handler, etc.).
 pub mod actor;
-/// Message dispatch envelopes for tell, ask, stream, and feed.
-pub mod dispatch;
-/// Error types for actor operations.
-pub mod errors;
+/// Circuit breaker interceptor for fault isolation.
+pub mod circuit_breaker;
+/// Clock abstraction for deterministic testing.
+pub mod clock;
 /// Cluster membership events and subscriptions.
 pub mod cluster;
 /// Dead letter handling for undeliverable messages.
 pub mod dead_letter;
+/// Message dispatch envelopes for tell, ask, stream, and feed.
+pub mod dispatch;
+/// Error types for actor operations.
+pub mod errors;
 /// Inbound and outbound message interceptors.
 pub mod interceptor;
-/// Circuit breaker interceptor for fault isolation.
-pub mod circuit_breaker;
 /// Mailbox capacity and overflow configuration.
 pub mod mailbox;
 /// Message trait and header types.
 pub mod message;
+#[cfg(feature = "metrics")]
+/// Metrics collection interceptor and registry.
+pub mod metrics;
+/// Node and actor identity types.
+pub mod node;
 /// Persistence support: journals, snapshots, and durable state.
 pub mod persistence;
+/// Actor pool routing and configuration.
+pub mod pool;
+/// Named actor registry for service location.
+pub mod registry;
+/// Remote actor types, wire format, and cluster discovery.
+pub mod remote;
 /// Shared runtime helpers for adapter implementations.
 pub mod runtime_support;
 /// Streaming primitives (StreamSender, StreamReceiver, batching).
 pub mod stream;
 /// Supervision strategies (OneForOne, AllForOne, RestForOne).
 pub mod supervision;
-#[cfg(feature = "metrics")]
-/// Metrics collection interceptor and registry.
-pub mod metrics;
-/// Actor pool routing and configuration.
-pub mod pool;
-/// Named actor registry for service location.
-pub mod registry;
 /// Rate limiting for actors.
 pub mod throttle;
 /// Timer scheduling (send_after, send_interval).
 pub mod timer;
-/// Clock abstraction for deterministic testing.
-pub mod clock;
-/// Node and actor identity types.
-pub mod node;
-/// Remote actor types, wire format, and cluster discovery.
-pub mod remote;
+/// Abstract transport for remote actor communication.
+pub mod transport;
 
 #[cfg(feature = "test-support")]
 pub mod test_support;
@@ -72,62 +74,63 @@ pub mod test_support;
 /// Convenience re-exports of the most commonly used types.
 pub mod prelude {
     pub use crate::actor::*;
-    pub use crate::errors::*;
-    pub use crate::cluster::*;
-    pub use crate::timer::*;
     pub use crate::clock::*;
+    pub use crate::cluster::*;
+    pub use crate::errors::*;
     pub use crate::node::*;
+    pub use crate::timer::*;
 }
 
 // Backward-compatible re-exports at crate root
-pub use async_trait::async_trait;
+pub use actor::cancel_after;
+pub use actor::FeedHandler;
 pub use actor::{Actor, ActorContext, ActorError, ActorRef, SpawnConfig};
 pub use actor::{AskReply, Handler, StreamHandler};
-pub use actor::FeedHandler;
-pub use actor::cancel_after;
-pub use tokio_util::sync::CancellationToken;
-pub use message::Message;
-pub use message::{Headers, HeaderValue, RuntimeHeaders, MessageId, Priority};
+pub use async_trait::async_trait;
+pub use circuit_breaker::{CircuitBreakerInterceptor, CircuitState};
+pub use clock::{Clock, SystemClock};
+pub use cluster::{ClusterEvent, ClusterEvents, SubscriptionId};
+pub use dead_letter::{
+    CollectingDeadLetterHandler, DeadLetterEvent, DeadLetterHandler, DeadLetterInfo,
+    DeadLetterReason, LoggingDeadLetterHandler,
+};
 pub use errors::{ActorSendError, ClusterError, GroupError, RuntimeError};
 pub use errors::{ErrorAction, ErrorCode, NotSupportedError};
-pub use cluster::{ClusterEvent, ClusterEvents, SubscriptionId};
+pub use interceptor::{
+    intercept_outbound_stream_item, Disposition, InboundContext, InboundInterceptor,
+    InterceptResult, Outcome, SendMode,
+};
+pub use interceptor::{notify_drop, DropNotice, DropObserver};
+pub use interceptor::{OutboundContext, OutboundInterceptor};
+pub use mailbox::{MailboxConfig, MessageComparer, OverflowStrategy, StrictPriorityComparer};
+pub use message::Message;
+pub use message::{HeaderValue, Headers, MessageId, Priority, RuntimeHeaders};
+#[cfg(feature = "metrics")]
+pub use metrics::{
+    ActorMetricsHandle, ActorMetricsSnapshot, MetricsInterceptor, MetricsRegistry, RuntimeMetrics,
+};
+pub use node::{ActorId, NodeId};
+pub use persistence::{
+    recover_durable_state, recover_event_sourced, DurableState, EventSourced, InMemoryStorage,
+    InMemoryStorageProvider, JournalEntry, JournalStorage, PersistError, PersistFailurePolicy,
+    PersistenceId, PersistentActor, RecoveryFailurePolicy, SaveConfig, SequenceId, SnapshotConfig,
+    SnapshotEntry, SnapshotStorage, StateStorage, StorageProvider,
+};
+pub use pool::{Keyed, PoolConfig, PoolRef, PoolRouting};
+pub use registry::ActorRegistry;
+pub use remote::{
+    ClusterDiscovery, ClusterState, MessageSerializer, MessageVersionHandler, RemoteMessage,
+    SerializationError, StaticSeeds, WireEnvelope, WireHeaders,
+};
+pub use stream::{BatchConfig, BatchReader, BatchWriter, StreamReceiver};
+pub use stream::{BoxStream, StreamSendError, StreamSender};
+pub use supervision::ChildTerminated;
+pub use supervision::{AllForOne, OneForOne, RestForOne, SupervisionAction, SupervisionStrategy};
+pub use throttle::ActorRateLimiter;
 pub use timer::TimerHandle;
 pub use timer::{send_after, send_interval};
-pub use clock::{Clock, SystemClock};
-pub use node::{NodeId, ActorId};
-pub use supervision::ChildTerminated;
-pub use supervision::{SupervisionAction, SupervisionStrategy, OneForOne, AllForOne, RestForOne};
-pub use interceptor::{InboundInterceptor, InboundContext, Disposition, Outcome, SendMode, InterceptResult, intercept_outbound_stream_item};
-pub use interceptor::{OutboundInterceptor, OutboundContext};
-pub use interceptor::{DropObserver, DropNotice, notify_drop};
-pub use dead_letter::{
-    DeadLetterHandler, DeadLetterEvent, DeadLetterReason,
-    LoggingDeadLetterHandler, CollectingDeadLetterHandler, DeadLetterInfo,
-};
-pub use throttle::ActorRateLimiter;
-pub use circuit_breaker::{CircuitBreakerInterceptor, CircuitState};
-pub use pool::{PoolRouting, PoolConfig, PoolRef, Keyed};
-pub use registry::ActorRegistry;
-#[cfg(feature = "metrics")]
-pub use metrics::{MetricsInterceptor, MetricsRegistry, ActorMetricsHandle, ActorMetricsSnapshot, RuntimeMetrics};
-pub use mailbox::{MailboxConfig, OverflowStrategy, MessageComparer, StrictPriorityComparer};
-pub use stream::{BoxStream, StreamSendError, StreamSender};
-pub use stream::{StreamReceiver, BatchConfig, BatchWriter, BatchReader};
-pub use remote::{
-    RemoteMessage, MessageSerializer, SerializationError,
-    WireEnvelope, WireHeaders, MessageVersionHandler,
-    ClusterState, ClusterDiscovery, StaticSeeds,
-};
-pub use persistence::{
-    PersistenceId, SequenceId, JournalEntry, SnapshotEntry,
-    PersistError, RecoveryFailurePolicy, PersistFailurePolicy,
-    SnapshotConfig, SaveConfig,
-    JournalStorage, SnapshotStorage, StateStorage,
-    InMemoryStorage,
-    PersistentActor, EventSourced, DurableState,
-    StorageProvider, InMemoryStorageProvider,
-    recover_event_sourced, recover_durable_state,
-};
+pub use tokio_util::sync::CancellationToken;
+pub use transport::{InMemoryTransport, Transport, TransportError, TransportRegistry};
 
 // Backward-compatible re-export of TestClock (feature-gated)
 #[cfg(feature = "test-support")]
@@ -135,4 +138,4 @@ pub use test_support::test_clock::TestClock;
 
 // Test runtime re-exports (feature-gated)
 #[cfg(feature = "test-support")]
-pub use test_support::test_runtime::{TestRuntime, TestActorRef, SpawnOptions};
+pub use test_support::test_runtime::{SpawnOptions, TestActorRef, TestRuntime};

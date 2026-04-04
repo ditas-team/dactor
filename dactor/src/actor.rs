@@ -154,7 +154,9 @@ pub trait Actor: Send + 'static {
     ///
     /// Called by the runtime during spawn. Perform only synchronous
     /// initialization here; use `on_start` for async setup.
-    fn create(args: Self::Args, deps: Self::Deps) -> Self where Self: Sized;
+    fn create(args: Self::Args, deps: Self::Deps) -> Self
+    where
+        Self: Sized;
 
     /// Called after spawn, before any messages. Default: no-op.
     /// Use for async initialization, resource acquisition, subscriptions.
@@ -274,7 +276,11 @@ pub trait ActorRef<A: Actor>: Clone + Send + Sync + 'static {
     /// Usage: `let reply = actor.ask(msg, None)?.await?;`
     ///
     /// Pass a [`CancellationToken`] to cooperatively cancel the operation.
-    fn ask<M>(&self, msg: M, cancel: Option<CancellationToken>) -> Result<AskReply<M::Reply>, ActorSendError>
+    fn ask<M>(
+        &self,
+        msg: M,
+        cancel: Option<CancellationToken>,
+    ) -> Result<AskReply<M::Reply>, ActorSendError>
     where
         A: Handler<M>,
         M: Message;
@@ -345,18 +351,22 @@ pub struct SpawnConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::Message;
-    use crate::node::{NodeId, ActorId};
     use crate::errors::ErrorAction;
+    use crate::message::Message;
+    use crate::node::{ActorId, NodeId};
 
     // Test: Actor trait compiles with a simple Counter
-    struct Counter { count: u64 }
+    struct Counter {
+        count: u64,
+    }
 
     impl Actor for Counter {
         type Args = Self;
         type Deps = ();
 
-        fn create(args: Self, _deps: ()) -> Self { args }
+        fn create(args: Self, _deps: ()) -> Self {
+            args
+        }
     }
 
     // ── Message definitions ───────────────────────────
@@ -413,16 +423,26 @@ mod tests {
     }
 
     // Test: Actor with custom Args and Deps
-    struct WorkerArgs { name: String }
-    struct WorkerDeps { multiplier: u64 }
-    struct Worker { name: String, multiplier: u64 }
+    struct WorkerArgs {
+        name: String,
+    }
+    struct WorkerDeps {
+        multiplier: u64,
+    }
+    struct Worker {
+        name: String,
+        multiplier: u64,
+    }
 
     impl Actor for Worker {
         type Args = WorkerArgs;
         type Deps = WorkerDeps;
 
         fn create(args: WorkerArgs, deps: WorkerDeps) -> Self {
-            Worker { name: args.name, multiplier: deps.multiplier }
+            Worker {
+                name: args.name,
+                multiplier: deps.multiplier,
+            }
         }
     }
 
@@ -448,16 +468,28 @@ mod tests {
 
     #[test]
     fn test_actor_id_equality() {
-        let id1 = ActorId { node: NodeId("n1".into()), local: 1 };
-        let id2 = ActorId { node: NodeId("n1".into()), local: 1 };
-        let id3 = ActorId { node: NodeId("n1".into()), local: 2 };
+        let id1 = ActorId {
+            node: NodeId("n1".into()),
+            local: 1,
+        };
+        let id2 = ActorId {
+            node: NodeId("n1".into()),
+            local: 1,
+        };
+        let id3 = ActorId {
+            node: NodeId("n1".into()),
+            local: 2,
+        };
         assert_eq!(id1, id2);
         assert_ne!(id1, id3);
     }
 
     #[test]
     fn test_actor_id_clone() {
-        let id = ActorId { node: NodeId("n1".into()), local: 1 };
+        let id = ActorId {
+            node: NodeId("n1".into()),
+            local: 1,
+        };
         let cloned = id.clone();
         assert_eq!(id, cloned);
     }
@@ -482,7 +514,10 @@ mod tests {
     #[test]
     fn test_actor_context_fields() {
         let ctx = ActorContext {
-            actor_id: ActorId { node: NodeId("n1".into()), local: 1 },
+            actor_id: ActorId {
+                node: NodeId("n1".into()),
+                local: 1,
+            },
             actor_name: "test-actor".into(),
             send_mode: None,
             headers: Headers::new(),
@@ -497,7 +532,10 @@ mod tests {
     async fn test_lifecycle_defaults_are_noop() {
         let mut counter = Counter { count: 42 };
         let mut ctx = ActorContext {
-            actor_id: ActorId { node: NodeId("n1".into()), local: 1 },
+            actor_id: ActorId {
+                node: NodeId("n1".into()),
+                local: 1,
+            },
             actor_name: "counter".into(),
             send_mode: None,
             headers: Headers::new(),
@@ -514,7 +552,10 @@ mod tests {
     async fn test_handler_increment() {
         let mut counter = Counter { count: 0 };
         let mut ctx = ActorContext {
-            actor_id: ActorId { node: NodeId("n1".into()), local: 1 },
+            actor_id: ActorId {
+                node: NodeId("n1".into()),
+                local: 1,
+            },
             actor_name: "counter".into(),
             send_mode: None,
             headers: Headers::new(),
@@ -530,7 +571,10 @@ mod tests {
     async fn test_handler_get_count() {
         let mut counter = Counter { count: 42 };
         let mut ctx = ActorContext {
-            actor_id: ActorId { node: NodeId("n1".into()), local: 1 },
+            actor_id: ActorId {
+                node: NodeId("n1".into()),
+                local: 1,
+            },
             actor_name: "counter".into(),
             send_mode: None,
             headers: Headers::new(),
@@ -544,7 +588,10 @@ mod tests {
     async fn test_handler_reset() {
         let mut counter = Counter { count: 100 };
         let mut ctx = ActorContext {
-            actor_id: ActorId { node: NodeId("n1".into()), local: 1 },
+            actor_id: ActorId {
+                node: NodeId("n1".into()),
+                local: 1,
+            },
             actor_name: "counter".into(),
             send_mode: None,
             headers: Headers::new(),
@@ -559,7 +606,10 @@ mod tests {
     async fn test_multiple_handlers_on_same_actor() {
         let mut counter = Counter { count: 0 };
         let mut ctx = ActorContext {
-            actor_id: ActorId { node: NodeId("n1".into()), local: 1 },
+            actor_id: ActorId {
+                node: NodeId("n1".into()),
+                local: 1,
+            },
             actor_name: "counter".into(),
             send_mode: None,
             headers: Headers::new(),
@@ -596,16 +646,14 @@ mod tests {
 
     #[test]
     fn test_actor_error_with_details() {
-        let err = ActorError::new(ErrorCode::NotFound, "user not found")
-            .with_details("user_id=42");
+        let err = ActorError::new(ErrorCode::NotFound, "user not found").with_details("user_id=42");
         assert_eq!(err.details.as_deref(), Some("user_id=42"));
     }
 
     #[test]
     fn test_actor_error_chain() {
         let root = ActorError::new(ErrorCode::Unavailable, "db connection failed");
-        let err = ActorError::new(ErrorCode::Internal, "query failed")
-            .with_cause(root);
+        let err = ActorError::new(ErrorCode::Internal, "query failed").with_cause(root);
         assert!(err.cause.is_some());
         assert_eq!(err.cause.as_ref().unwrap().code, ErrorCode::Unavailable);
     }
@@ -632,16 +680,25 @@ mod tests {
     #[test]
     fn test_error_code_variants() {
         let codes = vec![
-            ErrorCode::Internal, ErrorCode::InvalidArgument, ErrorCode::NotFound,
-            ErrorCode::Unavailable, ErrorCode::Timeout, ErrorCode::PermissionDenied,
-            ErrorCode::FailedPrecondition, ErrorCode::ResourceExhausted,
-            ErrorCode::Unimplemented, ErrorCode::Unknown, ErrorCode::Cancelled,
+            ErrorCode::Internal,
+            ErrorCode::InvalidArgument,
+            ErrorCode::NotFound,
+            ErrorCode::Unavailable,
+            ErrorCode::Timeout,
+            ErrorCode::PermissionDenied,
+            ErrorCode::FailedPrecondition,
+            ErrorCode::ResourceExhausted,
+            ErrorCode::Unimplemented,
+            ErrorCode::Unknown,
+            ErrorCode::Cancelled,
         ];
         assert_eq!(codes.len(), 11);
         // All distinct
         for (i, a) in codes.iter().enumerate() {
             for (j, b) in codes.iter().enumerate() {
-                if i != j { assert_ne!(a, b); }
+                if i != j {
+                    assert_ne!(a, b);
+                }
             }
         }
     }

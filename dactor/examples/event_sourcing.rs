@@ -6,7 +6,7 @@
 //! Run with: cargo run --example event_sourcing --features test-support
 
 use async_trait::async_trait;
-use dactor::actor::{Actor, ActorContext, Handler, ActorRef};
+use dactor::actor::{Actor, ActorContext, ActorRef, Handler};
 use dactor::message::Message;
 use dactor::persistence::*;
 use dactor::TestRuntime;
@@ -93,14 +93,20 @@ impl EventSourced for BankAccount {
     }
 
     fn restore_snapshot(&mut self, payload: Vec<u8>) -> Result<(), PersistError> {
-        self.balance = u64::from_le_bytes(payload.try_into().map_err(|_| {
-            PersistError::SerializationFailed("bad snapshot".into())
-        })?);
+        self.balance = u64::from_le_bytes(
+            payload
+                .try_into()
+                .map_err(|_| PersistError::SerializationFailed("bad snapshot".into()))?,
+        );
         Ok(())
     }
 
-    fn last_sequence_id(&self) -> SequenceId { self.seq }
-    fn set_last_sequence_id(&mut self, seq: SequenceId) { self.seq = seq; }
+    fn last_sequence_id(&self) -> SequenceId {
+        self.seq
+    }
+    fn set_last_sequence_id(&mut self, seq: SequenceId) {
+        self.seq = seq;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +114,9 @@ impl EventSourced for BankAccount {
 // ---------------------------------------------------------------------------
 
 struct GetBalance;
-impl Message for GetBalance { type Reply = u64; }
+impl Message for GetBalance {
+    type Reply = u64;
+}
 
 #[async_trait]
 impl Handler<GetBalance> for BankAccount {
@@ -130,9 +138,18 @@ async fn main() {
     // 1. Create an account and persist events directly.
     println!("--- Persist events ---");
     let mut account = BankAccount::new("acct-1");
-    account.persist(BankEvent::Deposited(100), &storage).await.unwrap();
-    account.persist(BankEvent::Deposited(50), &storage).await.unwrap();
-    account.persist(BankEvent::Withdrawn(30), &storage).await.unwrap();
+    account
+        .persist(BankEvent::Deposited(100), &storage)
+        .await
+        .unwrap();
+    account
+        .persist(BankEvent::Deposited(50), &storage)
+        .await
+        .unwrap();
+    account
+        .persist(BankEvent::Withdrawn(30), &storage)
+        .await
+        .unwrap();
     println!("  Balance after 3 events: {}", account.balance);
     assert_eq!(account.balance, 120);
 
@@ -142,14 +159,19 @@ async fn main() {
     println!("  Snapshot saved at seq {}", account.last_sequence_id().0);
 
     // 3. More events after the snapshot.
-    account.persist(BankEvent::Deposited(80), &storage).await.unwrap();
+    account
+        .persist(BankEvent::Deposited(80), &storage)
+        .await
+        .unwrap();
     println!("  Balance after 1 more event: {}", account.balance);
     assert_eq!(account.balance, 200);
 
     // 4. Recover from scratch — snapshot + replay.
     println!("\n--- Recovery ---");
     let mut recovered = BankAccount::new("acct-1");
-    recover_event_sourced(&mut recovered, &storage, &storage).await.unwrap();
+    recover_event_sourced(&mut recovered, &storage, &storage)
+        .await
+        .unwrap();
     println!("  Recovered balance: {}", recovered.balance);
     assert_eq!(recovered.balance, 200);
     assert_eq!(recovered.last_sequence_id().0, 4);

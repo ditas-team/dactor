@@ -16,26 +16,27 @@ use async_trait::async_trait;
 use futures::FutureExt;
 use tokio::sync::mpsc;
 
-use crate::actor::{Actor, ActorContext, ActorError, AskReply, FeedHandler, Handler, StreamHandler, ActorRef};
-use crate::dispatch::{
-    AskDispatch, BoxedDispatch, FeedDispatch, StreamDispatch,
-    TypedDispatch,
+use crate::actor::{
+    Actor, ActorContext, ActorError, ActorRef, AskReply, FeedHandler, Handler, StreamHandler,
 };
+use crate::dead_letter::{DeadLetterEvent, DeadLetterHandler, DeadLetterReason};
 #[allow(unused_imports)]
 use crate::dispatch::DispatchResult;
+use crate::dispatch::{AskDispatch, BoxedDispatch, FeedDispatch, StreamDispatch, TypedDispatch};
 use crate::errors::{ActorSendError, ErrorAction, RuntimeError};
-use crate::dead_letter::{DeadLetterEvent, DeadLetterHandler, DeadLetterReason};
-use crate::interceptor::{
-    Disposition, InboundContext, InboundInterceptor, OutboundInterceptor,
-    Outcome, SendMode, DropObserver,
-};
 #[allow(unused_imports)]
 use crate::interceptor::OutboundContext;
+use crate::interceptor::{
+    Disposition, DropObserver, InboundContext, InboundInterceptor, OutboundInterceptor, Outcome,
+    SendMode,
+};
 use crate::mailbox::{MailboxConfig, OverflowStrategy};
 use crate::message::{Headers, Message, RuntimeHeaders};
 use crate::node::{ActorId, NodeId};
 use crate::registry::ActorRegistry;
-use crate::stream::{BatchConfig, BatchReader, BatchWriter, BoxStream, StreamReceiver, StreamSender};
+use crate::stream::{
+    BatchConfig, BatchReader, BatchWriter, BoxStream, StreamReceiver, StreamSender,
+};
 use crate::supervision::ChildTerminated;
 use tokio_util::sync::CancellationToken;
 
@@ -59,16 +60,10 @@ impl<A: Actor> MailboxSender<A> {
                 .send(msg)
                 .map_err(|_| ActorSendError("actor stopped".into())),
             Self::Bounded { sender, overflow } => match overflow {
-                OverflowStrategy::RejectWithError => {
-                    sender.try_send(msg).map_err(|e| match e {
-                        mpsc::error::TrySendError::Full(_) => {
-                            ActorSendError("mailbox full".into())
-                        }
-                        mpsc::error::TrySendError::Closed(_) => {
-                            ActorSendError("actor stopped".into())
-                        }
-                    })
-                }
+                OverflowStrategy::RejectWithError => sender.try_send(msg).map_err(|e| match e {
+                    mpsc::error::TrySendError::Full(_) => ActorSendError("mailbox full".into()),
+                    mpsc::error::TrySendError::Closed(_) => ActorSendError("actor stopped".into()),
+                }),
                 OverflowStrategy::DropNewest => match sender.try_send(msg) {
                     Ok(()) => Ok(()),
                     Err(mpsc::error::TrySendError::Full(_)) => Ok(()), // silently drop
@@ -79,9 +74,9 @@ impl<A: Actor> MailboxSender<A> {
                 OverflowStrategy::Block => {
                     // Block is not supported in sync tell(). Treat as RejectWithError.
                     sender.try_send(msg).map_err(|e| match e {
-                        mpsc::error::TrySendError::Full(_) => ActorSendError(
-                            "mailbox full (Block not supported in sync tell)".into(),
-                        ),
+                        mpsc::error::TrySendError::Full(_) => {
+                            ActorSendError("mailbox full (Block not supported in sync tell)".into())
+                        }
                         mpsc::error::TrySendError::Closed(_) => {
                             ActorSendError("actor stopped".into())
                         }
@@ -95,7 +90,9 @@ impl<A: Actor> MailboxSender<A> {
     /// Used for stop signals that must not be dropped.
     fn force_send(&self, msg: Option<BoxedDispatch<A>>) {
         match self {
-            Self::Unbounded(tx) => { let _ = tx.send(msg); }
+            Self::Unbounded(tx) => {
+                let _ = tx.send(msg);
+            }
             Self::Bounded { sender, .. } => {
                 // For control signals, use regular send (not try_send).
                 // This may block briefly but guarantees delivery.
@@ -200,7 +197,12 @@ impl<A: Actor> TestActorRef<A> {
         }
     }
 
-    fn notify_dead_letter(&self, message_type: &'static str, send_mode: SendMode, reason: DeadLetterReason) {
+    fn notify_dead_letter(
+        &self,
+        message_type: &'static str,
+        send_mode: SendMode,
+        reason: DeadLetterReason,
+    ) {
         if let Some(ref handler) = *self.dead_letter_handler {
             let event = DeadLetterEvent {
                 target_id: self.id.clone(),
@@ -262,7 +264,11 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
         })
     }
 
-    fn ask<M>(&self, msg: M, cancel: Option<CancellationToken>) -> Result<AskReply<M::Reply>, ActorSendError>
+    fn ask<M>(
+        &self,
+        msg: M,
+        cancel: Option<CancellationToken>,
+    ) -> Result<AskReply<M::Reply>, ActorSendError>
     where
         A: Handler<M>,
         M: Message,
@@ -281,12 +287,18 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
             }
             Disposition::Reject(reason) => {
                 let (tx, rx) = tokio::sync::oneshot::channel();
-                let _ = tx.send(Err(RuntimeError::Rejected { interceptor: result.interceptor_name.to_string(), reason }));
+                let _ = tx.send(Err(RuntimeError::Rejected {
+                    interceptor: result.interceptor_name.to_string(),
+                    reason,
+                }));
                 return Ok(AskReply::new(rx));
             }
             Disposition::Retry(retry_after) => {
                 let (tx, rx) = tokio::sync::oneshot::channel();
-                let _ = tx.send(Err(RuntimeError::RetryAfter { interceptor: result.interceptor_name.to_string(), retry_after }));
+                let _ = tx.send(Err(RuntimeError::RetryAfter {
+                    interceptor: result.interceptor_name.to_string(),
+                    retry_after,
+                }));
                 return Ok(AskReply::new(rx));
             }
         }
@@ -317,7 +329,12 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
             tokio::spawn(async move {
                 match rx.await {
                     Ok(Ok(reply)) => {
-                        pipeline.run_on_reply(message_type, &Outcome::AskSuccess { reply: &reply as &dyn std::any::Any });
+                        pipeline.run_on_reply(
+                            message_type,
+                            &Outcome::AskSuccess {
+                                reply: &reply as &dyn std::any::Any,
+                            },
+                        );
                         let _ = wrapped_tx.send(Ok(reply));
                     }
                     Ok(Err(e)) => {
@@ -353,19 +370,27 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
             Disposition::Continue => {}
             Disposition::Delay(_) => {}
             Disposition::Drop => {
-                return Err(ActorSendError("stream dropped by outbound interceptor".into()));
+                return Err(ActorSendError(
+                    "stream dropped by outbound interceptor".into(),
+                ));
             }
             Disposition::Reject(reason) => {
                 return Err(ActorSendError(format!("stream rejected: {}", reason)));
             }
             Disposition::Retry(_) => {
-                return Err(ActorSendError("stream retry requested by interceptor".into()));
+                return Err(ActorSendError(
+                    "stream retry requested by interceptor".into(),
+                ));
             }
         }
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(buffer);
         let sender = StreamSender::new(tx);
-        let dispatch: BoxedDispatch<A> = Box::new(StreamDispatch { msg, sender, cancel });
+        let dispatch: BoxedDispatch<A> = Box::new(StreamDispatch {
+            msg,
+            sender,
+            cancel,
+        });
         self.sender.send(Some(dispatch))?;
 
         match batch_config {
@@ -393,7 +418,9 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
                         } else {
                             match rx.recv().await {
                                 Some(item) => {
-                                    if writer.push(item).await.is_err() { break; }
+                                    if writer.push(item).await.is_err() {
+                                        break;
+                                    }
                                 }
                                 None => break,
                             }
@@ -401,14 +428,22 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
                     }
                     let _ = writer.flush().await;
                 });
-                Ok(crate::runtime_support::wrap_batched_stream_with_interception(
-                    reader, buffer, pipeline, std::any::type_name::<M>(),
-                ))
+                Ok(
+                    crate::runtime_support::wrap_batched_stream_with_interception(
+                        reader,
+                        buffer,
+                        pipeline,
+                        std::any::type_name::<M>(),
+                    ),
+                )
             }
             None => {
                 // Unbatched: handler → interception → caller
                 Ok(crate::runtime_support::wrap_stream_with_interception(
-                    rx, buffer, pipeline, std::any::type_name::<M>(),
+                    rx,
+                    buffer,
+                    pipeline,
+                    std::any::type_name::<M>(),
                 ))
             }
         }
@@ -442,12 +477,22 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
         match batch_config {
             Some(batch_config) => {
                 crate::runtime_support::spawn_feed_batched_drain(
-                    input, item_tx, buffer, batch_config, cancel, pipeline, std::any::type_name::<Item>(),
+                    input,
+                    item_tx,
+                    buffer,
+                    batch_config,
+                    cancel,
+                    pipeline,
+                    std::any::type_name::<Item>(),
                 );
             }
             None => {
                 crate::runtime_support::spawn_feed_drain(
-                    input, item_tx, cancel, pipeline, std::any::type_name::<Item>(),
+                    input,
+                    item_tx,
+                    cancel,
+                    pipeline,
+                    std::any::type_name::<Item>(),
                 );
             }
         }
@@ -659,7 +704,8 @@ impl TestRuntime {
         let interceptors = if let Some(ref registry) = self.metrics_registry {
             let handle = registry.register(actor_id.clone());
             let mut combined = Vec::with_capacity(1 + interceptors.len());
-            combined.push(Box::new(crate::metrics::MetricsInterceptor::new(handle)) as Box<dyn InboundInterceptor>);
+            combined.push(Box::new(crate::metrics::MetricsInterceptor::new(handle))
+                as Box<dyn InboundInterceptor>);
             combined.extend(interceptors);
             combined
         } else {
@@ -673,10 +719,7 @@ impl TestRuntime {
         let (tx, mut rx) = match &mailbox {
             MailboxConfig::Unbounded => {
                 let (tx, rx) = mpsc::unbounded_channel::<Option<BoxedDispatch<A>>>();
-                (
-                    MailboxSender::Unbounded(tx),
-                    MailboxReceiver::Unbounded(rx),
-                )
+                (MailboxSender::Unbounded(tx), MailboxReceiver::Unbounded(rx))
             }
             MailboxConfig::Bounded { capacity, overflow } => {
                 let (tx, rx) = mpsc::channel::<Option<BoxedDispatch<A>>>(*capacity);
@@ -751,7 +794,9 @@ impl TestRuntime {
                             Disposition::Delay(d) => {
                                 total_delay += d;
                             }
-                            disp @ (Disposition::Drop | Disposition::Reject(_) | Disposition::Retry(_)) => {
+                            disp @ (Disposition::Drop
+                            | Disposition::Reject(_)
+                            | Disposition::Retry(_)) => {
                                 rejection = Some((interceptor.name().to_string(), disp));
                                 break;
                             }
@@ -809,8 +854,9 @@ impl TestRuntime {
                 // biased; with dispatch first ensures that if the handler completes at the same
                 // moment the token fires, the handler's result takes priority.
                 let result = if let Some(ref token) = cancel_token {
-                    let dispatch_fut = std::panic::AssertUnwindSafe(dispatch.dispatch(&mut actor, &mut ctx))
-                        .catch_unwind();
+                    let dispatch_fut =
+                        std::panic::AssertUnwindSafe(dispatch.dispatch(&mut actor, &mut ctx))
+                            .catch_unwind();
                     tokio::select! {
                         biased;
                         r = dispatch_fut => r,
@@ -843,12 +889,19 @@ impl TestRuntime {
                 match result {
                     Ok(dispatch_result) => {
                         let outcome = match (&dispatch_result.reply, send_mode) {
-                            (Some(reply), SendMode::Ask) => Outcome::AskSuccess { reply: reply.as_ref() },
+                            (Some(reply), SendMode::Ask) => Outcome::AskSuccess {
+                                reply: reply.as_ref(),
+                            },
                             _ => Outcome::TellSuccess,
                         };
 
                         for interceptor in &interceptors {
-                            interceptor.on_complete(&ictx, &runtime_headers, &ctx.headers, &outcome);
+                            interceptor.on_complete(
+                                &ictx,
+                                &runtime_headers,
+                                &ctx.headers,
+                                &outcome,
+                            );
                         }
 
                         // Send reply to caller AFTER interceptors have seen it
@@ -858,11 +911,14 @@ impl TestRuntime {
                         let error = ActorError::internal("handler panicked");
                         let action = actor.on_error(&error);
 
-                        let outcome = Outcome::HandlerError {
-                            error,
-                        };
+                        let outcome = Outcome::HandlerError { error };
                         for interceptor in &interceptors {
-                            interceptor.on_complete(&ictx, &runtime_headers, &ctx.headers, &outcome);
+                            interceptor.on_complete(
+                                &ictx,
+                                &runtime_headers,
+                                &ctx.headers,
+                                &outcome,
+                            );
                         }
 
                         match action {
@@ -870,7 +926,10 @@ impl TestRuntime {
                                 continue;
                             }
                             ErrorAction::Stop | ErrorAction::Escalate => {
-                                tracing::error!("handler panicked in actor {}, stopping", ctx.actor_name);
+                                tracing::error!(
+                                    "handler panicked in actor {}, stopping",
+                                    ctx.actor_name
+                                );
                                 stop_reason = Some("handler panicked".into());
                                 break;
                             }
@@ -1414,7 +1473,11 @@ mod tests {
         actor.tell(Ping).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        assert_eq!(handle_count.load(Ordering::SeqCst), 0, "handler should not have been called");
+        assert_eq!(
+            handle_count.load(Ordering::SeqCst),
+            0,
+            "handler should not have been called"
+        );
         assert!(actor.is_alive(), "actor should still be alive after drops");
     }
 
@@ -1451,7 +1514,10 @@ mod tests {
         let result = counter.ask(GetCount, None).unwrap().await;
         assert!(result.is_err(), "rejected ask should return Err");
         match result.unwrap_err() {
-            RuntimeError::Rejected { interceptor, reason } => {
+            RuntimeError::Rejected {
+                interceptor,
+                reason,
+            } => {
                 assert_eq!(interceptor, "reject-all");
                 assert_eq!(reason, "forbidden");
             }
@@ -1463,10 +1529,15 @@ mod tests {
 
     struct RetryInterceptor;
     impl InboundInterceptor for RetryInterceptor {
-        fn name(&self) -> &'static str { "retry-later" }
+        fn name(&self) -> &'static str {
+            "retry-later"
+        }
         fn on_receive(
-            &self, _ctx: &InboundContext<'_>, _rh: &RuntimeHeaders,
-            _h: &mut Headers, _msg: &dyn Any,
+            &self,
+            _ctx: &InboundContext<'_>,
+            _rh: &RuntimeHeaders,
+            _h: &mut Headers,
+            _msg: &dyn Any,
         ) -> Disposition {
             Disposition::Retry(Duration::from_millis(500))
         }
@@ -1487,7 +1558,10 @@ mod tests {
         let result = counter.ask(GetCount, None).unwrap().await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            RuntimeError::RetryAfter { interceptor, retry_after } => {
+            RuntimeError::RetryAfter {
+                interceptor,
+                retry_after,
+            } => {
                 assert_eq!(interceptor, "retry-later");
                 assert_eq!(retry_after, Duration::from_millis(500));
             }
@@ -1500,15 +1574,21 @@ mod tests {
         let handler_count = Arc::new(AtomicU64::new(0));
         let count_clone = handler_count.clone();
 
-        struct TrackActor { count: Arc<AtomicU64> }
+        struct TrackActor {
+            count: Arc<AtomicU64>,
+        }
         impl Actor for TrackActor {
             type Args = Arc<AtomicU64>;
             type Deps = ();
-            fn create(args: Arc<AtomicU64>, _: ()) -> Self { TrackActor { count: args } }
+            fn create(args: Arc<AtomicU64>, _: ()) -> Self {
+                TrackActor { count: args }
+            }
         }
 
         struct TrackMsg;
-        impl Message for TrackMsg { type Reply = (); }
+        impl Message for TrackMsg {
+            type Reply = ();
+        }
 
         #[async_trait]
         impl Handler<TrackMsg> for TrackActor {
@@ -1530,7 +1610,11 @@ mod tests {
         actor.tell(TrackMsg).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        assert_eq!(handler_count.load(Ordering::SeqCst), 0, "handler should not be called when Retry");
+        assert_eq!(
+            handler_count.load(Ordering::SeqCst),
+            0,
+            "handler should not be called when Retry"
+        );
     }
 
     #[tokio::test]
@@ -1739,10 +1823,7 @@ mod tests {
             "counter",
             Counter { count: 0 },
             SpawnOptions {
-                interceptors: vec![
-                    Box::new(SmallDelay(50)),
-                    Box::new(SmallDelay(50)),
-                ],
+                interceptors: vec![Box::new(SmallDelay(50)), Box::new(SmallDelay(50))],
                 ..Default::default()
             },
         );
@@ -2232,7 +2313,11 @@ mod tests {
         actor.tell(CountMsg).unwrap(); // should still be processed
 
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(count.load(Ordering::SeqCst), 1, "actor should resume after panic");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "actor should resume after panic"
+        );
         assert!(actor.is_alive());
     }
 
@@ -2276,13 +2361,17 @@ mod tests {
         actor.tell(PanicMsg).unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        assert!(!alive.load(Ordering::SeqCst), "on_stop should have been called");
+        assert!(
+            !alive.load(Ordering::SeqCst),
+            "on_stop should have been called"
+        );
         assert!(!actor.is_alive());
     }
 
     #[tokio::test]
     async fn test_on_error_default_is_stop() {
         struct PanicCounter {
+            #[allow(dead_code)]
             count: u64,
         }
 
@@ -2443,7 +2532,11 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         // Restart is treated as Resume for now
-        assert_eq!(count.load(Ordering::SeqCst), 1, "actor should continue after restart-as-resume");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "actor should continue after restart-as-resume"
+        );
         assert!(actor.is_alive());
     }
 
@@ -2499,11 +2592,15 @@ mod tests {
     impl Actor for SlowActor {
         type Args = ();
         type Deps = ();
-        fn create(_: (), _: ()) -> Self { SlowActor }
+        fn create(_: (), _: ()) -> Self {
+            SlowActor
+        }
     }
 
     struct SlowMsg;
-    impl Message for SlowMsg { type Reply = (); }
+    impl Message for SlowMsg {
+        type Reply = ();
+    }
 
     #[async_trait]
     impl Handler<SlowMsg> for SlowActor {
@@ -2589,7 +2686,9 @@ mod tests {
     }
 
     struct WatcherPing;
-    impl Message for WatcherPing { type Reply = (); }
+    impl Message for WatcherPing {
+        type Reply = ();
+    }
 
     #[async_trait]
     impl Handler<WatcherPing> for Watcher {
@@ -2600,11 +2699,15 @@ mod tests {
     impl Actor for Worker {
         type Args = ();
         type Deps = ();
-        fn create(_: (), _: ()) -> Self { Worker }
+        fn create(_: (), _: ()) -> Self {
+            Worker
+        }
     }
 
     struct WorkerMsg;
-    impl Message for WorkerMsg { type Reply = (); }
+    impl Message for WorkerMsg {
+        type Reply = ();
+    }
 
     #[async_trait]
     impl Handler<WorkerMsg> for Worker {
@@ -2629,7 +2732,10 @@ mod tests {
         assert_eq!(evts.len(), 1);
         assert_eq!(evts[0].child_id, worker_id);
         assert_eq!(evts[0].child_name, "worker");
-        assert!(evts[0].reason.is_none(), "graceful stop should have no reason");
+        assert!(
+            evts[0].reason.is_none(),
+            "graceful stop should have no reason"
+        );
     }
 
     #[tokio::test]
@@ -2659,11 +2765,15 @@ mod tests {
         impl Actor for PanicWorker {
             type Args = ();
             type Deps = ();
-            fn create(_: (), _: ()) -> Self { PanicWorker }
+            fn create(_: (), _: ()) -> Self {
+                PanicWorker
+            }
         }
 
         struct PanicMsg;
-        impl Message for PanicMsg { type Reply = (); }
+        impl Message for PanicMsg {
+            type Reply = ();
+        }
 
         #[async_trait]
         impl Handler<PanicMsg> for PanicWorker {
@@ -2756,10 +2866,8 @@ mod tests {
         use tokio_stream::StreamExt;
 
         let runtime = TestRuntime::new();
-        let server = runtime.spawn::<LogServer>(
-            "logs",
-            vec!["line1".into(), "line2".into(), "line3".into()],
-        );
+        let server = runtime
+            .spawn::<LogServer>("logs", vec!["line1".into(), "line2".into(), "line3".into()]);
 
         let mut stream = server.stream(GetLogs, 16, None, None).unwrap();
         let mut items = Vec::new();
@@ -2805,8 +2913,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_stream_items_in_order() {
-        use tokio_stream::StreamExt;
-
         struct NumberStream;
         impl Actor for NumberStream {
             type Args = ();
@@ -2842,7 +2948,9 @@ mod tests {
         let runtime = TestRuntime::new();
         let actor = runtime.spawn::<NumberStream>("numbers", ());
 
-        let stream = actor.stream(GetNumbers { count: 100 }, 16, None, None).unwrap();
+        let stream = actor
+            .stream(GetNumbers { count: 100 }, 16, None, None)
+            .unwrap();
         let items: Vec<u64> = tokio_stream::StreamExt::collect(stream).await;
 
         assert_eq!(items.len(), 100);
@@ -2907,7 +3015,9 @@ mod tests {
         impl Actor for Summer {
             type Args = ();
             type Deps = ();
-            fn create(_: (), _: ()) -> Self { Summer }
+            fn create(_: (), _: ()) -> Self {
+                Summer
+            }
         }
 
         #[async_trait]
@@ -2929,7 +3039,11 @@ mod tests {
         let actor = runtime.spawn::<Summer>("summer", ());
 
         let input = futures::stream::iter(vec![10u64, 20, 30, 40, 50]);
-        let reply = actor.feed::<u64, u64>(Box::pin(input), 8, None, None).unwrap().await.unwrap();
+        let reply = actor
+            .feed::<u64, u64>(Box::pin(input), 8, None, None)
+            .unwrap()
+            .await
+            .unwrap();
         assert_eq!(reply, 150);
     }
 
@@ -2939,7 +3053,9 @@ mod tests {
         impl Actor for Summer {
             type Args = ();
             type Deps = ();
-            fn create(_: (), _: ()) -> Self { Summer }
+            fn create(_: (), _: ()) -> Self {
+                Summer
+            }
         }
 
         #[async_trait]
@@ -2961,7 +3077,11 @@ mod tests {
         let actor = runtime.spawn::<Summer>("summer", ());
 
         let input = futures::stream::iter(Vec::<u64>::new());
-        let reply = actor.feed::<u64, u64>(Box::pin(input), 8, None, None).unwrap().await.unwrap();
+        let reply = actor
+            .feed::<u64, u64>(Box::pin(input), 8, None, None)
+            .unwrap()
+            .await
+            .unwrap();
         assert_eq!(reply, 0);
     }
 
@@ -2973,7 +3093,9 @@ mod tests {
         impl Actor for Collector {
             type Args = ();
             type Deps = ();
-            fn create(_: (), _: ()) -> Self { Collector { items: Vec::new() } }
+            fn create(_: (), _: ()) -> Self {
+                Collector { items: Vec::new() }
+            }
         }
 
         #[async_trait]
@@ -2996,7 +3118,11 @@ mod tests {
 
         let values: Vec<u64> = (0..100).collect();
         let input = futures::stream::iter(values.clone());
-        let reply = actor.feed::<u64, Vec<u64>>(Box::pin(input), 16, None, None).unwrap().await.unwrap();
+        let reply = actor
+            .feed::<u64, Vec<u64>>(Box::pin(input), 16, None, None)
+            .unwrap()
+            .await
+            .unwrap();
         assert_eq!(reply, values);
     }
 
@@ -3006,7 +3132,9 @@ mod tests {
         impl Actor for SlowConsumer {
             type Args = ();
             type Deps = ();
-            fn create(_: (), _: ()) -> Self { SlowConsumer }
+            fn create(_: (), _: ()) -> Self {
+                SlowConsumer
+            }
         }
 
         #[async_trait]
@@ -3017,7 +3145,7 @@ mod tests {
                 _ctx: &mut ActorContext,
             ) -> u64 {
                 let mut count = 0u64;
-                while let Some(_) = receiver.recv().await {
+                while receiver.recv().await.is_some() {
                     count += 1;
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }
@@ -3029,7 +3157,11 @@ mod tests {
         let actor = runtime.spawn::<SlowConsumer>("slow", ());
 
         let input = futures::stream::iter(0u64..20);
-        let reply = actor.feed::<u64, u64>(Box::pin(input), 1, None, None).unwrap().await.unwrap();
+        let reply = actor
+            .feed::<u64, u64>(Box::pin(input), 1, None, None)
+            .unwrap()
+            .await
+            .unwrap();
         assert_eq!(reply, 20);
     }
 
@@ -3057,7 +3189,9 @@ mod tests {
         impl Actor for SlowActor {
             type Args = ();
             type Deps = ();
-            fn create(_: (), _: ()) -> Self { SlowActor }
+            fn create(_: (), _: ()) -> Self {
+                SlowActor
+            }
         }
         struct SlowMsg;
         impl Message for SlowMsg {
@@ -3094,7 +3228,9 @@ mod tests {
         impl Actor for CancelAwareActor {
             type Args = ();
             type Deps = ();
-            fn create(_: (), _: ()) -> Self { CancelAwareActor }
+            fn create(_: (), _: ()) -> Self {
+                CancelAwareActor
+            }
         }
         struct LongTask;
         impl Message for LongTask {
@@ -3126,7 +3262,9 @@ mod tests {
         impl Actor for SlowStreamer {
             type Args = ();
             type Deps = ();
-            fn create(_: (), _: ()) -> Self { SlowStreamer }
+            fn create(_: (), _: ()) -> Self {
+                SlowStreamer
+            }
         }
         struct StreamForever;
         impl Message for StreamForever {
@@ -3173,7 +3311,9 @@ mod tests {
         impl Actor for FeedActor {
             type Args = ();
             type Deps = ();
-            fn create(_: (), _: ()) -> Self { FeedActor }
+            fn create(_: (), _: ()) -> Self {
+                FeedActor
+            }
         }
         #[async_trait]
         impl FeedHandler<u64, Vec<u64>> for FeedActor {
@@ -3200,7 +3340,10 @@ mod tests {
         });
 
         let token = cancel_after(Duration::from_millis(100));
-        let result = actor.feed::<u64, Vec<u64>>(Box::pin(input), 4, None, Some(token)).unwrap().await;
+        let result = actor
+            .feed::<u64, Vec<u64>>(Box::pin(input), 4, None, Some(token))
+            .unwrap()
+            .await;
         // The operation was cancelled — either we get a partial result or an error
         // When the dispatch loop's select fires cancellation, the handler future is dropped
         // and the caller receives an error (channel closed).
@@ -3219,8 +3362,11 @@ mod tests {
     #[tokio::test]
     async fn test_cancelled_returns_pending_when_no_token() {
         // Verify that ctx.cancelled() never resolves when no token is set
-        let mut ctx = ActorContext {
-            actor_id: ActorId { node: NodeId("n1".into()), local: 1 },
+        let ctx = ActorContext {
+            actor_id: ActorId {
+                node: NodeId("n1".into()),
+                local: 1,
+            },
             actor_name: "test".into(),
             send_mode: None,
             headers: Headers::new(),
@@ -3363,7 +3509,9 @@ mod tests {
             );
 
             let batch_config = BatchConfig::new(2, Duration::from_secs(10));
-            let mut stream = server.stream(GetLogs, 16, Some(batch_config), None).unwrap();
+            let mut stream = server
+                .stream(GetLogs, 16, Some(batch_config), None)
+                .unwrap();
             let mut items = Vec::new();
             while let Some(item) = stream.next().await {
                 items.push(item);
@@ -3380,7 +3528,9 @@ mod tests {
             impl Actor for Summer {
                 type Args = ();
                 type Deps = ();
-                fn create(_: (), _: ()) -> Self { Summer }
+                fn create(_: (), _: ()) -> Self {
+                    Summer
+                }
             }
 
             #[async_trait]
@@ -3423,7 +3573,9 @@ mod tests {
             call_count: Arc<AtomicU64>,
         }
         impl OutboundInterceptor for ReplyObserver {
-            fn name(&self) -> &'static str { "reply-observer" }
+            fn name(&self) -> &'static str {
+                "reply-observer"
+            }
             fn on_reply(
                 &self,
                 _ctx: &OutboundContext<'_>,
@@ -3511,17 +3663,26 @@ mod tests {
 
         struct DropAllInterceptor;
         impl InboundInterceptor for DropAllInterceptor {
-            fn name(&self) -> &'static str { "drop-all" }
+            fn name(&self) -> &'static str {
+                "drop-all"
+            }
             fn on_receive(
-                &self, _ctx: &InboundContext<'_>, _rh: &RuntimeHeaders,
-                _h: &mut Headers, _msg: &dyn Any,
+                &self,
+                _ctx: &InboundContext<'_>,
+                _rh: &RuntimeHeaders,
+                _h: &mut Headers,
+                _msg: &dyn Any,
             ) -> Disposition {
                 Disposition::Drop
             }
             fn on_complete(
-                &self, _ctx: &InboundContext<'_>, _rh: &RuntimeHeaders,
-                _h: &Headers, _outcome: &Outcome<'_>,
-            ) {}
+                &self,
+                _ctx: &InboundContext<'_>,
+                _rh: &RuntimeHeaders,
+                _h: &Headers,
+                _outcome: &Outcome<'_>,
+            ) {
+            }
         }
 
         let collector = Arc::new(CollectingDeadLetterHandler::new());
@@ -3570,7 +3731,9 @@ mod tests {
 
         assert_eq!(collector.count(), 3);
         let events = collector.events();
-        assert!(events.iter().all(|e| matches!(e.reason, DeadLetterReason::ActorStopped)));
+        assert!(events
+            .iter()
+            .all(|e| matches!(e.reason, DeadLetterReason::ActorStopped)));
 
         collector.clear();
         assert_eq!(collector.count(), 0);

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use dactor::actor::{Actor, ActorContext, ActorError, Handler, ActorRef};
+use dactor::actor::{Actor, ActorContext, ActorError, ActorRef, Handler};
 use dactor::errors::ErrorAction;
 use dactor::message::Message;
 use dactor::supervision::ChildTerminated;
@@ -101,10 +101,7 @@ impl Actor for Supervisor {
 #[async_trait]
 impl Handler<ChildTerminated> for Supervisor {
     async fn handle(&mut self, msg: ChildTerminated, _ctx: &mut ActorContext) {
-        let reason = msg
-            .reason
-            .as_deref()
-            .unwrap_or("graceful shutdown");
+        let reason = msg.reason.as_deref().unwrap_or("graceful shutdown");
         let entry = format!("child '{}' terminated: {}", msg.child_name, reason);
         println!("  [Supervisor] {}", entry);
         self.events.lock().unwrap().push(entry);

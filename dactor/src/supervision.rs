@@ -293,12 +293,24 @@ mod tests {
         let id1 = test_id(1);
         let id2 = test_id(2);
 
-        assert_eq!(strategy.on_child_failed(&id1, "a", &test_error()), SupervisionAction::Restart);
-        assert_eq!(strategy.on_child_failed(&id1, "a", &test_error()), SupervisionAction::Restart);
+        assert_eq!(
+            strategy.on_child_failed(&id1, "a", &test_error()),
+            SupervisionAction::Restart
+        );
+        assert_eq!(
+            strategy.on_child_failed(&id1, "a", &test_error()),
+            SupervisionAction::Restart
+        );
         // id1 has exhausted its quota
-        assert_eq!(strategy.on_child_failed(&id1, "a", &test_error()), SupervisionAction::Stop);
+        assert_eq!(
+            strategy.on_child_failed(&id1, "a", &test_error()),
+            SupervisionAction::Stop
+        );
         // id2 is independent — still has quota
-        assert_eq!(strategy.on_child_failed(&id2, "b", &test_error()), SupervisionAction::Restart);
+        assert_eq!(
+            strategy.on_child_failed(&id2, "b", &test_error()),
+            SupervisionAction::Restart
+        );
     }
 
     // -- AllForOne ----------------------------------------------------------

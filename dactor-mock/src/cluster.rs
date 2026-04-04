@@ -95,12 +95,7 @@ impl MockCluster {
 
     /// Watch an actor from a watcher on the same node.
     /// Both watcher and target must be on nodes in this cluster.
-    pub fn watch<W>(
-        &self,
-        watcher_node: &str,
-        watcher: &TestActorRef<W>,
-        target_id: ActorId,
-    )
+    pub fn watch<W>(&self, watcher_node: &str, watcher: &TestActorRef<W>, target_id: ActorId)
     where
         W: Actor + Handler<ChildTerminated> + 'static,
     {

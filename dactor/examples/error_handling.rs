@@ -44,13 +44,16 @@ impl Handler<Validate> for Validator {
         _ctx: &mut ActorContext,
     ) -> Result<String, ActorError> {
         if msg.0.is_empty() {
-            return Err(ActorError::new(ErrorCode::InvalidArgument, "input must not be empty")
-                .with_details("field: name"));
+            return Err(
+                ActorError::new(ErrorCode::InvalidArgument, "input must not be empty")
+                    .with_details("field: name"),
+            );
         }
         if msg.0.len() > 50 {
             let parse_err = ActorError::new(ErrorCode::Internal, "buffer overflow in parser");
-            return Err(ActorError::new(ErrorCode::InvalidArgument, "input too long")
-                .with_cause(parse_err));
+            return Err(
+                ActorError::new(ErrorCode::InvalidArgument, "input too long").with_cause(parse_err),
+            );
         }
         Ok(format!("ok: {}", msg.0))
     }
@@ -58,11 +61,7 @@ impl Handler<Validate> for Validator {
 
 #[async_trait]
 impl Handler<Lookup> for Validator {
-    async fn handle(
-        &mut self,
-        msg: Lookup,
-        _ctx: &mut ActorContext,
-    ) -> Result<String, ActorError> {
+    async fn handle(&mut self, msg: Lookup, _ctx: &mut ActorContext) -> Result<String, ActorError> {
         match msg.0 {
             1 => Ok("Alice".into()),
             2 => Ok("Bob".into()),
@@ -87,7 +86,11 @@ async fn main() {
 
     // --- Success case ---
     println!("--- Valid input ---");
-    let result = actor.ask(Validate("hello".into()), None).unwrap().await.unwrap();
+    let result = actor
+        .ask(Validate("hello".into()), None)
+        .unwrap()
+        .await
+        .unwrap();
     println!("  result: {:?}", result);
     assert!(result.is_ok());
 
@@ -108,7 +111,11 @@ async fn main() {
     // --- Error chaining ---
     println!("\n--- Long input (error chain) ---");
     let long_input = "x".repeat(51);
-    let result = actor.ask(Validate(long_input), None).unwrap().await.unwrap();
+    let result = actor
+        .ask(Validate(long_input), None)
+        .unwrap()
+        .await
+        .unwrap();
     match &result {
         Err(e) => {
             println!("  code:    {:?}", e.code);

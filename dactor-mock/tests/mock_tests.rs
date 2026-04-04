@@ -98,7 +98,10 @@ async fn test_crash_node() {
     assert_eq!(cluster.node_count(), 2);
 
     // Spawn actor on node-1
-    let actor = cluster.node("node-1").runtime.spawn::<ConformanceCounter>("c1", 0);
+    let actor = cluster
+        .node("node-1")
+        .runtime
+        .spawn::<ConformanceCounter>("c1", 0);
     assert!(actor.is_alive());
 
     // Crash node-1
@@ -252,7 +255,10 @@ async fn test_mock_cluster_watch() {
     worker.stop();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    assert!(terminated.load(Ordering::SeqCst), "watcher should receive ChildTerminated");
+    assert!(
+        terminated.load(Ordering::SeqCst),
+        "watcher should receive ChildTerminated"
+    );
 }
 
 #[tokio::test]
@@ -272,5 +278,8 @@ async fn test_mock_cluster_unwatch() {
     worker.stop();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    assert!(!terminated.load(Ordering::SeqCst), "unwatch should prevent notification");
+    assert!(
+        !terminated.load(Ordering::SeqCst),
+        "unwatch should prevent notification"
+    );
 }

@@ -115,11 +115,7 @@ impl Actor for ConformanceAggregator {
 
 #[async_trait]
 impl FeedHandler<i64, i64> for ConformanceAggregator {
-    async fn handle_feed(
-        &mut self,
-        mut rx: StreamReceiver<i64>,
-        _ctx: &mut ActorContext,
-    ) -> i64 {
+    async fn handle_feed(&mut self, mut rx: StreamReceiver<i64>, _ctx: &mut ActorContext) -> i64 {
         let mut sum = 0i64;
         while let Some(v) = rx.recv().await {
             sum += v;
@@ -381,7 +377,11 @@ where
 {
     let actor = spawn("conf-agg", ());
     let input: BoxStream<i64> = Box::pin(futures::stream::iter(vec![10, 20, 30]));
-    let result = actor.feed::<i64, i64>(input, 16, None, None).unwrap().await.unwrap();
+    let result = actor
+        .feed::<i64, i64>(input, 16, None, None)
+        .unwrap()
+        .await
+        .unwrap();
     assert_eq!(result, 60, "feed sum: expected 60, got {}", result);
 }
 
@@ -574,7 +574,9 @@ where
     actor.stop();
     // Poll until actor is stopped (with timeout)
     for _ in 0..50 {
-        if !actor.is_alive() { break; }
+        if !actor.is_alive() {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(!actor.is_alive(), "actor should be stopped");
@@ -596,7 +598,9 @@ where
     actor.stop();
     // Poll until actor is stopped (with timeout)
     for _ in 0..50 {
-        if !actor.is_alive() { break; }
+        if !actor.is_alive() {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(!actor.is_alive(), "actor should be stopped");
@@ -759,15 +763,9 @@ where
 
     // Post-stop tell should fail
     let tell_result = actor.tell(Increment(1));
-    assert!(
-        tell_result.is_err(),
-        "tell after stop should return error"
-    );
+    assert!(tell_result.is_err(), "tell after stop should return error");
 
     // Post-stop ask should fail
     let ask_result = actor.ask(GetCount, None);
-    assert!(
-        ask_result.is_err(),
-        "ask after stop should return error"
-    );
+    assert!(ask_result.is_err(), "ask after stop should return error");
 }

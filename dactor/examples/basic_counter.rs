@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use dactor::actor::{Actor, ActorContext, Handler, ActorRef};
+use dactor::actor::{Actor, ActorContext, ActorRef, Handler};
 use dactor::message::Message;
 use dactor::TestRuntime;
 
@@ -52,7 +52,10 @@ impl Actor for Counter {
 impl Handler<Increment> for Counter {
     async fn handle(&mut self, msg: Increment, _ctx: &mut ActorContext) {
         self.count += msg.0;
-        println!("  [Counter] incremented by {} → count = {}", msg.0, self.count);
+        println!(
+            "  [Counter] incremented by {} → count = {}",
+            msg.0, self.count
+        );
     }
 }
 
