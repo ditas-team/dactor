@@ -835,14 +835,15 @@ Reply  ┌───────┬──────────┐
 ```
 
 **Decision needed:** Renaming `stream` → `expand` and `feed` → `reduce` are
-breaking API changes. Options:
+API changes.
 
-1. **Rename now** (before v1.0) — clean API, one-time migration
-2. **Alias** — add `expand()`/`reduce()` as aliases, deprecate `stream()`/`feed()` over time
-3. **Keep current names** — they're already established in the codebase
+Since **dactor is not yet released**, there are no external consumers to
+break. This is the ideal time for naming changes.
 
-**Recommendation:** Option 2 (alias + deprecate) — lets users migrate
-gradually without breaking existing code.
+**Recommendation:** Option 1 (rename now) — do a clean rename before the
+first release. No aliases or deprecation needed since there are no
+downstream users. Update all traits, impls, tests, examples, and docs
+in a single PR.
 
 ---
 
