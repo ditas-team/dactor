@@ -70,7 +70,7 @@ impl Handler<GetStatus> for TaskProcessor {
 }
 
 #[async_trait]
-impl ExpandHandler<StreamItems> for TaskProcessor {
+impl ExpandHandler<StreamItems, u32> for TaskProcessor {
     async fn handle_expand(
         &mut self,
         _msg: StreamItems,

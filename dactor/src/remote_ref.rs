@@ -439,32 +439,33 @@ impl<A: Actor + Sync> ActorRef<A> for RemoteActorRef<A> {
         Ok(AskReply::new(rx))
     }
 
-    fn expand<M>(
+    fn expand<M, OutputItem>(
         &self,
         _msg: M,
         _buffer: usize,
         _batch_config: Option<BatchConfig>,
         _cancel: Option<CancellationToken>,
-    ) -> Result<BoxStream<M::Reply>, ActorSendError>
+    ) -> Result<BoxStream<OutputItem>, ActorSendError>
     where
-        A: ExpandHandler<M>,
-        M: Message,
+        A: ExpandHandler<M, OutputItem>,
+        M: Send + 'static,
+        OutputItem: Send + 'static,
     {
         Err(ActorSendError(
             "remote stream not yet implemented — requires streaming transport support".into(),
         ))
     }
 
-    fn reduce<Item, Reply>(
+    fn reduce<InputItem, Reply>(
         &self,
-        _input: BoxStream<Item>,
+        _input: BoxStream<InputItem>,
         _buffer: usize,
         _batch_config: Option<BatchConfig>,
         _cancel: Option<CancellationToken>,
     ) -> Result<AskReply<Reply>, ActorSendError>
     where
-        A: ReduceHandler<Item, Reply>,
-        Item: Send + 'static,
+        A: ReduceHandler<InputItem, Reply>,
+        InputItem: Send + 'static,
         Reply: Send + 'static,
     {
         Err(ActorSendError(
@@ -472,16 +473,16 @@ impl<A: Actor + Sync> ActorRef<A> for RemoteActorRef<A> {
         ))
     }
 
-    fn transform<Item, Output>(
+    fn transform<InputItem, OutputItem>(
         &self,
-        _input: BoxStream<Item>,
+        _input: BoxStream<InputItem>,
         _buffer: usize,
         _cancel: Option<CancellationToken>,
-    ) -> Result<BoxStream<Output>, ActorSendError>
+    ) -> Result<BoxStream<OutputItem>, ActorSendError>
     where
-        A: TransformHandler<Item, Output>,
-        Item: Send + 'static,
-        Output: Send + 'static,
+        A: TransformHandler<InputItem, OutputItem>,
+        InputItem: Send + 'static,
+        OutputItem: Send + 'static,
     {
         Err(ActorSendError(
             "remote transform not yet implemented — requires streaming transport support".into(),

@@ -206,20 +206,21 @@ where
 // ---------------------------------------------------------------------------
 
 /// Stream envelope: carries the message and a StreamSender for pushing items.
-pub struct ExpandDispatch<M: Message> {
+pub struct ExpandDispatch<M: Send + 'static, OutputItem: Send + 'static> {
     /// The message payload.
     pub msg: M,
     /// Sender for pushing stream reply items.
-    pub sender: StreamSender<M::Reply>,
+    pub sender: StreamSender<OutputItem>,
     /// Optional cancellation token for the stream.
     pub cancel: Option<CancellationToken>,
 }
 
 #[async_trait]
-impl<A, M> Dispatch<A> for ExpandDispatch<M>
+impl<A, M, OutputItem> Dispatch<A> for ExpandDispatch<M, OutputItem>
 where
-    A: ExpandHandler<M>,
-    M: Message,
+    A: ExpandHandler<M, OutputItem>,
+    M: Send + 'static,
+    OutputItem: Send + 'static,
 {
     async fn dispatch(self: Box<Self>, actor: &mut A, ctx: &mut ActorContext) -> DispatchResult {
         actor.handle_expand(self.msg, self.sender, ctx).await;
@@ -252,9 +253,9 @@ where
 // ---------------------------------------------------------------------------
 
 /// Feed envelope: carries a StreamReceiver for items and a oneshot for the reply.
-pub struct ReduceDispatch<Item: Send + 'static, Reply: Send + 'static> {
+pub struct ReduceDispatch<InputItem: Send + 'static, Reply: Send + 'static> {
     /// Receiver for incoming stream items.
-    pub receiver: StreamReceiver<Item>,
+    pub receiver: StreamReceiver<InputItem>,
     /// Channel to send the final reply back to the caller.
     pub reply_tx: tokio::sync::oneshot::Sender<Result<Reply, RuntimeError>>,
     /// Optional cancellation token for the feed operation.
@@ -262,10 +263,10 @@ pub struct ReduceDispatch<Item: Send + 'static, Reply: Send + 'static> {
 }
 
 #[async_trait]
-impl<A, Item, Reply> Dispatch<A> for ReduceDispatch<Item, Reply>
+impl<A, InputItem, Reply> Dispatch<A> for ReduceDispatch<InputItem, Reply>
 where
-    A: ReduceHandler<Item, Reply>,
-    Item: Send + 'static,
+    A: ReduceHandler<InputItem, Reply>,
+    InputItem: Send + 'static,
     Reply: Send + 'static,
 {
     async fn dispatch(self: Box<Self>, actor: &mut A, ctx: &mut ActorContext) -> DispatchResult {
@@ -296,7 +297,7 @@ where
     }
 
     fn message_type_name(&self) -> &'static str {
-        std::any::type_name::<Item>()
+        std::any::type_name::<InputItem>()
     }
 
     fn reject(self: Box<Self>, disposition: Disposition, interceptor_name: &str) {
@@ -333,32 +334,32 @@ where
 
 /// Transform envelope: carries a StreamReceiver for input items and a
 /// StreamSender for output items. The actor consumes input, produces output.
-pub struct TransformDispatch<A, Item, Output>
+pub struct TransformDispatch<A, InputItem, OutputItem>
 where
-    A: TransformHandler<Item, Output>,
-    Item: Send + 'static,
-    Output: Send + 'static,
+    A: TransformHandler<InputItem, OutputItem>,
+    InputItem: Send + 'static,
+    OutputItem: Send + 'static,
 {
     /// Receiver for incoming stream items.
-    pub receiver: StreamReceiver<Item>,
+    pub receiver: StreamReceiver<InputItem>,
     /// Sender for pushing output items.
-    pub sender: StreamSender<Output>,
+    pub sender: StreamSender<OutputItem>,
     /// Optional cancellation token.
     pub cancel: Option<CancellationToken>,
     /// Phantom data for the actor type.
     _phantom: std::marker::PhantomData<fn() -> A>,
 }
 
-impl<A, Item, Output> TransformDispatch<A, Item, Output>
+impl<A, InputItem, OutputItem> TransformDispatch<A, InputItem, OutputItem>
 where
-    A: TransformHandler<Item, Output>,
-    Item: Send + 'static,
-    Output: Send + 'static,
+    A: TransformHandler<InputItem, OutputItem>,
+    InputItem: Send + 'static,
+    OutputItem: Send + 'static,
 {
     /// Create a new TransformDispatch.
     pub fn new(
-        receiver: StreamReceiver<Item>,
-        sender: StreamSender<Output>,
+        receiver: StreamReceiver<InputItem>,
+        sender: StreamSender<OutputItem>,
         cancel: Option<CancellationToken>,
     ) -> Self {
         Self {
@@ -371,11 +372,11 @@ where
 }
 
 #[async_trait]
-impl<A, Item, Output> Dispatch<A> for TransformDispatch<A, Item, Output>
+impl<A, InputItem, OutputItem> Dispatch<A> for TransformDispatch<A, InputItem, OutputItem>
 where
-    A: TransformHandler<Item, Output>,
-    Item: Send + 'static,
-    Output: Send + 'static,
+    A: TransformHandler<InputItem, OutputItem>,
+    InputItem: Send + 'static,
+    OutputItem: Send + 'static,
 {
     async fn dispatch(self: Box<Self>, actor: &mut A, ctx: &mut ActorContext) -> DispatchResult {
         let mut receiver = self.receiver;
@@ -411,7 +412,7 @@ where
     }
 
     fn message_type_name(&self) -> &'static str {
-        std::any::type_name::<Item>()
+        std::any::type_name::<InputItem>()
     }
 
     fn reject(self: Box<Self>, _: Disposition, _: &str) {}

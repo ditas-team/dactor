@@ -352,16 +352,17 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
         }
     }
 
-    fn expand<M>(
+    fn expand<M, OutputItem>(
         &self,
         msg: M,
         buffer: usize,
         batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
-    ) -> Result<BoxStream<M::Reply>, ActorSendError>
+    ) -> Result<BoxStream<OutputItem>, ActorSendError>
     where
-        A: ExpandHandler<M>,
-        M: Message,
+        A: ExpandHandler<M, OutputItem>,
+        M: Send + 'static,
+        OutputItem: Send + 'static,
     {
         let buffer = buffer.max(1);
         let pipeline = self.outbound_pipeline();
@@ -397,7 +398,7 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
         match batch_config {
             Some(batch_config) => {
                 // Batched: handler → batch writer → batch reader → interception → caller
-                let (batch_tx, batch_rx) = tokio::sync::mpsc::channel::<Vec<M::Reply>>(buffer);
+                let (batch_tx, batch_rx) = tokio::sync::mpsc::channel::<Vec<OutputItem>>(buffer);
                 let reader = BatchReader::new(batch_rx);
                 tokio::spawn(async move {
                     let mut writer = BatchWriter::new(batch_tx, batch_config);
@@ -452,16 +453,16 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
         }
     }
 
-    fn reduce<Item, Reply>(
+    fn reduce<InputItem, Reply>(
         &self,
-        input: BoxStream<Item>,
+        input: BoxStream<InputItem>,
         buffer: usize,
         batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
     ) -> Result<AskReply<Reply>, ActorSendError>
     where
-        A: ReduceHandler<Item, Reply>,
-        Item: Send + 'static,
+        A: ReduceHandler<InputItem, Reply>,
+        InputItem: Send + 'static,
         Reply: Send + 'static,
     {
         let buffer = buffer.max(1);
@@ -486,7 +487,7 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
                     batch_config,
                     cancel,
                     pipeline,
-                    std::any::type_name::<Item>(),
+                    std::any::type_name::<InputItem>(),
                 );
             }
             None => {
@@ -495,7 +496,7 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
                     item_tx,
                     cancel,
                     pipeline,
-                    std::any::type_name::<Item>(),
+                    std::any::type_name::<InputItem>(),
                 );
             }
         }
@@ -503,16 +504,16 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
         Ok(AskReply::new(reply_rx))
     }
 
-    fn transform<Item, Output>(
+    fn transform<InputItem, OutputItem>(
         &self,
-        input: BoxStream<Item>,
+        input: BoxStream<InputItem>,
         buffer: usize,
         cancel: Option<CancellationToken>,
-    ) -> Result<BoxStream<Output>, ActorSendError>
+    ) -> Result<BoxStream<OutputItem>, ActorSendError>
     where
-        A: TransformHandler<Item, Output>,
-        Item: Send + 'static,
-        Output: Send + 'static,
+        A: TransformHandler<InputItem, OutputItem>,
+        InputItem: Send + 'static,
+        OutputItem: Send + 'static,
     {
         let buffer = buffer.max(1);
         let pipeline = self.outbound_pipeline();
@@ -533,14 +534,14 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
             item_tx,
             cancel,
             pipeline.clone(),
-            std::any::type_name::<Item>(),
+            std::any::type_name::<InputItem>(),
         );
 
         Ok(crate::runtime_support::wrap_stream_with_interception(
             output_rx,
             buffer,
             pipeline,
-            std::any::type_name::<Output>(),
+            std::any::type_name::<OutputItem>(),
             SendMode::Transform,
         ))
     }
@@ -2982,7 +2983,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl ExpandHandler<GetLogs> for LogServer {
+    impl ExpandHandler<GetLogs, String> for LogServer {
         async fn handle_expand(
             &mut self,
             _msg: GetLogs,
@@ -3066,7 +3067,7 @@ mod tests {
         }
 
         #[async_trait]
-        impl ExpandHandler<GetNumbers> for NumberStream {
+        impl ExpandHandler<GetNumbers, u64> for NumberStream {
             async fn handle_expand(
                 &mut self,
                 msg: GetNumbers,
@@ -3114,7 +3115,7 @@ mod tests {
         }
 
         #[async_trait]
-        impl ExpandHandler<GetItems> for SlowStream {
+        impl ExpandHandler<GetItems, u64> for SlowStream {
             async fn handle_expand(
                 &mut self,
                 _: GetItems,
@@ -3603,7 +3604,7 @@ mod tests {
             type Reply = u64;
         }
         #[async_trait]
-        impl ExpandHandler<StreamForever> for SlowStreamer {
+        impl ExpandHandler<StreamForever, u64> for SlowStreamer {
             async fn handle_expand(
                 &mut self,
                 _msg: StreamForever,

@@ -33,7 +33,7 @@ impl Actor for LogServer {
 }
 
 #[async_trait]
-impl ExpandHandler<GetLogs> for LogServer {
+impl ExpandHandler<GetLogs, String> for LogServer {
     async fn handle_expand(
         &mut self,
         _msg: GetLogs,
