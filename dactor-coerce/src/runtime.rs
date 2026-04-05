@@ -572,14 +572,16 @@ impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
                     buffer,
                     pipeline,
                     std::any::type_name::<M>(),
+                    SendMode::Expand,
                 ))
             }
             None => Ok(wrap_stream_with_interception(
-                rx,
-                buffer,
-                pipeline,
-                std::any::type_name::<M>(),
-            )),
+                    rx,
+                    buffer,
+                    pipeline,
+                    std::any::type_name::<M>(),
+                    SendMode::Expand,
+                )),
         }
     }
 
@@ -674,6 +676,7 @@ impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
             buffer,
             pipeline,
             std::any::type_name::<Output>(),
+            SendMode::Transform,
         ))
     }
 }
@@ -1316,3 +1319,4 @@ impl Default for CoerceRuntime {
         Self::new()
     }
 }
+

@@ -380,10 +380,25 @@ where
     async fn dispatch(self: Box<Self>, actor: &mut A, ctx: &mut ActorContext) -> DispatchResult {
         let mut receiver = self.receiver;
         let sender = self.sender;
+        let cancel = self.cancel;
+        let mut cancelled = false;
+
         while let Some(item) = receiver.recv().await {
+            // Check cancellation before processing each item
+            if let Some(ref token) = cancel {
+                if token.is_cancelled() {
+                    cancelled = true;
+                    break;
+                }
+            }
             actor.handle_transform(item, &sender, ctx).await;
         }
-        actor.on_transform_complete(&sender, ctx).await;
+
+        // Only call on_transform_complete if the stream ended normally (not cancelled)
+        if !cancelled {
+            actor.on_transform_complete(&sender, ctx).await;
+        }
+
         DispatchResult::tell()
     }
 

@@ -600,14 +600,16 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
                     buffer,
                     pipeline,
                     std::any::type_name::<M>(),
+                    SendMode::Expand,
                 ))
             }
             None => Ok(wrap_stream_with_interception(
-                rx,
-                buffer,
-                pipeline,
-                std::any::type_name::<M>(),
-            )),
+                    rx,
+                    buffer,
+                    pipeline,
+                    std::any::type_name::<M>(),
+                    SendMode::Expand,
+                )),
         }
     }
 
@@ -702,6 +704,7 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
             buffer,
             pipeline,
             std::any::type_name::<Output>(),
+            SendMode::Transform,
         ))
     }
 }
@@ -1289,3 +1292,4 @@ impl Default for RactorRuntime {
         Self::new()
     }
 }
+

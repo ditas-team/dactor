@@ -435,6 +435,7 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
                         buffer,
                         pipeline,
                         std::any::type_name::<M>(),
+                        SendMode::Expand,
                     ),
                 )
             }
@@ -445,6 +446,7 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
                     buffer,
                     pipeline,
                     std::any::type_name::<M>(),
+                    SendMode::Expand,
                 ))
             }
         }
@@ -539,6 +541,7 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
             buffer,
             pipeline,
             std::any::type_name::<Output>(),
+            SendMode::Transform,
         ))
     }
 }

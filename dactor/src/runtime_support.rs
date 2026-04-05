@@ -123,6 +123,7 @@ pub fn wrap_stream_with_interception<T: Send + 'static>(
     buffer: usize,
     pipeline: OutboundPipeline,
     message_type: &'static str,
+    send_mode: SendMode,
 ) -> BoxStream<T> {
     let (out_tx, out_rx) = tokio::sync::mpsc::channel::<T>(buffer);
     tokio::spawn(async move {
@@ -134,7 +135,7 @@ pub fn wrap_stream_with_interception<T: Send + 'static>(
                 target_id: pipeline.target_id.clone(),
                 target_name: &pipeline.target_name,
                 message_type,
-                send_mode: SendMode::Expand,
+                send_mode,
                 remote: false,
             };
             let interception_result = intercept_outbound_stream_item(
@@ -180,6 +181,7 @@ pub fn wrap_batched_stream_with_interception<T: Send + 'static>(
     buffer: usize,
     pipeline: OutboundPipeline,
     message_type: &'static str,
+    send_mode: SendMode,
 ) -> BoxStream<T> {
     let (out_tx, out_rx) = tokio::sync::mpsc::channel::<T>(buffer);
     tokio::spawn(async move {
@@ -191,7 +193,7 @@ pub fn wrap_batched_stream_with_interception<T: Send + 'static>(
                 target_id: pipeline.target_id.clone(),
                 target_name: &pipeline.target_name,
                 message_type,
-                send_mode: SendMode::Expand,
+                send_mode,
                 remote: false,
             };
             let interception_result = intercept_outbound_stream_item(
@@ -211,7 +213,7 @@ pub fn wrap_batched_stream_with_interception<T: Send + 'static>(
                 Disposition::Drop | Disposition::Retry(_) => {
                     pipeline.notify_item_drop(
                         message_type,
-                        SendMode::Expand,
+                        send_mode,
                         "stream reply (batched)",
                         interception_result.interceptor_name,
                         seq - 1,
