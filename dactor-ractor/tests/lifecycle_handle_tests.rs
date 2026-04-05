@@ -24,17 +24,17 @@ impl Handler<Stop> for SlowActor {
 #[tokio::test]
 async fn jh1_join_handle_stored_on_spawn() {
     let runtime = RactorRuntime::new();
-    let _actor = runtime.spawn::<SlowActor>("lh-stored-a1", ());
+    let _actor = runtime.spawn::<SlowActor>("lh-stored-a1", ()).await.unwrap();
     assert_eq!(runtime.active_handle_count(), 1);
 
-    let _actor2 = runtime.spawn::<SlowActor>("lh-stored-a2", ());
+    let _actor2 = runtime.spawn::<SlowActor>("lh-stored-a2", ()).await.unwrap();
     assert_eq!(runtime.active_handle_count(), 2);
 }
 
 #[tokio::test]
 async fn jh2_await_stop_resolves_after_actor_stops() {
     let runtime = RactorRuntime::new();
-    let actor = runtime.spawn::<SlowActor>("lh-stopper", ());
+    let actor = runtime.spawn::<SlowActor>("lh-stopper", ()).await.unwrap();
     let actor_id = actor.id();
 
     actor.stop();
@@ -59,9 +59,9 @@ async fn jh2_await_stop_unknown_id_returns_ok() {
 #[tokio::test]
 async fn jh3_await_all_waits_for_all_actors() {
     let runtime = RactorRuntime::new();
-    let a1 = runtime.spawn::<SlowActor>("lh-all-x1", ());
-    let a2 = runtime.spawn::<SlowActor>("lh-all-x2", ());
-    let a3 = runtime.spawn::<SlowActor>("lh-all-x3", ());
+    let a1 = runtime.spawn::<SlowActor>("lh-all-x1", ()).await.unwrap();
+    let a2 = runtime.spawn::<SlowActor>("lh-all-x2", ()).await.unwrap();
+    let a3 = runtime.spawn::<SlowActor>("lh-all-x3", ()).await.unwrap();
 
     assert_eq!(runtime.active_handle_count(), 3);
 
@@ -77,7 +77,7 @@ async fn jh3_await_all_waits_for_all_actors() {
 #[tokio::test]
 async fn jh_cleanup_finished_removes_stopped_actors() {
     let runtime = RactorRuntime::new();
-    let actor = runtime.spawn::<SlowActor>("lh-cleanup", ());
+    let actor = runtime.spawn::<SlowActor>("lh-cleanup", ()).await.unwrap();
     assert_eq!(runtime.active_handle_count(), 1);
 
     actor.stop();
@@ -111,7 +111,7 @@ impl Handler<Stop> for PanickingActor {
 #[tokio::test]
 async fn jh4_panic_propagated_through_await_stop() {
     let runtime = RactorRuntime::new();
-    let actor = runtime.spawn::<PanickingActor>("panic-actor", ());
+    let actor = runtime.spawn::<PanickingActor>("panic-actor", ()).await.unwrap();
     let actor_id = actor.id();
 
     actor.stop();

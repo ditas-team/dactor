@@ -111,7 +111,7 @@ async fn main() {
     }));
     runtime.add_outbound_interceptor(Box::new(SpamFilter));
 
-    let processor = runtime.spawn::<Processor>("processor", ());
+    let processor = runtime.spawn::<Processor>("processor", ()).await.unwrap();
 
     // Send a mix of valid and spam messages
     println!("--- Sending messages ---");

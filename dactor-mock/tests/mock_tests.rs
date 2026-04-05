@@ -20,7 +20,7 @@ async fn test_create_cluster() {
 async fn test_spawn_on_node() {
     let cluster = MockCluster::new(&["node-1"]);
     let node = cluster.node("node-1");
-    let actor = node.runtime.spawn::<ConformanceCounter>("counter", 0);
+    let actor = node.runtime.spawn::<ConformanceCounter>("counter", 0).await.unwrap();
     assert!(actor.is_alive());
     assert_eq!(actor.id().node, NodeId("node-1".into()));
 }
@@ -29,7 +29,7 @@ async fn test_spawn_on_node() {
 async fn test_tell_ask_on_node() {
     let cluster = MockCluster::new(&["node-1"]);
     let node = cluster.node("node-1");
-    let actor = node.runtime.spawn::<ConformanceCounter>("counter", 0);
+    let actor = node.runtime.spawn::<ConformanceCounter>("counter", 0).await.unwrap();
 
     actor.tell(Increment(5)).unwrap();
     actor.tell(Increment(3)).unwrap();
@@ -45,11 +45,15 @@ async fn test_actors_on_different_nodes_have_different_node_ids() {
     let a1 = cluster
         .node("node-1")
         .runtime
-        .spawn::<ConformanceCounter>("c1", 0);
+        .spawn::<ConformanceCounter>("c1", 0)
+        .await
+        .unwrap();
     let a2 = cluster
         .node("node-2")
         .runtime
-        .spawn::<ConformanceCounter>("c2", 0);
+        .spawn::<ConformanceCounter>("c2", 0)
+        .await
+        .unwrap();
 
     assert_eq!(a1.id().node, NodeId("node-1".into()));
     assert_eq!(a2.id().node, NodeId("node-2".into()));
@@ -101,7 +105,9 @@ async fn test_crash_node() {
     let actor = cluster
         .node("node-1")
         .runtime
-        .spawn::<ConformanceCounter>("c1", 0);
+        .spawn::<ConformanceCounter>("c1", 0)
+        .await
+        .unwrap();
     assert!(actor.is_alive());
 
     // Crash node-1
@@ -120,7 +126,9 @@ async fn test_restart_node() {
     cluster
         .node("node-1")
         .runtime
-        .spawn::<ConformanceCounter>("c1", 42);
+        .spawn::<ConformanceCounter>("c1", 42)
+        .await
+        .unwrap();
 
     // Restart — fresh node, old actors gone
     cluster.restart_node("node-1");
@@ -129,7 +137,9 @@ async fn test_restart_node() {
     let actor = cluster
         .node("node-1")
         .runtime
-        .spawn::<ConformanceCounter>("c2", 0);
+        .spawn::<ConformanceCounter>("c2", 0)
+        .await
+        .unwrap();
     let count = actor.ask(GetCount, None).unwrap().await.unwrap();
     assert_eq!(count, 0); // fresh actor
 }
@@ -141,7 +151,9 @@ async fn test_freeze_unfreeze() {
     let actor = cluster
         .node("node-1")
         .runtime
-        .spawn::<ConformanceCounter>("c1", 0);
+        .spawn::<ConformanceCounter>("c1", 0)
+        .await
+        .unwrap();
     actor.tell(Increment(5)).unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -246,8 +258,8 @@ async fn test_mock_cluster_watch() {
     let node = cluster.node("node-1");
 
     let terminated = Arc::new(AtomicBool::new(false));
-    let watcher = node.runtime.spawn::<Watcher>("watcher", terminated.clone());
-    let worker = node.runtime.spawn::<Worker>("worker", ());
+    let watcher = node.runtime.spawn::<Watcher>("watcher", terminated.clone()).await.unwrap();
+    let worker = node.runtime.spawn::<Worker>("worker", ()).await.unwrap();
 
     let worker_id = worker.id();
     cluster.watch("node-1", &watcher, worker_id.clone());
@@ -267,8 +279,8 @@ async fn test_mock_cluster_unwatch() {
     let node = cluster.node("node-1");
 
     let terminated = Arc::new(AtomicBool::new(false));
-    let watcher = node.runtime.spawn::<Watcher>("watcher", terminated.clone());
-    let worker = node.runtime.spawn::<Worker>("worker", ());
+    let watcher = node.runtime.spawn::<Watcher>("watcher", terminated.clone()).await.unwrap();
+    let worker = node.runtime.spawn::<Worker>("worker", ()).await.unwrap();
 
     let worker_id = worker.id();
     let watcher_id = watcher.id();

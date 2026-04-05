@@ -338,7 +338,7 @@ async fn sa10_local_spawn_uses_correct_node_id() {
     }
 
     let runtime = CoerceRuntime::new();
-    let actor_ref = runtime.spawn::<DummyActor>("dummy", ());
+    let actor_ref = runtime.spawn::<DummyActor>("dummy", ()).await.unwrap();
 
     // Local spawn should use the same node ID as runtime.node_id()
     assert_eq!(actor_ref.id().node, *runtime.node_id());
@@ -368,7 +368,7 @@ async fn sa10_local_and_remote_spawn_ids_dont_collide() {
     runtime.register_factory("test::Actor", |_| Ok(Box::new(())));
 
     // Local spawn
-    let local_ref = runtime.spawn::<DummyActor>("local", ());
+    let local_ref = runtime.spawn::<DummyActor>("local", ()).await.unwrap();
     let local_id = local_ref.id();
 
     // Remote spawn

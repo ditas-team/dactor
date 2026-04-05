@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 use crate::actor::{
     Actor, ActorContext, ActorError, ActorRef, ReduceHandler, Handler, ExpandHandler,
 };
+use std::future::Future;
 use crate::errors::{ActorSendError, ErrorAction, RuntimeError};
 use crate::message::Message;
 use crate::stream::{BatchConfig, BoxStream, StreamReceiver, StreamSender};
@@ -249,12 +250,13 @@ impl Handler<MulValue> for ConformanceMultiHandler {
 // ══════════════════════════════════════════════════════
 
 /// Test: tell delivers messages and ask returns the correct reply.
-pub async fn test_tell_and_ask<R, F>(spawn: F)
+pub async fn test_tell_and_ask<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceCounter>,
-    F: FnOnce(&str, u64) -> R,
+    F: FnOnce(&'static str, u64) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
-    let actor = spawn("counter", 0);
+    let actor = spawn("counter", 0).await.unwrap();
     actor.tell(Increment(5)).unwrap();
     actor.tell(Increment(3)).unwrap();
 
@@ -270,12 +272,13 @@ where
 }
 
 /// Test: 100 messages processed in order.
-pub async fn test_message_ordering<R, F>(spawn: F)
+pub async fn test_message_ordering<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceCounter>,
-    F: FnOnce(&str, u64) -> R,
+    F: FnOnce(&'static str, u64) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
-    let actor = spawn("ordered", 0);
+    let actor = spawn("ordered", 0).await.unwrap();
     for _ in 1..=100 {
         actor.tell(Increment(1)).unwrap();
     }
@@ -285,23 +288,25 @@ where
 }
 
 /// Test: ask returns the correct reply type.
-pub async fn test_ask_reply<R, F>(spawn: F)
+pub async fn test_ask_reply<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceCounter>,
-    F: FnOnce(&str, u64) -> R,
+    F: FnOnce(&'static str, u64) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
-    let actor = spawn("ask-reply", 42);
+    let actor = spawn("ask-reply", 42).await.unwrap();
     let count = actor.ask(GetCount, None).unwrap().await.unwrap();
     assert_eq!(count, 42);
 }
 
 /// Test: stop() makes actor not alive.
-pub async fn test_stop<R, F>(spawn: F)
+pub async fn test_stop<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceCounter>,
-    F: FnOnce(&str, u64) -> R,
+    F: FnOnce(&'static str, u64) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
-    let actor = spawn("stopper", 0);
+    let actor = spawn("stopper", 0).await.unwrap();
     assert!(actor.is_alive());
     actor.stop();
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -309,23 +314,25 @@ where
 }
 
 /// Test: actor IDs are unique per spawn.
-pub async fn test_unique_ids<R, F>(spawn: F)
+pub async fn test_unique_ids<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceCounter>,
-    F: Fn(&str, u64) -> R,
+    F: Fn(&'static str, u64) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
-    let a1 = spawn("a", 0);
-    let a2 = spawn("b", 0);
+    let a1 = spawn("a", 0).await.unwrap();
+    let a2 = spawn("b", 0).await.unwrap();
     assert_ne!(a1.id(), a2.id(), "actor IDs should be unique");
 }
 
 /// Test: actor name matches the name given at spawn.
-pub async fn test_actor_name<R, F>(spawn: F)
+pub async fn test_actor_name<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceCounter>,
-    F: FnOnce(&str, u64) -> R,
+    F: FnOnce(&'static str, u64) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
-    let actor = spawn("my-counter", 0);
+    let actor = spawn("my-counter", 0).await.unwrap();
     assert_eq!(actor.name(), "my-counter");
 }
 
@@ -334,14 +341,15 @@ where
 // ══════════════════════════════════════════════════════
 
 /// Test: stream returns the expected sequence of items.
-pub async fn test_stream_items<R, F>(spawn: F)
+pub async fn test_stream_items<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceStreamer>,
-    F: FnOnce(&str, ()) -> R,
+    F: FnOnce(&'static str, ()) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
     use tokio_stream::StreamExt;
 
-    let actor = spawn("conf-streamer", ());
+    let actor = spawn("conf-streamer", ()).await.unwrap();
     let stream = actor
         .expand(StreamNumbers { count: 5 }, 16, None, None)
         .unwrap();
@@ -350,14 +358,15 @@ where
 }
 
 /// Test: stream with count=0 returns an empty stream.
-pub async fn test_stream_empty<R, F>(spawn: F)
+pub async fn test_stream_empty<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceStreamer>,
-    F: FnOnce(&str, ()) -> R,
+    F: FnOnce(&'static str, ()) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
     use tokio_stream::StreamExt;
 
-    let actor = spawn("conf-streamer-empty", ());
+    let actor = spawn("conf-streamer-empty", ()).await.unwrap();
     let stream = actor
         .expand(StreamNumbers { count: 0 }, 16, None, None)
         .unwrap();
@@ -370,12 +379,13 @@ where
 // ══════════════════════════════════════════════════════
 
 /// Test: feed aggregates a stream of items into a single reply.
-pub async fn test_feed_sum<R, F>(spawn: F)
+pub async fn test_feed_sum<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceAggregator>,
-    F: FnOnce(&str, ()) -> R,
+    F: FnOnce(&'static str, ()) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
-    let actor = spawn("conf-agg", ());
+    let actor = spawn("conf-agg", ()).await.unwrap();
     let input: BoxStream<i64> = Box::pin(futures::stream::iter(vec![10, 20, 30]));
     let result = actor
         .reduce::<i64, i64>(input, 16, None, None)
@@ -390,13 +400,14 @@ where
 // ══════════════════════════════════════════════════════
 
 /// Test: on_start runs before message handling, on_stop runs after stop.
-pub async fn test_lifecycle_ordering<R, F>(spawn: F)
+pub async fn test_lifecycle_ordering<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceLifecycle>,
-    F: FnOnce(&str, Arc<Mutex<Vec<String>>>) -> R,
+    F: FnOnce(&'static str, Arc<Mutex<Vec<String>>>) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
     let log = Arc::new(Mutex::new(Vec::new()));
-    let actor = spawn("conf-lifecycle", log.clone());
+    let actor = spawn("conf-lifecycle", log.clone()).await.unwrap();
 
     // Give on_start time to run
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -434,14 +445,15 @@ where
 // ══════════════════════════════════════════════════════
 
 /// Test: ask with a pre-cancelled token returns an error.
-pub async fn test_cancel_ask<R, F>(spawn: F)
+pub async fn test_cancel_ask<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceCounter>,
-    F: FnOnce(&str, u64) -> R,
+    F: FnOnce(&'static str, u64) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
     let token = CancellationToken::new();
     token.cancel();
-    let actor = spawn("conf-cancel-counter", 0);
+    let actor = spawn("conf-cancel-counter", 0).await.unwrap();
     let result = actor.ask(GetCount, Some(token)).unwrap().await;
     assert!(result.is_err(), "ask with cancelled token should fail");
     // Pre-cancelled token should produce Cancelled error specifically
@@ -456,13 +468,14 @@ where
 // ══════════════════════════════════════════════════════
 
 /// Test: actor with ErrorAction::Resume survives a panic and processes the next message.
-pub async fn test_on_error_resume<R, F>(spawn: F)
+pub async fn test_on_error_resume<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceResumeActor>,
-    F: FnOnce(&str, Arc<AtomicU64>) -> R,
+    F: FnOnce(&'static str, Arc<AtomicU64>) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
     let count = Arc::new(AtomicU64::new(0));
-    let actor = spawn("conf-resume", count.clone());
+    let actor = spawn("conf-resume", count.clone()).await.unwrap();
 
     // This panics inside the handler, but Resume keeps the actor alive.
     actor.tell(PanicMsg).unwrap();
@@ -487,14 +500,15 @@ where
 // ══════════════════════════════════════════════════════
 
 /// Test: stream with BatchConfig collects all items correctly.
-pub async fn test_batched_stream<R, F>(spawn: F)
+pub async fn test_batched_stream<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceStreamer>,
-    F: FnOnce(&str, ()) -> R,
+    F: FnOnce(&'static str, ()) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
     use tokio_stream::StreamExt;
 
-    let actor = spawn("conf-batch-stream", ());
+    let actor = spawn("conf-batch-stream", ()).await.unwrap();
     let batch = BatchConfig::new(3, Duration::from_millis(50));
     let stream = actor
         .expand(StreamNumbers { count: 7 }, 16, Some(batch), None)
@@ -508,12 +522,13 @@ where
 }
 
 /// Test: feed with BatchConfig produces correct aggregated result.
-pub async fn test_batched_feed<R, F>(spawn: F)
+pub async fn test_batched_feed<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceAggregator>,
-    F: FnOnce(&str, ()) -> R,
+    F: FnOnce(&'static str, ()) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
-    let actor = spawn("conf-batch-feed", ());
+    let actor = spawn("conf-batch-feed", ()).await.unwrap();
     let batch = BatchConfig::new(3, Duration::from_millis(50));
     let input: BoxStream<i64> = Box::pin(futures::stream::iter(vec![1, 2, 3, 4, 5]));
     let result = actor
@@ -525,14 +540,15 @@ where
 }
 
 /// Test: stream with batch_config=None works the same as unbatched.
-pub async fn test_stream_with_none_batch<R, F>(spawn: F)
+pub async fn test_stream_with_none_batch<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceStreamer>,
-    F: FnOnce(&str, ()) -> R,
+    F: FnOnce(&'static str, ()) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
     use tokio_stream::StreamExt;
 
-    let actor = spawn("conf-stream-none-batch", ());
+    let actor = spawn("conf-stream-none-batch", ()).await.unwrap();
     let stream = actor
         .expand(StreamNumbers { count: 6 }, 16, None, None)
         .unwrap();
@@ -545,12 +561,13 @@ where
 }
 
 /// Test: feed with batch_config=None produces correct result.
-pub async fn test_feed_with_none_batch<R, F>(spawn: F)
+pub async fn test_feed_with_none_batch<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceAggregator>,
-    F: FnOnce(&str, ()) -> R,
+    F: FnOnce(&'static str, ()) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
-    let actor = spawn("conf-feed-none-batch", ());
+    let actor = spawn("conf-feed-none-batch", ()).await.unwrap();
     let input: BoxStream<i64> = Box::pin(futures::stream::iter(vec![5, 10, 15, 20]));
     let result = actor
         .reduce::<i64, i64>(input, 16, None, None)
@@ -565,12 +582,13 @@ where
 // ══════════════════════════════════════════════════════
 
 /// Test: tell() on a stopped actor returns ActorSendError.
-pub async fn test_tell_after_stop<R, F>(spawn: F)
+pub async fn test_tell_after_stop<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceCounter>,
-    F: FnOnce(&str, u64) -> R,
+    F: FnOnce(&'static str, u64) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
-    let actor = spawn("conf-tell-after-stop", 0);
+    let actor = spawn("conf-tell-after-stop", 0).await.unwrap();
     actor.stop();
     // Poll until actor is stopped (with timeout)
     for _ in 0..50 {
@@ -589,12 +607,13 @@ where
 }
 
 /// Test: ask() on a stopped actor returns an error.
-pub async fn test_ask_after_stop<R, F>(spawn: F)
+pub async fn test_ask_after_stop<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceCounter>,
-    F: FnOnce(&str, u64) -> R,
+    F: FnOnce(&'static str, u64) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
-    let actor = spawn("conf-ask-after-stop", 0);
+    let actor = spawn("conf-ask-after-stop", 0).await.unwrap();
     actor.stop();
     // Poll until actor is stopped (with timeout)
     for _ in 0..50 {
@@ -617,12 +636,13 @@ where
 // ══════════════════════════════════════════════════════
 
 /// Test: actor implementing Handler for two different message types works via the same ref.
-pub async fn test_multiple_handlers<R, F>(spawn: F)
+pub async fn test_multiple_handlers<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceMultiHandler>,
-    F: FnOnce(&str, i64) -> R,
+    F: FnOnce(&'static str, i64) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
-    let actor = spawn("conf-multi-handler", 10);
+    let actor = spawn("conf-multi-handler", 10).await.unwrap();
 
     // AddValue: 10 + 5 = 15
     let v1 = actor.ask(AddValue(5), None).unwrap().await.unwrap();
@@ -645,12 +665,13 @@ where
 /// Each ask returns the reply after the increment, and we verify the running total
 /// matches the expected sum at each step — this detects reordering since addition
 /// of different values in wrong order produces wrong intermediate results.
-pub async fn test_message_ordering_under_load<R, F>(spawn: F)
+pub async fn test_message_ordering_under_load<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceCounter>,
-    F: FnOnce(&str, u64) -> R,
+    F: FnOnce(&'static str, u64) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
-    let actor = spawn("ordering-load", 0);
+    let actor = spawn("ordering-load", 0).await.unwrap();
     let mut expected_sum = 0u64;
     for i in 1..=100u64 {
         expected_sum += i;
@@ -668,12 +689,13 @@ where
 /// Test: concurrent asks from 10 tasks don't corrupt actor state.
 /// Each task sends 10 ask(GetCount) messages and verifies replies are non-negative
 /// and monotonically non-decreasing within each task.
-pub async fn test_concurrent_asks<R, F>(spawn: F)
+pub async fn test_concurrent_asks<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceCounter>,
-    F: FnOnce(&str, u64) -> R,
+    F: FnOnce(&'static str, u64) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
-    let actor = spawn("concurrent-asks", 0);
+    let actor = spawn("concurrent-asks", 0).await.unwrap();
 
     // Send some increments so GetCount returns increasing values
     for i in 1..=50u64 {
@@ -705,14 +727,15 @@ where
 /// Test: stream with small buffer (backpressure) and a slow consumer.
 /// Starts a stream of 20 items with buffer=2, sleeps 10ms between each item,
 /// and verifies all 20 items arrive in order.
-pub async fn test_stream_slow_consumer<R, F>(spawn: F)
+pub async fn test_stream_slow_consumer<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceStreamer>,
-    F: FnOnce(&str, ()) -> R,
+    F: FnOnce(&'static str, ()) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
     use tokio_stream::StreamExt;
 
-    let actor = spawn("stream-slow", ());
+    let actor = spawn("stream-slow", ()).await.unwrap();
     let mut stream = actor
         .expand(StreamNumbers { count: 20 }, 2, None, None)
         .unwrap();
@@ -733,12 +756,13 @@ where
 
 /// Test: spawn, send 5 messages, ask for count, stop, then verify post-stop sends fail.
 /// Validates that messages before stop are processed and post-stop sends return errors.
-pub async fn test_rapid_stop_and_send<R, F>(spawn: F)
+pub async fn test_rapid_stop_and_send<R, F, Fut>(spawn: F)
 where
     R: ActorRef<ConformanceCounter>,
-    F: FnOnce(&str, u64) -> R,
+    F: FnOnce(&'static str, u64) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
 {
-    let actor = spawn("rapid-stop", 0);
+    let actor = spawn("rapid-stop", 0).await.unwrap();
 
     // Send 5 messages and ask for the count before stopping
     for _ in 0..5 {

@@ -100,7 +100,7 @@ async fn main() {
             "2025-01-01 WARN  slow query".into(),
             "2025-01-01 ERROR disk full".into(),
         ],
-    );
+    ).await.unwrap();
 
     let mut stream = server.expand(GetLogs, 16, None, None).unwrap();
     while let Some(entry) = stream.next().await {
@@ -110,7 +110,7 @@ async fn main() {
 
     // --- Client-streaming (feed) ---
     println!("--- Client-streaming: Aggregator ---");
-    let aggregator = runtime.spawn::<Aggregator>("aggregator", ());
+    let aggregator = runtime.spawn::<Aggregator>("aggregator", ()).await.unwrap();
 
     let input = futures::stream::iter(vec![10u64, 20, 30, 40, 50]);
     let total = aggregator

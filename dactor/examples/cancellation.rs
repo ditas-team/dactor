@@ -100,7 +100,7 @@ async fn main() {
 
     // --- Part 1: cancel_after() terminates a stream early ---
     println!("--- Stream with cancel_after(150ms) ---");
-    let producer = runtime.spawn::<SlowProducer>("producer", ());
+    let producer = runtime.spawn::<SlowProducer>("producer", ()).await.unwrap();
 
     let token = cancel_after(Duration::from_millis(150));
     let mut stream = producer.expand(GetNumbers, 16, None, Some(token)).unwrap();
@@ -123,7 +123,7 @@ async fn main() {
 
     // --- Part 2: ctx.cancelled() inside a handler ---
     println!("--- Handler with ctx.cancelled() ---");
-    let worker = runtime.spawn::<CancellableWorker>("worker", ());
+    let worker = runtime.spawn::<CancellableWorker>("worker", ()).await.unwrap();
 
     let token = cancel_after(Duration::from_millis(50));
     let result = worker.ask(Ping, Some(token)).unwrap().await.unwrap();

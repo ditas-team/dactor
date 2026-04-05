@@ -863,35 +863,35 @@ impl KameoRuntime {
     }
 
     /// Spawn an actor with `Deps = ()`.
-    pub fn spawn<A>(&self, name: &str, args: A::Args) -> KameoActorRef<A>
+    pub async fn spawn<A>(&self, name: &str, args: A::Args) -> Result<KameoActorRef<A>, dactor::errors::RuntimeError>
     where
         A: Actor<Deps = ()> + 'static,
     {
-        self.spawn_internal::<A>(name, args, (), Vec::new())
+        Ok(self.spawn_internal::<A>(name, args, (), Vec::new()))
     }
 
     /// Spawn an actor with explicit dependencies.
-    pub fn spawn_with_deps<A>(&self, name: &str, args: A::Args, deps: A::Deps) -> KameoActorRef<A>
+    pub async fn spawn_with_deps<A>(&self, name: &str, args: A::Args, deps: A::Deps) -> Result<KameoActorRef<A>, dactor::errors::RuntimeError>
     where
         A: Actor + 'static,
     {
-        self.spawn_internal::<A>(name, args, deps, Vec::new())
+        Ok(self.spawn_internal::<A>(name, args, deps, Vec::new()))
     }
 
     /// Spawn an actor with spawn options (including inbound interceptors).
-    pub fn spawn_with_options<A>(
+    pub async fn spawn_with_options<A>(
         &self,
         name: &str,
         args: A::Args,
         options: SpawnOptions,
-    ) -> KameoActorRef<A>
+    ) -> Result<KameoActorRef<A>, dactor::errors::RuntimeError>
     where
         A: Actor<Deps = ()> + 'static,
     {
         if !matches!(options.mailbox, MailboxConfig::Unbounded) {
             tracing::warn!("kameo adapter: bounded mailbox not yet implemented, using unbounded");
         }
-        self.spawn_internal::<A>(name, args, (), options.interceptors)
+        Ok(self.spawn_internal::<A>(name, args, (), options.interceptors))
     }
 
     fn spawn_internal<A>(

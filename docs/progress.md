@@ -651,13 +651,13 @@ The sync API was chosen for simplicity but has drawbacks:
 
 | # | Feature | Description | Status |
 |---|---------|-------------|--------|
-| AS1 | Async spawn for ractor | `pub async fn spawn<A>(...) -> Result<RactorActorRef<A>, RuntimeError>` — call `ractor::Actor::spawn().await` directly, remove std::thread bridge | 🔲 Not started |
-| AS2 | Async spawn for kameo | `pub async fn spawn<A>(...) -> Result<KameoActorRef<A>, RuntimeError>` — kameo is sync internally but async API is forward-compatible and consistent | 🔲 Not started |
-| AS3 | Async spawn for coerce | `pub async fn spawn<A>(...) -> Result<CoerceActorRef<A>, RuntimeError>` — enables direct `into_actor().await` | 🔲 Not started |
-| AS4 | Async spawn for TestRuntime | `pub async fn spawn<A>(...) -> Result<TestActorRef<A>, RuntimeError>` — consistent API, trivially wraps sync | 🔲 Not started |
-| AS5 | Return Result, not panic | All spawn methods return `Result<Ref, RuntimeError>` instead of panicking on failure | 🔲 Not started |
-| AS6 | Migration: keep sync wrappers | Provide `spawn_blocking()` sync wrappers that call `Handle::block_on(spawn())` for callers that need sync API. Deprecate the current sync `spawn()` over time | 🔲 Not started |
-| AS7 | Update examples & tests | All examples, conformance tests, and adapter tests updated to use `.await` | 🔲 Not started |
+| AS1 | Async spawn for ractor | `pub async fn spawn<A>(...) -> Result<RactorActorRef<A>, RuntimeError>` — call `ractor::Actor::spawn().await` directly, remove std::thread bridge | ✅ PR #93 |
+| AS2 | Async spawn for kameo | `pub async fn spawn<A>(...) -> Result<KameoActorRef<A>, RuntimeError>` — kameo is sync internally but async API is forward-compatible and consistent | ✅ PR #93 |
+| AS3 | Async spawn for coerce | `pub async fn spawn<A>(...) -> Result<CoerceActorRef<A>, RuntimeError>` — enables direct `into_actor().await` | ✅ PR #93 |
+| AS4 | Async spawn for TestRuntime | `pub async fn spawn<A>(...) -> Result<TestActorRef<A>, RuntimeError>` — consistent API, trivially wraps sync | ✅ PR #93 |
+| AS5 | Return Result, not panic | All spawn methods return `Result<Ref, RuntimeError>` instead of panicking on failure | ✅ PR #93 |
+| AS6 | Migration: keep sync wrappers | Provide `spawn_blocking()` sync wrappers that call `Handle::block_on(spawn())` for callers that need sync API. Deprecate the current sync `spawn()` over time | N/A — pre-release, no backward compat needed |
+| AS7 | Update examples & tests | All examples, conformance tests, and adapter tests updated to use `.await` | ✅ PR #93 |
 
 ### Design Notes
 

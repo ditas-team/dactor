@@ -179,7 +179,7 @@ async fn main() {
     // 5. Use the actor via TestRuntime to show it works as a normal actor.
     println!("\n--- Actor via TestRuntime ---");
     let rt = TestRuntime::new();
-    let actor_ref = rt.spawn::<BankAccount>("bank", "acct-2".to_string());
+    let actor_ref = rt.spawn::<BankAccount>("bank", "acct-2".to_string()).await.unwrap();
     let bal = actor_ref.ask(GetBalance, None).unwrap().await.unwrap();
     println!("  Fresh actor balance: {}", bal);
     assert_eq!(bal, 0);

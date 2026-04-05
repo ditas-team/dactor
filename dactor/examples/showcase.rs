@@ -140,7 +140,7 @@ async fn main() {
                 Duration::from_secs(60), // within 60s window
                 Duration::from_secs(10), // 10s cooldown
             )));
-        let w = runtime.spawn_with_options::<TaskProcessor>(&format!("worker-{i}"), i, opts);
+        let w = runtime.spawn_with_options::<TaskProcessor>(&format!("worker-{i}"), i, opts).await.unwrap();
         workers.push(w);
     }
     let pool = PoolRef::new(workers.clone(), PoolRouting::RoundRobin);

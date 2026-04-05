@@ -409,7 +409,7 @@ mod interceptor_tests {
         };
 
         let runtime = RactorRuntime::new();
-        let actor = runtime.spawn_with_options::<Echo>("echo-inbound-called", (), options);
+        let actor = runtime.spawn_with_options::<Echo>("echo-inbound-called", (), options).await.unwrap();
 
         // Send a tell
         actor.tell(Fire(1)).unwrap();
@@ -428,7 +428,7 @@ mod interceptor_tests {
         let mut runtime = RactorRuntime::new();
         runtime.add_outbound_interceptor(Box::new(interceptor));
 
-        let actor = runtime.spawn::<Echo>("echo-outbound-called", ());
+        let actor = runtime.spawn::<Echo>("echo-outbound-called", ()).await.unwrap();
 
         actor.tell(Fire(1)).unwrap();
         actor.tell(Fire(2)).unwrap();
@@ -447,7 +447,7 @@ mod interceptor_tests {
         };
 
         let runtime = RactorRuntime::new();
-        let actor = runtime.spawn_with_options::<Echo>("echo-reject-ask", (), options);
+        let actor = runtime.spawn_with_options::<Echo>("echo-reject-ask", (), options).await.unwrap();
 
         let reply = actor.ask(Ping("hi".into()), None).unwrap();
         let result = reply.await;
@@ -472,7 +472,7 @@ mod interceptor_tests {
         };
 
         let runtime = RactorRuntime::new();
-        let actor = runtime.spawn_with_options::<Echo>("echo-on-complete", (), options);
+        let actor = runtime.spawn_with_options::<Echo>("echo-on-complete", (), options).await.unwrap();
 
         // Send an ask — on_complete should see AskSuccess with the String reply
         let reply = actor.ask(Ping("test".into()), None).unwrap().await.unwrap();
@@ -491,7 +491,7 @@ mod interceptor_tests {
         let mut runtime = RactorRuntime::new();
         runtime.add_outbound_interceptor(Box::new(OutboundRejectInterceptor));
 
-        let actor = runtime.spawn::<Echo>("echo-outbound-reject", ());
+        let actor = runtime.spawn::<Echo>("echo-outbound-reject", ()).await.unwrap();
 
         let reply = actor.ask(Ping("hi".into()), None).unwrap();
         let result = reply.await;
@@ -519,7 +519,7 @@ mod interceptor_tests {
             interceptors: vec![Box::new(inbound)],
             ..Default::default()
         };
-        let actor = runtime.spawn_with_options::<Echo>("echo-both-pipelines", (), options);
+        let actor = runtime.spawn_with_options::<Echo>("echo-both-pipelines", (), options).await.unwrap();
 
         let reply = actor.ask(Ping("x".into()), None).unwrap().await.unwrap();
         assert_eq!(reply, "pong:x");
@@ -540,7 +540,7 @@ mod interceptor_tests {
         };
 
         let runtime = RactorRuntime::new();
-        let actor = runtime.spawn_with_options::<Echo>("echo-reject-tell", (), options);
+        let actor = runtime.spawn_with_options::<Echo>("echo-reject-tell", (), options).await.unwrap();
 
         // Tell with rejection should not error (fire-and-forget has no error path)
         actor.tell(Fire(1)).unwrap();
@@ -603,7 +603,7 @@ mod lifecycle_tests {
     async fn test_on_start_called_before_messages() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let runtime = RactorRuntime::new();
-        let actor = runtime.spawn::<LifecycleActor>("lifecycle-start", events.clone());
+        let actor = runtime.spawn::<LifecycleActor>("lifecycle-start", events.clone()).await.unwrap();
 
         actor.tell(Greet).unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -618,7 +618,7 @@ mod lifecycle_tests {
     async fn test_on_stop_called_after_stop() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let runtime = RactorRuntime::new();
-        let actor = runtime.spawn::<LifecycleActor>("lifecycle-stop", events.clone());
+        let actor = runtime.spawn::<LifecycleActor>("lifecycle-stop", events.clone()).await.unwrap();
 
         // Let on_start finish
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -693,7 +693,7 @@ mod lifecycle_tests {
                 error_count.clone(),
                 handle_count.clone(),
             ),
-        );
+        ).await.unwrap();
 
         // Cause a panic
         actor.tell(DoPanic).unwrap();
@@ -716,7 +716,7 @@ mod lifecycle_tests {
         let actor = runtime.spawn::<PanicActor>(
             "panic-stop",
             (ErrorAction::Stop, error_count.clone(), handle_count.clone()),
-        );
+        ).await.unwrap();
 
         // Cause a panic
         actor.tell(DoPanic).unwrap();
@@ -795,7 +795,7 @@ mod stream_tests {
     #[tokio::test]
     async fn test_stream_returns_items() {
         let runtime = RactorRuntime::new();
-        let actor = runtime.spawn::<Streamer>("streamer-items", ());
+        let actor = runtime.spawn::<Streamer>("streamer-items", ()).await.unwrap();
 
         let stream = actor.expand(StreamN(5), 8, None, None).unwrap();
         let items: Vec<u32> = stream.collect().await;
@@ -805,7 +805,7 @@ mod stream_tests {
     #[tokio::test]
     async fn test_stream_empty() {
         let runtime = RactorRuntime::new();
-        let actor = runtime.spawn::<Streamer>("streamer-empty", ());
+        let actor = runtime.spawn::<Streamer>("streamer-empty", ()).await.unwrap();
 
         let stream = actor.expand(StreamEmpty, 8, None, None).unwrap();
         let items: Vec<u32> = stream.collect().await;
@@ -815,7 +815,7 @@ mod stream_tests {
     #[tokio::test]
     async fn test_stream_consumer_drops_early() {
         let runtime = RactorRuntime::new();
-        let actor = runtime.spawn::<Streamer>("streamer-drop", ());
+        let actor = runtime.spawn::<Streamer>("streamer-drop", ()).await.unwrap();
 
         // Request a stream of 1000 items but only take 2
         let stream = actor.expand(StreamN(1000), 1, None, None).unwrap();
@@ -873,7 +873,7 @@ mod feed_tests {
     #[tokio::test]
     async fn test_feed_sum_items() {
         let runtime = RactorRuntime::new();
-        let actor = runtime.spawn::<Summer>("summer-feed", ());
+        let actor = runtime.spawn::<Summer>("summer-feed", ()).await.unwrap();
 
         let input = items_stream(vec![1, 2, 3, 4, 5]);
         let reply = actor
@@ -887,7 +887,7 @@ mod feed_tests {
     #[tokio::test]
     async fn test_feed_empty_stream() {
         let runtime = RactorRuntime::new();
-        let actor = runtime.spawn::<Summer>("summer-empty", ());
+        let actor = runtime.spawn::<Summer>("summer-empty", ()).await.unwrap();
 
         let input = items_stream(vec![]);
         let reply = actor
@@ -938,7 +938,7 @@ mod cancellation_tests {
     #[tokio::test]
     async fn test_cancel_ask_before_handler() {
         let runtime = RactorRuntime::new();
-        let actor = runtime.spawn::<SlowActor>("cancel-pre", ());
+        let actor = runtime.spawn::<SlowActor>("cancel-pre", ()).await.unwrap();
 
         // Pre-cancel the token before sending
         let token = CancellationToken::new();
@@ -955,7 +955,7 @@ mod cancellation_tests {
     #[tokio::test]
     async fn test_no_cancel_runs_normally() {
         let runtime = RactorRuntime::new();
-        let actor = runtime.spawn::<SlowActor>("cancel-none", ());
+        let actor = runtime.spawn::<SlowActor>("cancel-none", ()).await.unwrap();
 
         struct QuickPing;
         impl Message for QuickPing {
@@ -1036,8 +1036,8 @@ mod watch_tests {
         let runtime = RactorRuntime::new();
         let terminated = Arc::new(AtomicBool::new(false));
 
-        let watcher = runtime.spawn::<Watcher>("watch-watcher-1", terminated.clone());
-        let worker = runtime.spawn::<Worker>("watch-worker-1", ());
+        let watcher = runtime.spawn::<Watcher>("watch-watcher-1", terminated.clone()).await.unwrap();
+        let worker = runtime.spawn::<Worker>("watch-worker-1", ()).await.unwrap();
 
         runtime.watch(&watcher, worker.id());
 
@@ -1060,8 +1060,8 @@ mod watch_tests {
         let runtime = RactorRuntime::new();
         let terminated = Arc::new(AtomicBool::new(false));
 
-        let watcher = runtime.spawn::<Watcher>("unwatch-watcher-1", terminated.clone());
-        let worker = runtime.spawn::<Worker>("unwatch-worker-1", ());
+        let watcher = runtime.spawn::<Watcher>("unwatch-watcher-1", terminated.clone()).await.unwrap();
+        let worker = runtime.spawn::<Worker>("unwatch-worker-1", ()).await.unwrap();
 
         let watcher_id = watcher.id();
         let worker_id = worker.id();
@@ -1124,7 +1124,7 @@ mod mailbox_tests {
         };
 
         // Should still work — bounded config is accepted with a warning
-        let actor = runtime.spawn_with_options::<Worker>("bounded-worker", (), options);
+        let actor = runtime.spawn_with_options::<Worker>("bounded-worker", (), options).await.unwrap();
 
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(

@@ -194,7 +194,7 @@ async fn main() {
             ],
             mailbox: MailboxConfig::Unbounded,
         },
-    );
+    ).await.unwrap();
 
     // Send a request-reply message — interceptors will fire on both sides.
     println!("--- Sending ask(SayHello) ---");

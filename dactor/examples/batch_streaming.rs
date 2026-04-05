@@ -88,7 +88,7 @@ async fn main() {
 
     // --- Batched server-streaming ---
     println!("--- expand_batched: NumberServer (10 items, batch=4) ---");
-    let server = runtime.spawn::<NumberServer>("numbers", 10);
+    let server = runtime.spawn::<NumberServer>("numbers", 10).await.unwrap();
 
     let mut stream = server
         .expand(GetNumbers, 16, Some(batch_config.clone()), None)
@@ -103,7 +103,7 @@ async fn main() {
 
     // --- Batched client-streaming ---
     println!("\n--- reduce_batched: Aggregator (5 items, batch=4) ---");
-    let aggregator = runtime.spawn::<Aggregator>("aggregator", ());
+    let aggregator = runtime.spawn::<Aggregator>("aggregator", ()).await.unwrap();
 
     let input = futures::stream::iter(vec![10u64, 20, 30, 40, 50]);
     let batch_config = BatchConfig::new(4, std::time::Duration::from_millis(5));

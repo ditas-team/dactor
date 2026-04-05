@@ -622,32 +622,32 @@ impl TestRuntime {
     }
 
     /// Spawn a v0.2 actor whose `Deps` type is `()`. Returns a `TestActorRef<A>`.
-    pub fn spawn<A>(&self, name: &str, args: A::Args) -> TestActorRef<A>
+    pub async fn spawn<A>(&self, name: &str, args: A::Args) -> Result<TestActorRef<A>, crate::errors::RuntimeError>
     where
         A: Actor<Deps = ()> + 'static,
     {
-        self.spawn_internal(name, args, (), Vec::new(), MailboxConfig::Unbounded)
+        Ok(self.spawn_internal(name, args, (), Vec::new(), MailboxConfig::Unbounded))
     }
 
     /// Spawn a v0.2 actor with explicit dependencies.
-    pub fn spawn_with_deps<A>(&self, name: &str, args: A::Args, deps: A::Deps) -> TestActorRef<A>
+    pub async fn spawn_with_deps<A>(&self, name: &str, args: A::Args, deps: A::Deps) -> Result<TestActorRef<A>, crate::errors::RuntimeError>
     where
         A: Actor + 'static,
     {
-        self.spawn_internal(name, args, deps, Vec::new(), MailboxConfig::Unbounded)
+        Ok(self.spawn_internal(name, args, deps, Vec::new(), MailboxConfig::Unbounded))
     }
 
     /// Spawn a v0.2 actor with spawn options (including interceptors and mailbox config).
-    pub fn spawn_with_options<A>(
+    pub async fn spawn_with_options<A>(
         &self,
         name: &str,
         args: A::Args,
         options: SpawnOptions,
-    ) -> TestActorRef<A>
+    ) -> Result<TestActorRef<A>, crate::errors::RuntimeError>
     where
         A: Actor<Deps = ()> + 'static,
     {
-        self.spawn_internal(name, args, (), options.interceptors, options.mailbox)
+        Ok(self.spawn_internal(name, args, (), options.interceptors, options.mailbox))
     }
 
     /// Register actor `watcher` to be notified when `target` terminates.
@@ -1189,7 +1189,7 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_and_tell() {
         let runtime = TestRuntime::new();
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
 
         counter.tell(Increment(5)).unwrap();
         counter.tell(Increment(3)).unwrap();
@@ -1201,7 +1201,7 @@ mod tests {
     #[tokio::test]
     async fn test_tell_returns_actor_id() {
         let runtime = TestRuntime::new();
-        let counter = runtime.spawn::<Counter>("my-counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("my-counter", Counter { count: 0 }).await.unwrap();
 
         assert_eq!(counter.name(), "my-counter");
         assert_eq!(counter.id().node, NodeId("test-node".into()));
@@ -1239,7 +1239,7 @@ mod tests {
 
         let received = Arc::new(Mutex::new(Vec::new()));
         let runtime = TestRuntime::new();
-        let tracker = runtime.spawn::<OrderTracker>("tracker", received.clone());
+        let tracker = runtime.spawn::<OrderTracker>("tracker", received.clone()).await.unwrap();
 
         for i in 0..100 {
             tracker.tell(TrackMsg(i)).unwrap();
@@ -1257,7 +1257,7 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_actor_refs() {
         let runtime = TestRuntime::new();
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
 
         let ref1 = counter.clone();
         let ref2 = counter.clone();
@@ -1308,7 +1308,7 @@ mod tests {
 
         let log = Arc::new(Mutex::new(Vec::new()));
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<StartTracker>("tracker", StartTrackerArgs(log.clone()));
+        let actor = runtime.spawn::<StartTracker>("tracker", StartTrackerArgs(log.clone())).await.unwrap();
 
         actor.tell(Ping).unwrap();
 
@@ -1323,7 +1323,7 @@ mod tests {
     #[tokio::test]
     async fn test_tell_to_stopped_actor() {
         let runtime = TestRuntime::new();
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
 
         // Drop the original to close the channel
         let counter2 = counter.clone();
@@ -1336,8 +1336,8 @@ mod tests {
     #[tokio::test]
     async fn test_unique_actor_ids() {
         let runtime = TestRuntime::new();
-        let a = runtime.spawn::<Counter>("a", Counter { count: 0 });
-        let b = runtime.spawn::<Counter>("b", Counter { count: 0 });
+        let a = runtime.spawn::<Counter>("a", Counter { count: 0 }).await.unwrap();
+        let b = runtime.spawn::<Counter>("b", Counter { count: 0 }).await.unwrap();
 
         assert_ne!(a.id(), b.id());
         assert!(a.id().local < b.id().local);
@@ -1348,7 +1348,7 @@ mod tests {
     #[tokio::test]
     async fn test_ask_get_count() {
         let runtime = TestRuntime::new();
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 42 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 42 }).await.unwrap();
 
         let count = counter.ask(GetCount, None).unwrap().await.unwrap();
         assert_eq!(count, 42);
@@ -1357,7 +1357,7 @@ mod tests {
     #[tokio::test]
     async fn test_ask_after_tell() {
         let runtime = TestRuntime::new();
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
 
         counter.tell(Increment(10)).unwrap();
         counter.tell(Increment(20)).unwrap();
@@ -1369,7 +1369,7 @@ mod tests {
     #[tokio::test]
     async fn test_ask_reset_returns_old_value() {
         let runtime = TestRuntime::new();
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 100 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 100 }).await.unwrap();
 
         let old = counter.ask(Reset, None).unwrap().await.unwrap();
         assert_eq!(old, 100);
@@ -1381,7 +1381,7 @@ mod tests {
     #[tokio::test]
     async fn test_concurrent_asks() {
         let runtime = TestRuntime::new();
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
 
         counter.tell(Increment(100)).unwrap();
 
@@ -1403,7 +1403,7 @@ mod tests {
     #[tokio::test]
     async fn test_interleaved_tell_ask() {
         let runtime = TestRuntime::new();
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
 
         counter.tell(Increment(5)).unwrap();
         let c1 = counter.ask(GetCount, None).unwrap().await.unwrap();
@@ -1472,7 +1472,7 @@ mod tests {
                 interceptors: vec![Box::new(LogInterceptor { log: log.clone() })],
                 ..Default::default()
             },
-        );
+        ).await.unwrap();
 
         counter.tell(Increment(5)).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1494,7 +1494,7 @@ mod tests {
                 interceptors: vec![Box::new(LogInterceptor { log: log.clone() })],
                 ..Default::default()
             },
-        );
+        ).await.unwrap();
 
         let count = counter.ask(GetCount, None).unwrap().await.unwrap();
         assert_eq!(count, 42);
@@ -1561,7 +1561,7 @@ mod tests {
                 interceptors: vec![Box::new(DropInterceptor)],
                 ..Default::default()
             },
-        );
+        ).await.unwrap();
 
         actor.tell(Ping).unwrap();
         actor.tell(Ping).unwrap();
@@ -1604,7 +1604,7 @@ mod tests {
                 interceptors: vec![Box::new(RejectInterceptor)],
                 ..Default::default()
             },
-        );
+        ).await.unwrap();
 
         let result = counter.ask(GetCount, None).unwrap().await;
         assert!(result.is_err(), "rejected ask should return Err");
@@ -1648,7 +1648,7 @@ mod tests {
                 interceptors: vec![Box::new(RetryInterceptor)],
                 ..Default::default()
             },
-        );
+        ).await.unwrap();
 
         let result = counter.ask(GetCount, None).unwrap().await;
         assert!(result.is_err());
@@ -1700,7 +1700,7 @@ mod tests {
                 interceptors: vec![Box::new(RetryInterceptor)],
                 ..Default::default()
             },
-        );
+        ).await.unwrap();
 
         actor.tell(TrackMsg).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1762,7 +1762,7 @@ mod tests {
                 ],
                 ..Default::default()
             },
-        );
+        ).await.unwrap();
 
         counter.tell(Increment(1)).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1836,7 +1836,7 @@ mod tests {
                 ],
                 ..Default::default()
             },
-        );
+        ).await.unwrap();
 
         counter.tell(Increment(1)).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1875,7 +1875,7 @@ mod tests {
                 interceptors: vec![Box::new(DelayInterceptor)],
                 ..Default::default()
             },
-        );
+        ).await.unwrap();
 
         let start = tokio::time::Instant::now();
         counter.tell(Increment(1)).unwrap();
@@ -1921,7 +1921,7 @@ mod tests {
                 interceptors: vec![Box::new(SmallDelay(50)), Box::new(SmallDelay(50))],
                 ..Default::default()
             },
-        );
+        ).await.unwrap();
 
         let start = tokio::time::Instant::now();
         // Use ask to block until message is processed
@@ -1941,7 +1941,7 @@ mod tests {
     async fn test_no_interceptors_existing_behavior_unchanged() {
         // Existing spawn() path should work identically
         let runtime = TestRuntime::new();
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
 
         counter.tell(Increment(10)).unwrap();
         let count = counter.ask(GetCount, None).unwrap().await.unwrap();
@@ -1984,7 +1984,7 @@ mod tests {
                 interceptors: vec![Box::new(TypeLogInterceptor { log: log.clone() })],
                 ..Default::default()
             },
-        );
+        ).await.unwrap();
 
         counter.tell(Increment(1)).unwrap();
         let _ = counter.ask(GetCount, None).unwrap().await.unwrap();
@@ -2033,7 +2033,7 @@ mod tests {
                 })],
                 ..Default::default()
             },
-        );
+        ).await.unwrap();
 
         counter.tell(Increment(42)).unwrap();
         counter.tell(Increment(7)).unwrap();
@@ -2077,7 +2077,7 @@ mod tests {
 
         let mut runtime = TestRuntime::new();
         runtime.add_outbound_interceptor(Box::new(OutLog { log: log.clone() }));
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
 
         counter.tell(Increment(5)).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2109,7 +2109,7 @@ mod tests {
 
         let mut runtime = TestRuntime::new();
         runtime.add_outbound_interceptor(Box::new(RejectOut));
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 42 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 42 }).await.unwrap();
 
         let result = counter.ask(GetCount, None).unwrap().await;
         match result.unwrap_err() {
@@ -2149,7 +2149,7 @@ mod tests {
 
         let mut runtime = TestRuntime::new();
         runtime.add_outbound_interceptor(Box::new(StampPriority));
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
 
         counter.tell(Increment(1)).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2178,7 +2178,7 @@ mod tests {
 
         let mut runtime = TestRuntime::new();
         runtime.add_outbound_interceptor(Box::new(RetryOut));
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
 
         let result = counter.ask(GetCount, None).unwrap().await;
         match result.unwrap_err() {
@@ -2215,7 +2215,7 @@ mod tests {
 
         let mut runtime = TestRuntime::new();
         runtime.add_outbound_interceptor(Box::new(DropOut));
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
 
         // tell should succeed (no error path) but message should not be delivered
         counter.tell(Increment(100)).unwrap();
@@ -2248,7 +2248,7 @@ mod tests {
 
         let mut runtime = TestRuntime::new();
         runtime.add_outbound_interceptor(Box::new(DropOut));
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
 
         let result = counter.ask(GetCount, None).unwrap().await;
         // Dropped ask returns a channel-closed error (ActorNotFound)
@@ -2287,7 +2287,7 @@ mod tests {
 
         let mut runtime = TestRuntime::new();
         runtime.add_outbound_interceptor(Box::new(ModeLog { log: log.clone() }));
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
 
         counter.tell(Increment(1)).unwrap();
         let _ = counter.ask(GetCount, None).unwrap().await;
@@ -2331,7 +2331,7 @@ mod tests {
         }
 
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<StopTracker>("tracker", log.clone());
+        let actor = runtime.spawn::<StopTracker>("tracker", log.clone()).await.unwrap();
 
         actor.tell(Ping).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2347,7 +2347,7 @@ mod tests {
     #[tokio::test]
     async fn test_stop_makes_tell_fail() {
         let runtime = TestRuntime::new();
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
 
         counter.stop();
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2402,7 +2402,7 @@ mod tests {
 
         let count = Arc::new(AtomicU64::new(0));
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<ResumeActor>("resume", count.clone());
+        let actor = runtime.spawn::<ResumeActor>("resume", count.clone()).await.unwrap();
 
         actor.tell(PanicMsg).unwrap(); // should panic but resume
         actor.tell(CountMsg).unwrap(); // should still be processed
@@ -2451,7 +2451,7 @@ mod tests {
 
         let alive = Arc::new(AtomicBool::new(true));
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<StopOnError>("stopper", alive.clone());
+        let actor = runtime.spawn::<StopOnError>("stopper", alive.clone()).await.unwrap();
 
         actor.tell(PanicMsg).unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2491,7 +2491,7 @@ mod tests {
         }
 
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<PanicCounter>("panic-counter", PanicCounter { count: 0 });
+        let actor = runtime.spawn::<PanicCounter>("panic-counter", PanicCounter { count: 0 }).await.unwrap();
 
         actor.tell(PanicIncrement).unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2530,7 +2530,7 @@ mod tests {
 
         let mode_ref = mode.clone();
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<ModeTracker>("tracker", mode_ref);
+        let actor = runtime.spawn::<ModeTracker>("tracker", mode_ref).await.unwrap();
 
         actor.tell(Check).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2569,7 +2569,7 @@ mod tests {
 
         let mode_ref = mode.clone();
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<AskModeTracker>("tracker", mode_ref);
+        let actor = runtime.spawn::<AskModeTracker>("tracker", mode_ref).await.unwrap();
 
         let _ = actor.ask(AskCheck, None).unwrap().await.unwrap();
 
@@ -2620,7 +2620,7 @@ mod tests {
 
         let count = Arc::new(AtomicU64::new(0));
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<RestartActor>("restart", count.clone());
+        let actor = runtime.spawn::<RestartActor>("restart", count.clone()).await.unwrap();
 
         actor.tell(RestartPanicMsg).unwrap();
         actor.tell(RestartCountMsg).unwrap();
@@ -2640,7 +2640,7 @@ mod tests {
     #[tokio::test]
     async fn test_unbounded_mailbox_accepts_many() {
         let runtime = TestRuntime::new();
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
 
         for _ in 0..1000 {
             counter.tell(Increment(1)).unwrap();
@@ -2654,7 +2654,7 @@ mod tests {
     #[tokio::test]
     async fn test_default_spawn_is_unbounded() {
         let runtime = TestRuntime::new();
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
 
         for _ in 0..100 {
             counter.tell(Increment(1)).unwrap();
@@ -2717,7 +2717,7 @@ mod tests {
                 },
                 ..Default::default()
             },
-        );
+        ).await.unwrap();
 
         // First message starts processing (blocks in handler)
         actor.tell(SlowMsg).unwrap();
@@ -2745,7 +2745,7 @@ mod tests {
                 },
                 ..Default::default()
             },
-        );
+        ).await.unwrap();
 
         actor.tell(SlowMsg).unwrap();
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -2813,8 +2813,8 @@ mod tests {
     async fn test_watch_receives_child_terminated() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let runtime = TestRuntime::new();
-        let watcher = runtime.spawn::<Watcher>("watcher", events.clone());
-        let worker = runtime.spawn::<Worker>("worker", ());
+        let watcher = runtime.spawn::<Watcher>("watcher", events.clone()).await.unwrap();
+        let worker = runtime.spawn::<Worker>("worker", ()).await.unwrap();
 
         let worker_id = worker.id();
         runtime.watch(&watcher, worker_id.clone());
@@ -2837,8 +2837,8 @@ mod tests {
     async fn test_unwatch_stops_notifications() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let runtime = TestRuntime::new();
-        let watcher = runtime.spawn::<Watcher>("watcher", events.clone());
-        let worker = runtime.spawn::<Worker>("worker", ());
+        let watcher = runtime.spawn::<Watcher>("watcher", events.clone()).await.unwrap();
+        let worker = runtime.spawn::<Worker>("worker", ()).await.unwrap();
 
         let worker_id = worker.id();
         let watcher_id = watcher.id();
@@ -2879,8 +2879,8 @@ mod tests {
 
         let events = Arc::new(Mutex::new(Vec::new()));
         let runtime = TestRuntime::new();
-        let watcher = runtime.spawn::<Watcher>("watcher", events.clone());
-        let worker = runtime.spawn::<PanicWorker>("panic-worker", ());
+        let watcher = runtime.spawn::<Watcher>("watcher", events.clone()).await.unwrap();
+        let worker = runtime.spawn::<PanicWorker>("panic-worker", ()).await.unwrap();
 
         let worker_id = worker.id();
         runtime.watch(&watcher, worker_id.clone());
@@ -2900,9 +2900,9 @@ mod tests {
         let events1 = Arc::new(Mutex::new(Vec::new()));
         let events2 = Arc::new(Mutex::new(Vec::new()));
         let runtime = TestRuntime::new();
-        let watcher1 = runtime.spawn::<Watcher>("watcher1", events1.clone());
-        let watcher2 = runtime.spawn::<Watcher>("watcher2", events2.clone());
-        let worker = runtime.spawn::<Worker>("worker", ());
+        let watcher1 = runtime.spawn::<Watcher>("watcher1", events1.clone()).await.unwrap();
+        let watcher2 = runtime.spawn::<Watcher>("watcher2", events2.clone()).await.unwrap();
+        let worker = runtime.spawn::<Worker>("worker", ()).await.unwrap();
 
         let worker_id = worker.id();
         runtime.watch(&watcher1, worker_id.clone());
@@ -2962,7 +2962,7 @@ mod tests {
 
         let runtime = TestRuntime::new();
         let server = runtime
-            .spawn::<LogServer>("logs", vec!["line1".into(), "line2".into(), "line3".into()]);
+            .spawn::<LogServer>("logs", vec!["line1".into(), "line2".into(), "line3".into()]).await.unwrap();
 
         let mut stream = server.expand(GetLogs, 16, None, None).unwrap();
         let mut items = Vec::new();
@@ -2978,7 +2978,7 @@ mod tests {
         use tokio_stream::StreamExt;
 
         let runtime = TestRuntime::new();
-        let server = runtime.spawn::<LogServer>("logs", vec![]);
+        let server = runtime.spawn::<LogServer>("logs", vec![]).await.unwrap();
 
         let mut stream = server.expand(GetLogs, 16, None, None).unwrap();
         assert!(stream.next().await.is_none());
@@ -2990,7 +2990,7 @@ mod tests {
 
         let logs: Vec<String> = (0..1000).map(|i| format!("line-{}", i)).collect();
         let runtime = TestRuntime::new();
-        let server = runtime.spawn::<LogServer>("logs", logs);
+        let server = runtime.spawn::<LogServer>("logs", logs).await.unwrap();
 
         let mut stream = server.expand(GetLogs, 4, None, None).unwrap();
         let item1 = stream.next().await.unwrap();
@@ -3041,7 +3041,7 @@ mod tests {
         }
 
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<NumberStream>("numbers", ());
+        let actor = runtime.spawn::<NumberStream>("numbers", ()).await.unwrap();
 
         let stream = actor
             .expand(GetNumbers { count: 100 }, 16, None, None)
@@ -3089,7 +3089,7 @@ mod tests {
         }
 
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<SlowStream>("slow", ());
+        let actor = runtime.spawn::<SlowStream>("slow", ()).await.unwrap();
         let mut stream = actor.expand(GetItems, 1, None, None).unwrap();
 
         // Read slowly — backpressure should prevent buffer overflow
@@ -3131,7 +3131,7 @@ mod tests {
         }
 
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<Summer>("summer", ());
+        let actor = runtime.spawn::<Summer>("summer", ()).await.unwrap();
 
         let input = futures::stream::iter(vec![10u64, 20, 30, 40, 50]);
         let reply = actor
@@ -3169,7 +3169,7 @@ mod tests {
         }
 
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<Summer>("summer", ());
+        let actor = runtime.spawn::<Summer>("summer", ()).await.unwrap();
 
         let input = futures::stream::iter(Vec::<u64>::new());
         let reply = actor
@@ -3209,7 +3209,7 @@ mod tests {
         }
 
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<Collector>("collector", ());
+        let actor = runtime.spawn::<Collector>("collector", ()).await.unwrap();
 
         let values: Vec<u64> = (0..100).collect();
         let input = futures::stream::iter(values.clone());
@@ -3249,7 +3249,7 @@ mod tests {
         }
 
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<SlowConsumer>("slow", ());
+        let actor = runtime.spawn::<SlowConsumer>("slow", ()).await.unwrap();
 
         let input = futures::stream::iter(0u64..20);
         let reply = actor
@@ -3268,7 +3268,7 @@ mod tests {
         token.cancel(); // cancel immediately
 
         let runtime = TestRuntime::new();
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
 
         let result = counter.ask(GetCount, Some(token)).unwrap().await;
         // Should be Err(Cancelled) because cancelled before handler ran
@@ -3301,7 +3301,7 @@ mod tests {
         }
 
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<SlowActor>("slow", ());
+        let actor = runtime.spawn::<SlowActor>("slow", ()).await.unwrap();
         let token = cancel_after(Duration::from_millis(50));
         let result = actor.ask(SlowMsg, Some(token)).unwrap().await;
         assert!(result.is_err()); // cancelled during handler execution
@@ -3310,7 +3310,7 @@ mod tests {
     #[tokio::test]
     async fn test_no_cancel_runs_to_completion() {
         let runtime = TestRuntime::new();
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 42 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 42 }).await.unwrap();
         let result = counter.ask(GetCount, None).unwrap().await;
         assert_eq!(result.unwrap(), 42);
     }
@@ -3342,7 +3342,7 @@ mod tests {
         }
 
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<CancelAwareActor>("aware", ());
+        let actor = runtime.spawn::<CancelAwareActor>("aware", ()).await.unwrap();
         let token = cancel_after(Duration::from_millis(50));
         let result = actor.ask(LongTask, Some(token)).unwrap().await.unwrap();
         assert_eq!(result, "cancelled");
@@ -3385,7 +3385,7 @@ mod tests {
         }
 
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<SlowStreamer>("streamer", ());
+        let actor = runtime.spawn::<SlowStreamer>("streamer", ()).await.unwrap();
         let token = cancel_after(Duration::from_millis(100));
         let mut stream = actor.expand(StreamForever, 4, None, Some(token)).unwrap();
 
@@ -3426,7 +3426,7 @@ mod tests {
         }
 
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<FeedActor>("feed-actor", ());
+        let actor = runtime.spawn::<FeedActor>("feed-actor", ()).await.unwrap();
 
         // Create a slow infinite stream
         let input = futures::stream::unfold(0u64, |state| async move {
@@ -3601,7 +3601,7 @@ mod tests {
             let server = runtime.spawn::<LogServer>(
                 "logs-batched",
                 vec!["a".into(), "b".into(), "c".into(), "d".into(), "e".into()],
-            );
+            ).await.unwrap();
 
             let batch_config = BatchConfig::new(2, Duration::from_secs(10));
             let mut stream = server
@@ -3644,7 +3644,7 @@ mod tests {
             }
 
             let runtime = TestRuntime::new();
-            let actor = runtime.spawn::<Summer>("sum-batched", ());
+            let actor = runtime.spawn::<Summer>("sum-batched", ()).await.unwrap();
 
             let input = futures::stream::iter(vec![10u64, 20, 30, 40, 50]);
             let batch_config = BatchConfig::new(3, Duration::from_secs(10));
@@ -3690,7 +3690,7 @@ mod tests {
             call_count: call_count.clone(),
         }));
 
-        let actor = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let actor = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
         actor.tell(Increment(42)).unwrap();
 
         let count = actor.ask(GetCount, None).unwrap().await.unwrap();
@@ -3716,7 +3716,7 @@ mod tests {
         let mut runtime = TestRuntime::new();
         runtime.set_dead_letter_handler(collector.clone());
 
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
         counter.stop();
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -3738,7 +3738,7 @@ mod tests {
         let mut runtime = TestRuntime::new();
         runtime.set_dead_letter_handler(collector.clone());
 
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
         counter.stop();
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -3791,7 +3791,7 @@ mod tests {
                 interceptors: vec![Box::new(DropAllInterceptor)],
                 ..Default::default()
             },
-        );
+        ).await.unwrap();
 
         counter.tell(Increment(1)).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -3816,7 +3816,7 @@ mod tests {
         let mut runtime = TestRuntime::new();
         runtime.set_dead_letter_handler(collector.clone());
 
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
         counter.stop();
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -3842,7 +3842,7 @@ mod tests {
         let mut runtime = TestRuntime::new();
         runtime.enable_metrics();
 
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
         counter.tell(Increment(1)).unwrap();
         counter.tell(Increment(2)).unwrap();
         let _ = counter.ask(GetCount, None).unwrap().await.unwrap();
@@ -3859,8 +3859,8 @@ mod tests {
         let mut runtime = TestRuntime::new();
         runtime.enable_metrics();
 
-        let a = runtime.spawn::<Counter>("a", Counter { count: 0 });
-        let b = runtime.spawn::<Counter>("b", Counter { count: 0 });
+        let a = runtime.spawn::<Counter>("a", Counter { count: 0 }).await.unwrap();
+        let b = runtime.spawn::<Counter>("b", Counter { count: 0 }).await.unwrap();
 
         a.tell(Increment(1)).unwrap();
         b.tell(Increment(1)).unwrap();
@@ -3882,7 +3882,7 @@ mod tests {
         let mut runtime = TestRuntime::new();
         runtime.enable_metrics();
 
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
         counter.tell(Increment(1)).unwrap();
         let _ = counter.ask(GetCount, None).unwrap().await.unwrap();
 
@@ -3901,7 +3901,7 @@ mod tests {
         let runtime = TestRuntime::new();
         assert!(runtime.metrics().is_none());
 
-        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
         counter.tell(Increment(1)).unwrap();
         let _ = counter.ask(GetCount, None).unwrap().await.unwrap();
 
@@ -3914,7 +3914,7 @@ mod tests {
     #[tokio::test]
     async fn test_registry_auto_register_on_spawn() {
         let runtime = TestRuntime::new();
-        let _counter = runtime.spawn::<Counter>("my-counter", Counter { count: 0 });
+        let _counter = runtime.spawn::<Counter>("my-counter", Counter { count: 0 }).await.unwrap();
 
         assert!(runtime.registry().contains("my-counter"));
         let looked_up: Option<TestActorRef<Counter>> = runtime.registry().lookup("my-counter");
@@ -3924,7 +3924,7 @@ mod tests {
     #[tokio::test]
     async fn test_registry_lookup_and_use() {
         let runtime = TestRuntime::new();
-        let counter = runtime.spawn::<Counter>("counter-a", Counter { count: 0 });
+        let counter = runtime.spawn::<Counter>("counter-a", Counter { count: 0 }).await.unwrap();
         counter.tell(Increment(10)).unwrap();
 
         // Look up by name and send a message through the looked-up ref
@@ -3938,7 +3938,7 @@ mod tests {
     #[tokio::test]
     async fn test_registry_lookup_wrong_type_returns_none() {
         let runtime = TestRuntime::new();
-        let _counter = runtime.spawn::<Counter>("typed-actor", Counter { count: 0 });
+        let _counter = runtime.spawn::<Counter>("typed-actor", Counter { count: 0 }).await.unwrap();
 
         // Greeter is a different actor type — lookup should return None
         let wrong: Option<TestActorRef<Greeter>> = runtime.registry().lookup("typed-actor");
@@ -3955,7 +3955,7 @@ mod tests {
     #[tokio::test]
     async fn test_registry_unregister() {
         let runtime = TestRuntime::new();
-        let _counter = runtime.spawn::<Counter>("removable", Counter { count: 0 });
+        let _counter = runtime.spawn::<Counter>("removable", Counter { count: 0 }).await.unwrap();
         assert!(runtime.registry().contains("removable"));
 
         assert!(runtime.registry().unregister("removable"));
@@ -3968,9 +3968,9 @@ mod tests {
     #[tokio::test]
     async fn test_registry_multiple_actors() {
         let runtime = TestRuntime::new();
-        let _c1 = runtime.spawn::<Counter>("counter-1", Counter { count: 0 });
-        let _c2 = runtime.spawn::<Counter>("counter-2", Counter { count: 100 });
-        let _g = runtime.spawn::<Greeter>("greeter", ());
+        let _c1 = runtime.spawn::<Counter>("counter-1", Counter { count: 0 }).await.unwrap();
+        let _c2 = runtime.spawn::<Counter>("counter-2", Counter { count: 100 }).await.unwrap();
+        let _g = runtime.spawn::<Greeter>("greeter", ()).await.unwrap();
 
         assert_eq!(runtime.registry().len(), 3);
 
@@ -3993,7 +3993,7 @@ mod tests {
     #[tokio::test]
     async fn jh5_await_stop_resolves_after_actor_stops() {
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<Counter>("await-stop-actor", Counter { count: 0 });
+        let actor = runtime.spawn::<Counter>("await-stop-actor", Counter { count: 0 }).await.unwrap();
         let actor_id = actor.id();
 
         actor.stop();
@@ -4016,9 +4016,9 @@ mod tests {
     #[tokio::test]
     async fn jh5_await_all_waits_for_all_actors() {
         let runtime = TestRuntime::new();
-        let a1 = runtime.spawn::<Counter>("aa1", Counter { count: 0 });
-        let a2 = runtime.spawn::<Counter>("aa2", Counter { count: 0 });
-        let a3 = runtime.spawn::<Counter>("aa3", Counter { count: 0 });
+        let a1 = runtime.spawn::<Counter>("aa1", Counter { count: 0 }).await.unwrap();
+        let a2 = runtime.spawn::<Counter>("aa2", Counter { count: 0 }).await.unwrap();
+        let a3 = runtime.spawn::<Counter>("aa3", Counter { count: 0 }).await.unwrap();
 
         assert_eq!(runtime.active_handle_count(), 3);
 
@@ -4034,7 +4034,7 @@ mod tests {
     #[tokio::test]
     async fn jh5_cleanup_finished_removes_stopped_actors() {
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<Counter>("cleanup-test", Counter { count: 0 });
+        let actor = runtime.spawn::<Counter>("cleanup-test", Counter { count: 0 }).await.unwrap();
         assert_eq!(runtime.active_handle_count(), 1);
 
         actor.stop();
@@ -4049,10 +4049,10 @@ mod tests {
         let runtime = TestRuntime::new();
         assert_eq!(runtime.active_handle_count(), 0);
 
-        let _a = runtime.spawn::<Counter>("hc1", Counter { count: 0 });
+        let _a = runtime.spawn::<Counter>("hc1", Counter { count: 0 }).await.unwrap();
         assert_eq!(runtime.active_handle_count(), 1);
 
-        let _b = runtime.spawn::<Counter>("hc2", Counter { count: 0 });
+        let _b = runtime.spawn::<Counter>("hc2", Counter { count: 0 }).await.unwrap();
         assert_eq!(runtime.active_handle_count(), 2);
     }
 
@@ -4080,7 +4080,7 @@ mod tests {
     #[tokio::test]
     async fn jh5_panic_propagated_through_await_stop() {
         let runtime = TestRuntime::new();
-        let actor = runtime.spawn::<PanickingActor>("panic-actor", ());
+        let actor = runtime.spawn::<PanickingActor>("panic-actor", ()).await.unwrap();
         let actor_id = actor.id();
 
         actor.stop();

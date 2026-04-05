@@ -120,8 +120,8 @@ async fn main() {
     let events = Arc::new(Mutex::new(Vec::<String>::new()));
 
     // Spawn supervisor and worker.
-    let supervisor = runtime.spawn::<Supervisor>("supervisor", events.clone());
-    let worker = runtime.spawn::<Worker>("worker", ());
+    let supervisor = runtime.spawn::<Supervisor>("supervisor", events.clone()).await.unwrap();
+    let worker = runtime.spawn::<Worker>("worker", ()).await.unwrap();
 
     // Register a death-watch: supervisor watches worker.
     let worker_id = worker.id();

@@ -302,10 +302,8 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
                 .catch_unwind()
                 .await
                 .is_err();
-        if on_stop_panicked {
-            if state.stop_reason.is_none() {
-                state.stop_reason = Some("actor panicked in on_stop".to_string());
-            }
+        if on_stop_panicked && state.stop_reason.is_none() {
+            state.stop_reason = Some("actor panicked in on_stop".to_string());
         }
 
         // Notify all watchers that this actor has terminated.
@@ -850,44 +848,44 @@ impl RactorRuntime {
     }
 
     /// Spawn an actor with `Deps = ()`.
-    pub fn spawn<A>(&self, name: &str, args: A::Args) -> RactorActorRef<A>
+    pub async fn spawn<A>(&self, name: &str, args: A::Args) -> Result<RactorActorRef<A>, dactor::errors::RuntimeError>
     where
         A: Actor<Deps = ()> + 'static,
     {
-        self.spawn_internal::<A>(name, args, (), Vec::new())
+        self.spawn_internal::<A>(name, args, (), Vec::new()).await
     }
 
     /// Spawn an actor with explicit dependencies.
-    pub fn spawn_with_deps<A>(&self, name: &str, args: A::Args, deps: A::Deps) -> RactorActorRef<A>
+    pub async fn spawn_with_deps<A>(&self, name: &str, args: A::Args, deps: A::Deps) -> Result<RactorActorRef<A>, dactor::errors::RuntimeError>
     where
         A: Actor + 'static,
     {
-        self.spawn_internal::<A>(name, args, deps, Vec::new())
+        self.spawn_internal::<A>(name, args, deps, Vec::new()).await
     }
 
     /// Spawn an actor with spawn options (including inbound interceptors).
-    pub fn spawn_with_options<A>(
+    pub async fn spawn_with_options<A>(
         &self,
         name: &str,
         args: A::Args,
         options: SpawnOptions,
-    ) -> RactorActorRef<A>
+    ) -> Result<RactorActorRef<A>, dactor::errors::RuntimeError>
     where
         A: Actor<Deps = ()> + 'static,
     {
         if !matches!(options.mailbox, MailboxConfig::Unbounded) {
             tracing::warn!("ractor adapter: bounded mailbox not yet implemented, using unbounded");
         }
-        self.spawn_internal::<A>(name, args, (), options.interceptors)
+        self.spawn_internal::<A>(name, args, (), options.interceptors).await
     }
 
-    fn spawn_internal<A>(
+    async fn spawn_internal<A>(
         &self,
         name: &str,
         args: A::Args,
         deps: A::Deps,
         interceptors: Vec<Box<dyn InboundInterceptor>>,
-    ) -> RactorActorRef<A>
+    ) -> Result<RactorActorRef<A>, dactor::errors::RuntimeError>
     where
         A: Actor + 'static,
     {
@@ -914,42 +912,21 @@ impl RactorRuntime {
             stop_notifier: Some(stop_tx),
         };
 
-        // Bridge sync → async: use a std thread to avoid blocking the
-        // current tokio runtime while awaiting ractor::Actor::spawn.
-        let name_for_ractor = name.to_string();
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        let handle = tokio::runtime::Handle::current();
-        std::thread::spawn(move || {
-            handle.block_on(async move {
-                let result = ractor::Actor::spawn(Some(name_for_ractor), wrapper, spawn_args).await;
-                match result {
-                    Ok((actor_ref, join_handle)) => {
-                        let _ = tx.send(Ok((actor_ref, join_handle)));
-                    }
-                    Err(e) => {
-                        let _ = tx.send(Err(e.to_string()));
-                    }
-                }
-            });
-        });
-
-        let (actor_ref, _join_handle) = match rx.recv() {
-            Ok(Ok(pair)) => pair,
-            Ok(Err(e)) => panic!("failed to spawn ractor actor: {e}"),
-            Err(_) => panic!("ractor actor spawn channel closed unexpectedly"),
-        };
+        let (actor_ref, _join_handle) = ractor::Actor::spawn(Some(name.to_string()), wrapper, spawn_args)
+            .await
+            .map_err(|e| dactor::errors::RuntimeError::SpawnFailed(e.to_string()))?;
 
         // Store stop receiver for await_stop()
         self.stop_receivers.lock().unwrap().insert(actor_id.clone(), stop_rx);
 
-        RactorActorRef {
+        Ok(RactorActorRef {
             id: actor_id,
             name: actor_name,
             inner: actor_ref,
             outbound_interceptors: self.outbound_interceptors.clone(),
             drop_observer: self.drop_observer.clone(),
             dead_letter_handler: self.dead_letter_handler.clone(),
-        }
+        })
     }
 
     /// Register actor `watcher` to be notified when `target_id` terminates.

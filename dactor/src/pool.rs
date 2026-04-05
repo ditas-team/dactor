@@ -319,22 +319,23 @@ impl crate::test_support::test_runtime::TestRuntime {
     /// [`ActorMetricsHandle`] registered
     /// under the pool's [`ActorId`]. This means the pool's metrics reflect
     /// aggregate throughput across all workers without per-worker overhead.
-    pub fn spawn_pool<A>(
+    pub async fn spawn_pool<A>(
         &self,
         name: &str,
         pool_size: usize,
         routing: PoolRouting,
         args: A::Args,
-    ) -> PoolRef<A, crate::test_support::test_runtime::TestActorRef<A>>
+    ) -> Result<PoolRef<A, crate::test_support::test_runtime::TestActorRef<A>>, crate::errors::RuntimeError>
     where
         A: Actor<Deps = ()> + 'static,
         A::Args: Clone,
     {
-        let workers: Vec<_> = (0..pool_size)
-            .map(|i| self.spawn(&format!("{}-{}", name, i), args.clone()))
-            .collect();
+        let mut workers = Vec::with_capacity(pool_size);
+        for i in 0..pool_size {
+            workers.push(self.spawn(&format!("{}-{}", name, i), args.clone()).await?);
+        }
 
-        PoolRef::new(workers, routing)
+        Ok(PoolRef::new(workers, routing))
     }
 }
 
@@ -422,7 +423,7 @@ mod tests {
 
     // -- Helper: spawn a pool of PoolWorkers ---------------------------------
 
-    fn make_pool(
+    async fn make_pool(
         rt: &TestRuntime,
         size: usize,
         routing: PoolRouting,
@@ -435,7 +436,7 @@ mod tests {
         for i in 0..size {
             let ctr = Arc::new(AtomicU64::new(0));
             counters.push(ctr.clone());
-            let r = rt.spawn::<PoolWorker>(&format!("w-{}", i), (i as u64, ctr));
+            let r = rt.spawn::<PoolWorker>(&format!("w-{}", i), (i as u64, ctr)).await.unwrap();
             workers.push(r);
         }
         (PoolRef::new(workers, routing), counters)
@@ -446,7 +447,7 @@ mod tests {
     #[tokio::test]
     async fn round_robin_distributes_across_workers() {
         let rt = TestRuntime::new();
-        let (pool, counters) = make_pool(&rt, 3, PoolRouting::RoundRobin);
+        let (pool, counters) = make_pool(&rt, 3, PoolRouting::RoundRobin).await;
 
         // Send 9 messages — each worker should get exactly 3
         for _ in 0..9 {
@@ -469,7 +470,7 @@ mod tests {
     #[tokio::test]
     async fn random_routing_delivers_to_all() {
         let rt = TestRuntime::new();
-        let (pool, counters) = make_pool(&rt, 3, PoolRouting::Random);
+        let (pool, counters) = make_pool(&rt, 3, PoolRouting::Random).await;
 
         // Send enough messages that every worker should get at least one
         for _ in 0..300 {
@@ -494,7 +495,7 @@ mod tests {
     #[tokio::test]
     async fn key_based_routes_same_key_to_same_worker() {
         let rt = TestRuntime::new();
-        let (pool, _counters) = make_pool(&rt, 4, PoolRouting::KeyBased);
+        let (pool, _counters) = make_pool(&rt, 4, PoolRouting::KeyBased).await;
 
         // Same key should always hit the same worker
         for key in [10u64, 42, 99, 1000] {
@@ -521,7 +522,7 @@ mod tests {
     async fn pool_ref_ask_works() {
         let rt = TestRuntime::new();
         let ctr = Arc::new(AtomicU64::new(0));
-        let worker = rt.spawn::<PoolWorker>("solo", (42, ctr));
+        let worker = rt.spawn::<PoolWorker>("solo", (42, ctr)).await.unwrap();
         let pool = PoolRef::new(vec![worker], PoolRouting::RoundRobin);
 
         let id = pool.ask(WhoAreYou, None).unwrap().await.unwrap();
@@ -531,7 +532,7 @@ mod tests {
     #[tokio::test]
     async fn pool_size_one_works() {
         let rt = TestRuntime::new();
-        let (pool, counters) = make_pool(&rt, 1, PoolRouting::RoundRobin);
+        let (pool, counters) = make_pool(&rt, 1, PoolRouting::RoundRobin).await;
 
         for _ in 0..5 {
             pool.tell(Ping).unwrap();
@@ -545,7 +546,7 @@ mod tests {
     #[tokio::test]
     async fn pool_is_alive_and_stop() {
         let rt = TestRuntime::new();
-        let (pool, _) = make_pool(&rt, 2, PoolRouting::RoundRobin);
+        let (pool, _) = make_pool(&rt, 2, PoolRouting::RoundRobin).await;
 
         assert!(pool.is_alive());
         pool.stop();
@@ -559,7 +560,7 @@ mod tests {
     async fn spawn_pool_helper() {
         let rt = TestRuntime::new();
         let ctr = Arc::new(AtomicU64::new(0));
-        let pool = rt.spawn_pool::<PoolWorker>("sp", 3, PoolRouting::RoundRobin, (0, ctr.clone()));
+        let pool = rt.spawn_pool::<PoolWorker>("sp", 3, PoolRouting::RoundRobin, (0, ctr.clone())).await.unwrap();
 
         assert_eq!(pool.pool_size(), 3);
 
@@ -578,7 +579,7 @@ mod tests {
     #[tokio::test]
     async fn key_based_falls_back_to_round_robin_for_non_keyed_messages() {
         let rt = TestRuntime::new();
-        let (pool, counters) = make_pool(&rt, 3, PoolRouting::KeyBased);
+        let (pool, counters) = make_pool(&rt, 3, PoolRouting::KeyBased).await;
 
         // Non-keyed messages through ActorRef::tell should use round-robin fallback
         for _ in 0..6 {

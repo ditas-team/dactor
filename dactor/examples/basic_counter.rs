@@ -86,7 +86,7 @@ async fn main() {
 
     // 1. Create the runtime and spawn the actor.
     let runtime = TestRuntime::new();
-    let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 });
+    let counter = runtime.spawn::<Counter>("counter", Counter { count: 0 }).await.unwrap();
     println!("Spawned actor '{}'", counter.name());
 
     // 2. Send some fire-and-forget increments via tell().

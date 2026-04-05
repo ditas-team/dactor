@@ -36,7 +36,7 @@
 //! #[tokio::main]
 //! async fn main() {
 //!     let runtime = KameoRuntime::new();
-//!     let actor = runtime.spawn::<MyActor>("greeter", ());
+//!     let actor = runtime.spawn::<MyActor>("greeter", ()).await.unwrap();
 //!     actor.tell(Greet("hello".into())).unwrap();
 //! }
 //! ```

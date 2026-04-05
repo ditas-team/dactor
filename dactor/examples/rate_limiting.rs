@@ -55,7 +55,7 @@ async fn main() {
     let mut runtime = TestRuntime::new();
     runtime.add_outbound_interceptor(Box::new(limiter));
 
-    let worker = runtime.spawn::<Worker>("worker", ());
+    let worker = runtime.spawn::<Worker>("worker", ()).await.unwrap();
 
     println!("--- Sending 8 rapid asks (limit: 3/sec) ---");
     let mut delivered = 0u32;

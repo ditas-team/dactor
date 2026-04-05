@@ -136,6 +136,8 @@ pub enum RuntimeError {
     Cancelled,
     /// The requested capability is not supported by this adapter.
     NotSupported(NotSupportedError),
+    /// Actor spawn failed.
+    SpawnFailed(String),
 }
 
 impl fmt::Display for RuntimeError {
@@ -163,6 +165,7 @@ impl fmt::Display for RuntimeError {
             Self::Actor(e) => write!(f, "actor error: {}", e),
             Self::Cancelled => write!(f, "operation cancelled"),
             Self::NotSupported(e) => write!(f, "{}", e),
+            Self::SpawnFailed(msg) => write!(f, "spawn failed: {}", msg),
         }
     }
 }

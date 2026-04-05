@@ -60,7 +60,7 @@ async fn main() {
             },
             ..Default::default()
         },
-    );
+    ).await.unwrap();
 
     // The first message starts processing (occupies the actor task).
     reject_actor.tell(SlowMsg(0)).unwrap();
@@ -95,7 +95,7 @@ async fn main() {
             },
             ..Default::default()
         },
-    );
+    ).await.unwrap();
 
     // First message starts processing.
     drop_actor.tell(SlowMsg(0)).unwrap();

@@ -82,7 +82,7 @@ async fn main() {
     println!("=== Error Handling Example ===\n");
 
     let runtime = TestRuntime::new();
-    let actor = runtime.spawn::<Validator>("validator", ());
+    let actor = runtime.spawn::<Validator>("validator", ()).await.unwrap();
 
     // --- Success case ---
     println!("--- Valid input ---");

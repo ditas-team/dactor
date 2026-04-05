@@ -24,17 +24,17 @@ impl Handler<Stop> for SlowActor {
 #[tokio::test]
 async fn jh1_stop_receiver_stored_on_spawn() {
     let runtime = KameoRuntime::new();
-    let _actor = runtime.spawn::<SlowActor>("a1", ());
+    let _actor = runtime.spawn::<SlowActor>("a1", ()).await.unwrap();
     assert_eq!(runtime.active_handle_count(), 1);
 
-    let _actor2 = runtime.spawn::<SlowActor>("a2", ());
+    let _actor2 = runtime.spawn::<SlowActor>("a2", ()).await.unwrap();
     assert_eq!(runtime.active_handle_count(), 2);
 }
 
 #[tokio::test]
 async fn jh2_await_stop_resolves_after_actor_stops() {
     let runtime = KameoRuntime::new();
-    let actor = runtime.spawn::<SlowActor>("stopper", ());
+    let actor = runtime.spawn::<SlowActor>("stopper", ()).await.unwrap();
     let actor_id = actor.id();
 
     actor.stop();
@@ -59,9 +59,9 @@ async fn jh2_await_stop_unknown_id_returns_ok() {
 #[tokio::test]
 async fn jh3_await_all_waits_for_all_actors() {
     let runtime = KameoRuntime::new();
-    let a1 = runtime.spawn::<SlowActor>("a1", ());
-    let a2 = runtime.spawn::<SlowActor>("a2", ());
-    let a3 = runtime.spawn::<SlowActor>("a3", ());
+    let a1 = runtime.spawn::<SlowActor>("a1", ()).await.unwrap();
+    let a2 = runtime.spawn::<SlowActor>("a2", ()).await.unwrap();
+    let a3 = runtime.spawn::<SlowActor>("a3", ()).await.unwrap();
 
     assert_eq!(runtime.active_handle_count(), 3);
 
@@ -80,7 +80,7 @@ async fn jh3_await_all_waits_for_all_actors() {
 #[tokio::test]
 async fn jh_cleanup_finished_removes_stopped_actors() {
     let runtime = KameoRuntime::new();
-    let actor = runtime.spawn::<SlowActor>("cleanup-test", ());
+    let actor = runtime.spawn::<SlowActor>("cleanup-test", ()).await.unwrap();
     assert_eq!(runtime.active_handle_count(), 1);
 
     actor.stop();
@@ -113,7 +113,7 @@ impl Handler<Stop> for PanickingActor {
 #[tokio::test]
 async fn jh4_panic_propagated_through_await_stop() {
     let runtime = KameoRuntime::new();
-    let actor = runtime.spawn::<PanickingActor>("panic-actor", ());
+    let actor = runtime.spawn::<PanickingActor>("panic-actor", ()).await.unwrap();
     let actor_id = actor.id();
 
     actor.stop();

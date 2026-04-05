@@ -92,7 +92,7 @@ impl Handler<KeyedTask> for Worker {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn make_pool(
+async fn make_pool(
     rt: &TestRuntime,
     size: usize,
     routing: PoolRouting,
@@ -105,7 +105,7 @@ fn make_pool(
     for i in 0..size {
         let ctr = Arc::new(AtomicU64::new(0));
         counters.push(ctr.clone());
-        workers.push(rt.spawn::<Worker>(&format!("w-{i}"), (i as u64, ctr)));
+        workers.push(rt.spawn::<Worker>(&format!("w-{i}"), (i as u64, ctr)).await.unwrap());
     }
     (PoolRef::new(workers, routing), counters)
 }
@@ -121,7 +121,7 @@ async fn main() {
 
     // ── RoundRobin ─────────────────────────────────────────
     println!("--- RoundRobin (4 workers, 12 tasks) ---");
-    let (pool, counters) = make_pool(&rt, 4, PoolRouting::RoundRobin);
+    let (pool, counters) = make_pool(&rt, 4, PoolRouting::RoundRobin).await;
     for _ in 0..12 {
         pool.tell(Task).unwrap();
     }
@@ -141,7 +141,7 @@ async fn main() {
 
     // ── KeyBased ───────────────────────────────────────────
     println!("\n--- KeyBased (4 workers, sticky routing) ---");
-    let (pool, _counters) = make_pool(&rt, 4, PoolRouting::KeyBased);
+    let (pool, _counters) = make_pool(&rt, 4, PoolRouting::KeyBased).await;
 
     let mut key_to_worker: HashMap<u64, u64> = HashMap::new();
     for key in [10, 42, 99, 1000] {

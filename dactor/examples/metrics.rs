@@ -64,7 +64,7 @@ async fn main() {
     runtime.enable_metrics();
 
     // Spawn actor — MetricsInterceptor is automatically attached
-    let counter = runtime.spawn::<Counter>("counter", ());
+    let counter = runtime.spawn::<Counter>("counter", ()).await.unwrap();
 
     // Send several tell messages
     println!("--- Sending 5 Increment tells ---");
