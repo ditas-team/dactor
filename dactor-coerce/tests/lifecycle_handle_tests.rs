@@ -87,3 +87,34 @@ async fn jh_cleanup_finished_removes_stopped_actors() {
     runtime.cleanup_finished();
     assert_eq!(runtime.active_handle_count(), 0);
 }
+
+// -- JH4: Panic propagation through await_stop --------------------------------
+
+struct PanickingActor;
+
+#[async_trait::async_trait]
+impl Actor for PanickingActor {
+    type Args = ();
+    type Deps = ();
+    fn create(_: (), _: ()) -> Self { PanickingActor }
+
+    async fn on_stop(&mut self) {
+        panic!("intentional on_stop panic");
+    }
+}
+
+#[async_trait::async_trait]
+impl Handler<Stop> for PanickingActor {
+    async fn handle(&mut self, _msg: Stop, _ctx: &mut ActorContext) {}
+}
+
+#[tokio::test]
+async fn jh4_panic_propagated_through_await_stop() {
+    let runtime = CoerceRuntime::new();
+    let actor = runtime.spawn::<PanickingActor>("panic-actor", ());
+    let actor_id = actor.id();
+
+    actor.stop();
+    let result = runtime.await_stop(&actor_id).await;
+    assert!(result.is_err(), "expected error from panicking on_stop");
+}

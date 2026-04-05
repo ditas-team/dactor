@@ -75,6 +75,8 @@ struct RactorActorState<A: Actor> {
     watchers: WatcherMap,
     stop_reason: Option<String>,
     dead_letter_handler: Arc<Option<Arc<dyn DeadLetterHandler>>>,
+    /// Notified when the actor stops (for await_stop).
+    stop_notifier: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 }
 
 /// Arguments passed to the ractor actor at spawn time.
@@ -86,6 +88,7 @@ struct RactorSpawnArgs<A: Actor> {
     interceptors: Vec<Box<dyn InboundInterceptor>>,
     watchers: WatcherMap,
     dead_letter_handler: Arc<Option<Arc<dyn DeadLetterHandler>>>,
+    stop_notifier: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 }
 
 impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
@@ -108,6 +111,7 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
             watchers: args.watchers,
             stop_reason: None,
             dead_letter_handler: args.dead_letter_handler,
+            stop_notifier: args.stop_notifier,
         })
     }
 
@@ -290,7 +294,19 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
         state.ctx.send_mode = None;
         state.ctx.headers = Headers::new();
         state.ctx.set_cancellation_token(None);
-        state.actor.on_stop().await;
+
+        // Run on_stop with panic catching so panics propagate as errors
+        // through the JoinHandle instead of aborting the ractor task.
+        let stop_result =
+            std::panic::AssertUnwindSafe(state.actor.on_stop())
+                .catch_unwind()
+                .await;
+        if let Err(_panic) = stop_result {
+            // Re-set stop_reason so watchers see the panic
+            if state.stop_reason.is_none() {
+                state.stop_reason = Some("actor panicked in on_stop".to_string());
+            }
+        }
 
         // Notify all watchers that this actor has terminated.
         let actor_id = state.ctx.actor_id.clone();
@@ -315,6 +331,16 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
             for entry in &entries {
                 (entry.notify)(notification.clone());
             }
+        }
+
+        // Notify await_stop() waiters with the result
+        if let Some(tx) = state.stop_notifier.take() {
+            let result = if state.stop_reason.as_deref() == Some("actor panicked in on_stop") {
+                Err("actor panicked in on_stop".to_string())
+            } else {
+                Ok(())
+            };
+            let _ = tx.send(result);
         }
 
         Ok(())
@@ -698,8 +724,9 @@ pub struct RactorRuntime {
     node_directory: NodeDirectory,
     /// Native ractor system actor refs (lazily started via `start_system_actors()`).
     system_actors: Option<RactorSystemActorRefs>,
-    /// JoinHandles for spawned actors, keyed by ActorId.
-    join_handles: Arc<Mutex<HashMap<ActorId, ractor::concurrency::JoinHandle<()>>>>,
+    /// Stop notification receivers for await_stop(), keyed by ActorId.
+    #[allow(clippy::type_complexity)]
+    stop_receivers: Arc<Mutex<HashMap<ActorId, tokio::sync::oneshot::Receiver<Result<(), String>>>>>,
 }
 
 /// References to the native ractor system actors spawned by the runtime.
@@ -738,7 +765,7 @@ impl RactorRuntime {
             cancel_manager: CancelManager::new(),
             node_directory: NodeDirectory::new(),
             system_actors: None,
-            join_handles: Arc::new(Mutex::new(HashMap::new())),
+            stop_receivers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -870,6 +897,8 @@ impl RactorRuntime {
         };
         let actor_name = name.to_string();
 
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+
         let wrapper = RactorDactorActor::<A> {
             _phantom: PhantomData,
         };
@@ -881,6 +910,7 @@ impl RactorRuntime {
             interceptors,
             watchers: self.watchers.clone(),
             dead_letter_handler: self.dead_letter_handler.clone(),
+            stop_notifier: Some(stop_tx),
         };
 
         // Bridge sync → async: use a std thread to avoid blocking the
@@ -902,17 +932,14 @@ impl RactorRuntime {
             });
         });
 
-        let (actor_ref, join_handle) = match rx.recv() {
+        let (actor_ref, _join_handle) = match rx.recv() {
             Ok(Ok(pair)) => pair,
             Ok(Err(e)) => panic!("failed to spawn ractor actor: {e}"),
             Err(_) => panic!("ractor actor spawn channel closed unexpectedly"),
         };
 
-        // Store JoinHandle for await_stop()
-        {
-            let mut handles = self.join_handles.lock().unwrap();
-            handles.insert(actor_id.clone(), join_handle);
-        }
+        // Store stop receiver for await_stop()
+        self.stop_receivers.lock().unwrap().insert(actor_id.clone(), stop_rx);
 
         RactorActorRef {
             id: actor_id,
@@ -1171,36 +1198,41 @@ impl RactorRuntime {
 
     /// Wait for an actor to stop.
     ///
-    /// Returns `Ok(())` when the actor finishes, or `Err` if the actor's
-    /// task panicked. The JoinHandle is consumed and removed from the map.
+    /// Returns `Ok(())` when the actor finishes cleanly, or `Err` if the
+    /// actor panicked in `on_stop`. The stop receiver is consumed and removed
+    /// from the map.
     ///
-    /// Returns `Ok(())` immediately if no JoinHandle is stored for this ID
+    /// Returns `Ok(())` immediately if no stop receiver is stored for this ID
     /// (e.g., actor was already awaited or was not spawned by this runtime).
     pub async fn await_stop(&self, actor_id: &ActorId) -> Result<(), String> {
-        let handle = {
-            let mut handles = self.join_handles.lock().unwrap();
-            handles.remove(actor_id)
+        let rx = {
+            let mut receivers = self.stop_receivers.lock().unwrap();
+            receivers.remove(actor_id)
         };
-        match handle {
-            Some(jh) => jh.await.map_err(|e| format!("actor task failed: {e}")),
+        match rx {
+            Some(rx) => rx
+                .await
+                .map_err(|_| "stop notifier dropped".to_string())
+                .and_then(|r| r),
             None => Ok(()),
         }
     }
 
     /// Wait for all spawned actors to stop.
     ///
-    /// Drains all stored JoinHandles and awaits them all. Returns the first
+    /// Drains all stored stop receivers and awaits them all. Returns the first
     /// error encountered, but always waits for every actor to finish.
     pub async fn await_all(&self) -> Result<(), String> {
-        let handles: Vec<_> = {
-            let mut map = self.join_handles.lock().unwrap();
-            map.drain().map(|(_, jh)| jh).collect()
+        let receivers: Vec<_> = {
+            let mut map = self.stop_receivers.lock().unwrap();
+            map.drain().collect()
         };
         let mut first_error = None;
-        for jh in handles {
-            if let Err(e) = jh.await {
+        for (_, rx) in receivers {
+            let result = rx.await.map_err(|e| format!("stop notifier dropped: {e}")).and_then(|r| r);
+            if let Err(e) = result {
                 if first_error.is_none() {
-                    first_error = Some(format!("actor task failed: {e}"));
+                    first_error = Some(e);
                 }
             }
         }
@@ -1210,22 +1242,24 @@ impl RactorRuntime {
         }
     }
 
-    /// Remove completed JoinHandles from the map.
+    /// Remove completed stop receivers from the map.
     ///
     /// Call periodically to prevent stale entries from accumulating
     /// for actors that stopped without being awaited.
     pub fn cleanup_finished(&self) {
-        let mut handles = self.join_handles.lock().unwrap();
-        handles.retain(|_, jh| !jh.is_finished());
+        let mut receivers = self.stop_receivers.lock().unwrap();
+        receivers.retain(|_, rx| {
+            matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty))
+        });
     }
 
-    /// Number of actors with stored JoinHandles.
+    /// Number of actors with stored stop receivers.
     ///
-    /// Note: includes handles for actors that have already stopped but
+    /// Note: includes receivers for actors that have already stopped but
     /// haven't been awaited or cleaned up. Call `cleanup_finished()` first
     /// for an accurate count of running actors.
     pub fn active_handle_count(&self) -> usize {
-        self.join_handles.lock().unwrap().len()
+        self.stop_receivers.lock().unwrap().len()
     }
 }
 

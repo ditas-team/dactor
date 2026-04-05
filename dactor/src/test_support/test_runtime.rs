@@ -527,6 +527,9 @@ pub struct TestRuntime {
     watchers: Arc<Mutex<HashMap<ActorId, Vec<WatchEntry>>>>,
     /// Actor name registry for looking up actors by name.
     registry: Arc<ActorRegistry>,
+    /// Stop notification receivers for await_stop(), keyed by ActorId.
+    #[allow(clippy::type_complexity)]
+    stop_receivers: Arc<Mutex<HashMap<ActorId, tokio::sync::oneshot::Receiver<Result<(), String>>>>>,
     /// Optional shared metrics registry. When set, a [`MetricsInterceptor`] is
     /// automatically prepended to every spawned actor's inbound interceptor list.
     #[cfg(feature = "metrics")]
@@ -543,6 +546,7 @@ impl TestRuntime {
             dead_letter_handler: Arc::new(None),
             watchers: Arc::new(Mutex::new(HashMap::new())),
             registry: Arc::new(ActorRegistry::new()),
+            stop_receivers: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(feature = "metrics")]
             metrics_registry: None,
         }
@@ -558,6 +562,7 @@ impl TestRuntime {
             dead_letter_handler: Arc::new(None),
             watchers: Arc::new(Mutex::new(HashMap::new())),
             registry: Arc::new(ActorRegistry::new()),
+            stop_receivers: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(feature = "metrics")]
             metrics_registry: None,
         }
@@ -738,6 +743,8 @@ impl TestRuntime {
         let watchers_ref = self.watchers.clone();
         let dead_letter_handler_task = self.dead_letter_handler.clone();
         let registry_task = self.registry.clone();
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        self.stop_receivers.lock().unwrap().insert(actor_id.clone(), stop_rx);
 
         tokio::spawn(async move {
             let mut actor = A::create(args, deps);
@@ -952,7 +959,16 @@ impl TestRuntime {
             // Reset context for on_stop (no message being processed)
             ctx.send_mode = None;
             ctx.headers = Headers::new();
-            actor.on_stop().await;
+
+            // Run on_stop with panic catching so we can propagate errors
+            let stop_result =
+                std::panic::AssertUnwindSafe(actor.on_stop())
+                    .catch_unwind()
+                    .await;
+            let stop_err = match stop_result {
+                Ok(()) => None,
+                Err(_panic) => Some("actor panicked in on_stop".to_string()),
+            };
 
             // Notify all watchers that this actor has terminated.
             // Clone entries and release lock before calling notify closures
@@ -974,6 +990,13 @@ impl TestRuntime {
                 }
             }
 
+            // Notify await_stop() waiters with the result
+            let result = match stop_err {
+                Some(e) => Err(e),
+                None => Ok(()),
+            };
+            let _ = stop_tx.send(result);
+
             // Auto-unregister from the name registry on stop.
             registry_task.unregister(&actor_name);
         });
@@ -991,6 +1014,78 @@ impl TestRuntime {
         self.registry.register(name, actor_ref.clone());
 
         actor_ref
+    }
+
+    // -----------------------------------------------------------------------
+    // Actor lifecycle handles
+    // -----------------------------------------------------------------------
+
+    /// Wait for an actor to stop.
+    ///
+    /// Returns `Ok(())` when the actor finishes cleanly, or `Err` if the
+    /// actor panicked in `on_stop`. The stop receiver is consumed and removed
+    /// from the map.
+    ///
+    /// Returns `Ok(())` immediately if no stop receiver is stored for this ID.
+    pub async fn await_stop(&self, actor_id: &ActorId) -> Result<(), String> {
+        let rx = {
+            let mut receivers = self.stop_receivers.lock().unwrap();
+            receivers.remove(actor_id)
+        };
+        match rx {
+            Some(rx) => rx
+                .await
+                .map_err(|_| "stop notifier dropped".to_string())
+                .and_then(|r| r),
+            None => Ok(()),
+        }
+    }
+
+    /// Wait for all spawned actors to stop.
+    ///
+    /// Drains all stored stop receivers and awaits them all. Returns the first
+    /// error encountered, but always waits for every actor to finish.
+    pub async fn await_all(&self) -> Result<(), String> {
+        let receivers: Vec<_> = {
+            let mut map = self.stop_receivers.lock().unwrap();
+            map.drain().collect()
+        };
+        let mut first_error = None;
+        for (_, rx) in receivers {
+            let result = rx.await.map_err(|e| format!("stop notifier dropped: {e}")).and_then(|r| r);
+            if let Err(e) = result {
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
+            }
+        }
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// Remove completed stop receivers from the map.
+    ///
+    /// Call periodically to prevent stale entries from accumulating
+    /// for actors that stopped without being awaited.
+    pub fn cleanup_finished(&self) {
+        let mut receivers = self.stop_receivers.lock().unwrap();
+        receivers.retain(|_, rx| {
+            matches!(
+                rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            )
+        });
+    }
+
+    /// Number of actors with stored stop receivers.
+    ///
+    /// Note: includes receivers for actors that have already stopped but
+    /// haven't been awaited or cleaned up. Call `cleanup_finished()` first
+    /// for an accurate count of running actors.
+    pub fn active_handle_count(&self) -> usize {
+        self.stop_receivers.lock().unwrap().len()
     }
 }
 
@@ -3891,6 +3986,106 @@ mod tests {
         let g: TestActorRef<Greeter> = runtime.registry().lookup("greeter").unwrap();
         let reply = g.ask(Greet("World".into()), None).unwrap().await.unwrap();
         assert_eq!(reply, "Hello, World!");
+    }
+
+    // -- JH5: TestRuntime await_stop / await_all / cleanup_finished / active_handle_count --
+
+    #[tokio::test]
+    async fn jh5_await_stop_resolves_after_actor_stops() {
+        let runtime = TestRuntime::new();
+        let actor = runtime.spawn::<Counter>("await-stop-actor", Counter { count: 0 });
+        let actor_id = actor.id();
+
+        actor.stop();
+        let result = runtime.await_stop(&actor_id).await;
+        assert!(result.is_ok());
+        assert_eq!(runtime.active_handle_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn jh5_await_stop_unknown_id_returns_ok() {
+        let runtime = TestRuntime::new();
+        let fake_id = ActorId {
+            node: NodeId("fake".into()),
+            local: 999,
+        };
+        let result = runtime.await_stop(&fake_id).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn jh5_await_all_waits_for_all_actors() {
+        let runtime = TestRuntime::new();
+        let a1 = runtime.spawn::<Counter>("aa1", Counter { count: 0 });
+        let a2 = runtime.spawn::<Counter>("aa2", Counter { count: 0 });
+        let a3 = runtime.spawn::<Counter>("aa3", Counter { count: 0 });
+
+        assert_eq!(runtime.active_handle_count(), 3);
+
+        a1.stop();
+        a2.stop();
+        a3.stop();
+
+        let result = runtime.await_all().await;
+        assert!(result.is_ok());
+        assert_eq!(runtime.active_handle_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn jh5_cleanup_finished_removes_stopped_actors() {
+        let runtime = TestRuntime::new();
+        let actor = runtime.spawn::<Counter>("cleanup-test", Counter { count: 0 });
+        assert_eq!(runtime.active_handle_count(), 1);
+
+        actor.stop();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        runtime.cleanup_finished();
+        assert_eq!(runtime.active_handle_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn jh5_active_handle_count() {
+        let runtime = TestRuntime::new();
+        assert_eq!(runtime.active_handle_count(), 0);
+
+        let _a = runtime.spawn::<Counter>("hc1", Counter { count: 0 });
+        assert_eq!(runtime.active_handle_count(), 1);
+
+        let _b = runtime.spawn::<Counter>("hc2", Counter { count: 0 });
+        assert_eq!(runtime.active_handle_count(), 2);
+    }
+
+    struct PanickingActor;
+
+    #[async_trait]
+    impl Actor for PanickingActor {
+        type Args = ();
+        type Deps = ();
+        fn create(_: (), _: ()) -> Self { PanickingActor }
+
+        async fn on_stop(&mut self) {
+            panic!("intentional on_stop panic");
+        }
+    }
+
+    struct Ping;
+    impl Message for Ping { type Reply = (); }
+
+    #[async_trait]
+    impl Handler<Ping> for PanickingActor {
+        async fn handle(&mut self, _msg: Ping, _ctx: &mut ActorContext) {}
+    }
+
+    #[tokio::test]
+    async fn jh5_panic_propagated_through_await_stop() {
+        let runtime = TestRuntime::new();
+        let actor = runtime.spawn::<PanickingActor>("panic-actor", ());
+        let actor_id = actor.id();
+
+        actor.stop();
+        let result = runtime.await_stop(&actor_id).await;
+        assert!(result.is_err(), "expected error from panicking on_stop");
     }
 }
 
