@@ -538,10 +538,10 @@ messages.
 
 | # | Feature | Description | Status |
 |---|---------|-------------|--------|
-| NA1 | Ractor native SpawnManager | `ractor::Actor` impl wrapping `SpawnManager`, handles `SpawnRequest` messages via mailbox | 🔲 Not started |
-| NA2 | Ractor native WatchManager | `ractor::Actor` impl wrapping `WatchManager`, handles `WatchRequest`/`UnwatchRequest` messages | 🔲 Not started |
-| NA3 | Ractor native CancelManager | `ractor::Actor` impl wrapping `CancelManager`, handles `CancelRequest` messages | 🔲 Not started |
-| NA4 | Ractor native NodeDirectory | `ractor::Actor` impl wrapping `NodeDirectory`, handles membership change messages | 🔲 Not started |
+| NA1 | Ractor native SpawnManager | `ractor::Actor` impl wrapping `SpawnManager`, handles `SpawnRequest` messages via mailbox | ✅ PR #83 |
+| NA2 | Ractor native WatchManager | `ractor::Actor` impl wrapping `WatchManager`, handles `WatchRequest`/`UnwatchRequest` messages | ✅ PR #83 |
+| NA3 | Ractor native CancelManager | `ractor::Actor` impl wrapping `CancelManager`, handles `CancelRequest` messages | ✅ PR #83 |
+| NA4 | Ractor native NodeDirectory | `ractor::Actor` impl wrapping `NodeDirectory`, handles membership change messages | ✅ PR #83 |
 | NA5 | Kameo native SpawnManager | `kameo::Actor` impl wrapping `SpawnManager` | 🔲 Not started |
 | NA6 | Kameo native WatchManager | `kameo::Actor` impl wrapping `WatchManager` | 🔲 Not started |
 | NA7 | Kameo native CancelManager | `kameo::Actor` impl wrapping `CancelManager` | 🔲 Not started |
