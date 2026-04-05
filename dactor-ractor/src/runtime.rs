@@ -1189,20 +1189,41 @@ impl RactorRuntime {
 
     /// Wait for all spawned actors to stop.
     ///
-    /// Drains all stored JoinHandles and awaits them. Returns the first
-    /// error encountered, or `Ok(())` if all actors stopped cleanly.
+    /// Drains all stored JoinHandles and awaits them all. Returns the first
+    /// error encountered, but always waits for every actor to finish.
     pub async fn await_all(&self) -> Result<(), String> {
         let handles: Vec<_> = {
             let mut map = self.join_handles.lock().unwrap();
             map.drain().map(|(_, jh)| jh).collect()
         };
+        let mut first_error = None;
         for jh in handles {
-            jh.await.map_err(|e| format!("actor task failed: {e}"))?;
+            if let Err(e) = jh.await {
+                if first_error.is_none() {
+                    first_error = Some(format!("actor task failed: {e}"));
+                }
+            }
         }
-        Ok(())
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// Remove completed JoinHandles from the map.
+    ///
+    /// Call periodically to prevent stale entries from accumulating
+    /// for actors that stopped without being awaited.
+    pub fn cleanup_finished(&self) {
+        let mut handles = self.join_handles.lock().unwrap();
+        handles.retain(|_, jh| !jh.is_finished());
     }
 
     /// Number of actors with stored JoinHandles.
+    ///
+    /// Note: includes handles for actors that have already stopped but
+    /// haven't been awaited or cleaned up. Call `cleanup_finished()` first
+    /// for an accurate count of running actors.
     pub fn active_handle_count(&self) -> usize {
         self.join_handles.lock().unwrap().len()
     }

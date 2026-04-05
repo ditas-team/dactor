@@ -1172,19 +1172,43 @@ impl KameoRuntime {
 
     /// Wait for all spawned actors to stop.
     ///
-    /// Drains all stored stop receivers and awaits them.
+    /// Drains all stored stop receivers and awaits them all. Returns the first
+    /// error encountered, but always waits for every actor to finish.
     pub async fn await_all(&self) -> Result<(), String> {
         let receivers: Vec<_> = {
             let mut map = self.stop_receivers.lock().unwrap();
             map.drain().collect()
         };
+        let mut first_error = None;
         for (_, rx) in receivers {
-            rx.await.map_err(|_| "stop notifier dropped".to_string())?;
+            if let Err(e) = rx.await {
+                if first_error.is_none() {
+                    first_error = Some(format!("stop notifier dropped: {e}"));
+                }
+            }
         }
-        Ok(())
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// Remove completed stop receivers from the map.
+    ///
+    /// Call periodically to prevent stale entries from accumulating
+    /// for actors that stopped without being awaited.
+    pub fn cleanup_finished(&self) {
+        let mut receivers = self.stop_receivers.lock().unwrap();
+        receivers.retain(|_, rx| {
+            matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty))
+        });
     }
 
     /// Number of actors with stored stop receivers.
+    ///
+    /// Note: includes receivers for actors that have already stopped but
+    /// haven't been awaited or cleaned up. Call `cleanup_finished()` first
+    /// for an accurate count of running actors.
     pub fn active_handle_count(&self) -> usize {
         self.stop_receivers.lock().unwrap().len()
     }
