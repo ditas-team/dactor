@@ -1,14 +1,23 @@
 //! Broadcast messaging for actor groups.
 //!
-//! A [`BroadcastRef`] holds references to a group of actors of the same type
-//! and fans out `tell` (fire-and-forget) and `ask` (request-reply) messages
-//! to every member concurrently.
+//! A [`BroadcastRef`] holds an **owned, non-shared** list of actor references
+//! of the same type and fans out `tell` (fire-and-forget) and `ask`
+//! (request-reply) messages to every member concurrently.
+//!
+//! Membership is managed through `&mut self` methods (`add` / `remove`),
+//! meaning the caller must own or exclusively borrow the group.  This is
+//! intentional — `BroadcastRef` is a simple owned group, not a thread-safe
+//! shared registry.  If you need concurrent membership changes from multiple
+//! tasks, wrap the group in an `Arc<RwLock<BroadcastRef<…>>>` or build a
+//! dedicated membership actor.
 
 use std::marker::PhantomData;
 use std::time::Duration;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::actor::{Actor, ActorRef, Handler};
-use crate::errors::ActorSendError;
+use crate::errors::{ActorSendError, RuntimeError};
 use crate::message::Message;
 use crate::node::ActorId;
 
@@ -31,12 +40,19 @@ pub enum BroadcastReceipt<R> {
         /// Identity of the actor that timed out.
         actor_id: ActorId,
     },
-    /// Sending to the actor or receiving its reply failed.
-    Error {
+    /// Dispatching the message failed (actor stopped, mailbox full, etc.).
+    SendError {
         /// Identity of the actor that failed.
         actor_id: ActorId,
-        /// The error that occurred.
+        /// The send error.
         error: ActorSendError,
+    },
+    /// The actor processed the message but the reply resolved to an error.
+    ReplyError {
+        /// Identity of the actor that failed.
+        actor_id: ActorId,
+        /// The runtime error from the reply channel.
+        error: RuntimeError,
     },
 }
 
@@ -76,7 +92,12 @@ impl BroadcastTellResult {
 // BroadcastRef
 // ---------------------------------------------------------------------------
 
-/// A reference to a group of actors, enabling broadcast messaging.
+/// An **owned, non-shared** reference to a group of actors, enabling
+/// broadcast messaging.
+///
+/// Membership is mutated via `&mut self`, so the caller must own or
+/// exclusively borrow the group.  For concurrent access, wrap in
+/// `Arc<RwLock<…>>`.
 ///
 /// Generic over actor type `A` and a single concrete [`ActorRef`]
 /// implementation `R`. The constraint mirrors [`PoolRef`](crate::pool::PoolRef).
@@ -123,11 +144,11 @@ impl<A: Actor, R: ActorRef<A>> BroadcastRef<A, R> {
 
     /// Remove an actor from the group by its [`ActorId`].
     ///
-    /// Returns `true` if the actor was found and removed.
-    pub fn remove(&mut self, actor_id: &ActorId) -> bool {
-        let before = self.refs.len();
-        self.refs.retain(|r| r.id() != *actor_id);
-        self.refs.len() < before
+    /// Returns `Some(actor_ref)` if the actor was found and removed,
+    /// or `None` if no member matched.
+    pub fn remove(&mut self, actor_id: &ActorId) -> Option<R> {
+        let pos = self.refs.iter().position(|r| r.id() == *actor_id)?;
+        Some(self.refs.swap_remove(pos))
     }
 
     /// Fire-and-forget: deliver a cloned message to every member.
@@ -149,6 +170,9 @@ impl<A: Actor, R: ActorRef<A>> BroadcastRef<A, R> {
 
     /// Request-reply: send a cloned message to every member and collect
     /// replies concurrently with a per-actor timeout.
+    ///
+    /// A [`CancellationToken`] is created per member so that in-flight work
+    /// is cancelled when the timeout fires.
     pub async fn ask<M>(&self, msg: M, timeout: Duration) -> Vec<BroadcastReceipt<M::Reply>>
     where
         A: Handler<M> + 'static,
@@ -159,7 +183,9 @@ impl<A: Actor, R: ActorRef<A>> BroadcastRef<A, R> {
             .iter()
             .map(|actor_ref| {
                 let id = actor_ref.id();
-                let reply_future = actor_ref.ask(msg.clone(), None);
+                let token = CancellationToken::new();
+                let token_clone = token.clone();
+                let reply_future = actor_ref.ask(msg.clone(), Some(token_clone));
                 async move {
                     match reply_future {
                         Ok(ask_reply) => {
@@ -168,14 +194,17 @@ impl<A: Actor, R: ActorRef<A>> BroadcastRef<A, R> {
                                     actor_id: id,
                                     reply,
                                 },
-                                Ok(Err(_)) => BroadcastReceipt::Error {
+                                Ok(Err(e)) => BroadcastReceipt::ReplyError {
                                     actor_id: id,
-                                    error: ActorSendError("ask failed".into()),
+                                    error: e,
                                 },
-                                Err(_) => BroadcastReceipt::Timeout { actor_id: id },
+                                Err(_) => {
+                                    token.cancel();
+                                    BroadcastReceipt::Timeout { actor_id: id }
+                                }
                             }
                         }
-                        Err(e) => BroadcastReceipt::Error {
+                        Err(e) => BroadcastReceipt::SendError {
                             actor_id: id,
                             error: e,
                         },
@@ -369,7 +398,12 @@ mod tests {
             .count();
         let err_count = receipts
             .iter()
-            .filter(|r| matches!(r, BroadcastReceipt::Error { .. }))
+            .filter(|r| {
+                matches!(
+                    r,
+                    BroadcastReceipt::SendError { .. } | BroadcastReceipt::ReplyError { .. }
+                )
+            })
             .count();
 
         assert_eq!(ok_count, 2);
@@ -413,15 +447,15 @@ mod tests {
         assert_eq!(group.len(), 3);
 
         // Remove it by id
-        assert!(group.remove(&extra_id));
+        assert!(group.remove(&extra_id).is_some());
         assert_eq!(group.len(), 2);
 
-        // Removing a non-existent id returns false
+        // Removing a non-existent id returns None
         let fake_id = ActorId {
             node: crate::node::NodeId("no-node".into()),
             local: 999,
         };
-        assert!(!group.remove(&fake_id));
+        assert!(group.remove(&fake_id).is_none());
         assert_eq!(group.len(), 2);
     }
 
@@ -439,5 +473,67 @@ mod tests {
         assert_eq!(result.succeeded(), 2);
         assert_eq!(result.failed(), 1);
         assert_eq!(result.outcomes.len(), 3);
+    }
+
+    /// Message whose handler sleeps for `actor.value` milliseconds.
+    /// This lets us give different actors different delays via their state.
+    #[derive(Clone)]
+    struct SleepByValue;
+    impl Message for SleepByValue {
+        type Reply = u64;
+    }
+
+    #[async_trait]
+    impl Handler<SleepByValue> for Accumulator {
+        async fn handle(&mut self, _msg: SleepByValue, _ctx: &mut ActorContext) -> u64 {
+            tokio::time::sleep(Duration::from_millis(self.value)).await;
+            self.value
+        }
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_ask_mixed_fast_slow() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let rt = TestRuntime::new();
+
+        // value = delay in ms: fast replies in 10ms, slow replies in 500ms
+        let fast_ref = rt
+            .spawn::<Accumulator>("fast", (10, received.clone()))
+            .await
+            .unwrap();
+        let slow_ref = rt
+            .spawn::<Accumulator>("slow", (500, received.clone()))
+            .await
+            .unwrap();
+
+        let fast_id = fast_ref.id();
+        let slow_id = slow_ref.id();
+        let group = BroadcastRef::new(vec![fast_ref, slow_ref]);
+
+        // 100ms timeout: fast actor should succeed, slow actor should time out
+        let receipts = group
+            .ask(SleepByValue, Duration::from_millis(100))
+            .await;
+
+        assert_eq!(receipts.len(), 2);
+
+        let mut ok_ids = Vec::new();
+        let mut timeout_ids = Vec::new();
+        for r in &receipts {
+            match r {
+                BroadcastReceipt::Ok { actor_id, reply, .. } => {
+                    assert_eq!(*reply, 10);
+                    ok_ids.push(actor_id.clone());
+                }
+                BroadcastReceipt::Timeout { actor_id } => {
+                    timeout_ids.push(actor_id.clone());
+                }
+                other => panic!("unexpected receipt: {:?}", other),
+            }
+        }
+        assert_eq!(ok_ids.len(), 1, "fast actor should succeed");
+        assert_eq!(timeout_ids.len(), 1, "slow actor should timeout");
+        assert_eq!(ok_ids[0], fast_id);
+        assert_eq!(timeout_ids[0], slow_id);
     }
 }
