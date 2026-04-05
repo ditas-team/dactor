@@ -542,10 +542,10 @@ messages.
 | NA2 | Ractor native WatchManager | `ractor::Actor` impl wrapping `WatchManager`, handles `WatchRequest`/`UnwatchRequest` messages | ✅ PR #83 |
 | NA3 | Ractor native CancelManager | `ractor::Actor` impl wrapping `CancelManager`, handles `CancelRequest` messages | ✅ PR #83 |
 | NA4 | Ractor native NodeDirectory | `ractor::Actor` impl wrapping `NodeDirectory`, handles membership change messages | ✅ PR #83 |
-| NA5 | Kameo native SpawnManager | `kameo::Actor` impl wrapping `SpawnManager` | 🔲 Not started |
-| NA6 | Kameo native WatchManager | `kameo::Actor` impl wrapping `WatchManager` | 🔲 Not started |
-| NA7 | Kameo native CancelManager | `kameo::Actor` impl wrapping `CancelManager` | 🔲 Not started |
-| NA8 | Kameo native NodeDirectory | `kameo::Actor` impl wrapping `NodeDirectory` | 🔲 Not started |
+| NA5 | Kameo native SpawnManager | `kameo::Actor` impl wrapping `SpawnManager` | ✅ PR #84 |
+| NA6 | Kameo native WatchManager | `kameo::Actor` impl wrapping `WatchManager` | ✅ PR #84 |
+| NA7 | Kameo native CancelManager | `kameo::Actor` impl wrapping `CancelManager` | ✅ PR #84 |
+| NA8 | Kameo native NodeDirectory | `kameo::Actor` impl wrapping `NodeDirectory` | ✅ PR #84 |
 | NA9 | Runtime auto-start | Each adapter runtime spawns its system actors during `new()` and holds refs | 🔲 Not started |
 | NA10 | Transport routing | Incoming `WireEnvelope` with system message types routed to the correct system actor mailbox | 🔲 Not started |
 
