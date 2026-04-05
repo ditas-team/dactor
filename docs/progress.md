@@ -15,7 +15,7 @@
 - Phase 11: ✅ Complete (AS1-AS5,AS7: async spawn, Result return, removed std::thread bridge)
 - Phase 12: ✅ CP1-CP8,CP10 done (coerce real actors, parity tests); CP9 (mailbox config) remaining
 - Phase 13: TF1-TF3,TF5-TF7 done (TransformHandler, N→M streaming); TF4 (batch) remaining
-- Phase 14: 🔲 Broadcast (BC1-BC9) — planned, not started
+- Phase 14: BC1-BC5 done (BroadcastRef, tell, ask, receipts, dynamic membership); BC6-BC9 remaining
 - Zero clippy warnings, 682+ tests, all workspace tests pass
 - Build: `cargo clippy --workspace --exclude dactor-test-harness --all-targets --all-features -- -D warnings`
 - Test: `cargo test --workspace --exclude dactor-test-harness --features test-support` (exclude test-harness due to protoc permission issue)
@@ -933,11 +933,11 @@ pub enum BroadcastReceipt<R> {
 
 | # | Feature | Description | Status |
 |---|---------|-------------|--------|
-| BC1 | BroadcastRef<A> | A reference to a group of actors of the same type. Holds `Vec<Arc<dyn ErasedActorRef<A>>>` (type-erased to avoid object-safety issues with `ActorRef<A>` generic methods). | 🔲 Not started |
-| BC2 | `broadcast.tell(msg)` | Fire-and-forget: clone and send `msg` to all actors. Requires `M: Clone`. Errors on individual actors are logged but don't fail the broadcast. | 🔲 Not started |
-| BC3 | `broadcast.ask(msg, timeout)` | Request-reply: clone and send `msg` to all actors, collect `BroadcastReceipt<R>` within timeout. Uses `tokio::time::timeout` per actor. | 🔲 Not started |
-| BC4 | BroadcastReceipt<R> | Per-actor result enum: Ok, Timeout, Error. | 🔲 Not started |
-| BC5 | Dynamic group membership | `group.add(actor_ref)`, `group.remove(actor_id)`. Thread-safe via interior mutability. | 🔲 Not started |
+| BC1 | BroadcastRef<A> | A reference to a group of actors of the same type. Holds `Vec<Arc<dyn ErasedActorRef<A>>>` (type-erased to avoid object-safety issues with `ActorRef<A>` generic methods). | ✅ PR #96 |
+| BC2 | `broadcast.tell(msg)` | Fire-and-forget: clone and send `msg` to all actors. Requires `M: Clone`. Errors on individual actors are logged but don't fail the broadcast. | ✅ PR #96 |
+| BC3 | `broadcast.ask(msg, timeout)` | Request-reply: clone and send `msg` to all actors, collect `BroadcastReceipt<R>` within timeout. Uses `tokio::time::timeout` per actor. | ✅ PR #96 |
+| BC4 | BroadcastReceipt<R> | Per-actor result enum: Ok, Timeout, Error. | ✅ PR #96 |
+| BC5 | Dynamic group membership | `group.add(actor_ref)`, `group.remove(actor_id)`. Thread-safe via interior mutability. | ✅ PR #96 |
 | BC6 | Integration with actor pools | `PoolRef` can expose a `BroadcastRef` for sending to all workers. | 🔲 Not started |
 | BC7 | Interceptor support | Outbound interceptors run once per target actor (not once for the whole broadcast). | 🔲 Not started |
 | BC8 | Dead letter routing | Actors that are stopped get their messages routed to the dead letter handler. | 🔲 Not started |

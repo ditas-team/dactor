@@ -24,6 +24,8 @@
 
 /// Core actor traits and types (Actor, ActorRef, Handler, etc.).
 pub mod actor;
+/// Broadcast messaging for actor groups (BroadcastRef, tell, ask).
+pub mod broadcast;
 /// Batched transport sender for reducing per-message overhead (requires `serde` feature).
 #[cfg(feature = "serde")]
 pub mod batched_transport;
@@ -87,6 +89,7 @@ pub mod test_support;
 /// Convenience re-exports of the most commonly used types.
 pub mod prelude {
     pub use crate::actor::*;
+    pub use crate::broadcast::*;
     pub use crate::clock::*;
     pub use crate::cluster::*;
     pub use crate::errors::*;
@@ -100,6 +103,7 @@ pub use actor::ReduceHandler;
 pub use actor::{Actor, ActorContext, ActorError, ActorRef, SpawnConfig};
 pub use actor::{AskReply, Handler, ExpandHandler, TransformHandler};
 pub use async_trait::async_trait;
+pub use broadcast::{BroadcastReceipt, BroadcastRef, BroadcastTellResult, TellOutcome};
 #[cfg(feature = "serde")]
 pub use batched_transport::{
     is_batch_envelope, unpack_batch, BatchedTransportSender, WireEnvelopeBatch, BATCH_MESSAGE_TYPE,
