@@ -296,13 +296,13 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
         state.ctx.set_cancellation_token(None);
 
         // Run on_stop with panic catching so panics propagate as errors
-        // through the JoinHandle instead of aborting the ractor task.
-        let stop_result =
+        // through await_stop() instead of aborting the ractor task.
+        let on_stop_panicked =
             std::panic::AssertUnwindSafe(state.actor.on_stop())
                 .catch_unwind()
-                .await;
-        if let Err(_panic) = stop_result {
-            // Re-set stop_reason so watchers see the panic
+                .await
+                .is_err();
+        if on_stop_panicked {
             if state.stop_reason.is_none() {
                 state.stop_reason = Some("actor panicked in on_stop".to_string());
             }
@@ -333,9 +333,10 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
             }
         }
 
-        // Notify await_stop() waiters with the result
+        // Notify await_stop() waiters — track on_stop panic independently
+        // from stop_reason (which may already be set by a handler panic).
         if let Some(tx) = state.stop_notifier.take() {
-            let result = if state.stop_reason.as_deref() == Some("actor panicked in on_stop") {
+            let result = if on_stop_panicked {
                 Err("actor panicked in on_stop".to_string())
             } else {
                 Ok(())

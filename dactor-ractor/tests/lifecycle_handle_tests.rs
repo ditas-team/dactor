@@ -117,4 +117,6 @@ async fn jh4_panic_propagated_through_await_stop() {
     actor.stop();
     let result = runtime.await_stop(&actor_id).await;
     assert!(result.is_err(), "expected error from panicking on_stop");
+    let err = result.unwrap_err();
+    assert!(err.contains("on_stop"), "error should mention on_stop, got: {err}");
 }
