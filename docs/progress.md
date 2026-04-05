@@ -707,8 +707,8 @@ This phase brings coerce to feature parity with ractor/kameo.
 | CP2 | CoerceClusterEvents | Implement `ClusterEvents` trait for coerce adapter (callback-based, same pattern as ractor/kameo) | High | ✅ Done |
 | CP3 | ClusterEvent emission | Wire `connect_peer()`/`disconnect_peer()` to emit NodeJoined/NodeLeft via CoerceClusterEvents | High | ✅ Done |
 | CP4 | Lifecycle handles | Implement `await_stop()`/`await_all()`/`cleanup_finished()` — wire oneshot into coerce actor stop lifecycle | High | ✅ Done |
-| CP5 | Native system actors | Implement coerce native actors for SpawnManager, WatchManager, CancelManager, NodeDirectory | Medium | 🔲 Not started |
-| CP6 | Runtime auto-start | `start_system_actors()` spawns native coerce system actors | Medium | 🔲 Not started |
+| CP5 | Native system actors | Implement coerce native actors for SpawnManager, WatchManager, CancelManager, NodeDirectory | Medium | ✅ PR #90 |
+| CP6 | Runtime auto-start | `start_system_actors()` spawns native coerce system actors | Medium | ✅ PR #90 |
 | CP7 | Interceptor pipeline | Ensure inbound/outbound interceptor pipelines work with real coerce actors (not just TestRuntime delegation) | Medium | ✅ Done |
 | CP8 | Watch/unwatch | Wire coerce's actor lifecycle into WatchManager for real DeathWatch notifications | Medium | ✅ Done |
 | CP9 | Mailbox config | Wire coerce's mailbox options (bounded/unbounded) instead of ignoring MailboxConfig | Low | 🔲 Not started |
@@ -722,7 +722,7 @@ This phase brings coerce to feature parity with ractor/kameo.
 - **CP2-CP4, CP7-CP8, CP10 also complete** — ClusterEvents, lifecycle handles,
   interceptor pipelines, watch/unwatch, and comprehensive tests all work on
   real coerce actors. All 41 tests pass (16 conformance + 24 system actor + 1 doc).
-- **CP5-CP6 remain** — native coerce system actors (currently struct-based).
+- **CP5-CP6 complete** — native coerce system actors with runtime auto-start.
 - **CP9 remains** — bounded mailbox support (coerce uses unbounded internally).
 - **Limitation:** dactor actors used with the coerce adapter must be `Send + Sync`
   (required by `coerce::actor::Actor`). This is satisfied by most actors.
@@ -826,13 +826,17 @@ transform(input)       → transform(input)       // N→M  many inputs, many re
 This naming scheme maps naturally to **cardinality**:
 
 ```
-         Input
-         1       N
-Reply  ┌───────┬──────────┐
-  0    │ tell  │          │
-  1    │ ask   │ reduce   │
-  N    │expand │transform │
-       └───────┴──────────┘
+             Input
+             1          N
+Reply  ┌──────────┬──────────┐
+  0    │ tell     │          │
+  1    │ ask      │ reduce   │
+  N    │ expand   │transform │
+       └──────────┴──────────┘
+
+  Broadcast (1→many actors):
+  0×A  │ broadcast (fire-and-forget to all)
+  1×A  │ broadcast_ask (collect receipts from all)
 ```
 
 **Decision needed:** Renaming `stream` → `expand` and `feed` → `reduce` are
@@ -845,6 +849,80 @@ break. This is the ideal time for naming changes.
 first release. No aliases or deprecation needed since there are no
 downstream users. Update all traits, impls, tests, examples, and docs
 in a single PR.
+
+---
+
+## Phase 14: Broadcast
+
+### Background
+
+All current call patterns are **point-to-point** — one caller sends to one
+actor. Broadcast sends the same message to **multiple actors** simultaneously.
+
+Two variants:
+
+1. **Fire-and-forget broadcast** — send a message to all actors in a group,
+   no replies expected. Useful for cache invalidation, config reload, etc.
+
+2. **Broadcast with receipts** — send a message to all actors and collect
+   their replies, with a timeout for stragglers. Useful for distributed
+   queries, health checks, consensus.
+
+### Proposed API
+
+```rust
+// Fire-and-forget broadcast to all actors in a group
+runtime.broadcast::<A, M>(group, msg)?;
+// or via a BroadcastRef:
+let group: BroadcastRef<A> = runtime.broadcast_group(actor_refs);
+group.tell(msg)?;
+
+// Broadcast with receipts (timeout for replies)
+let receipts: Vec<BroadcastReceipt<M::Reply>> = group
+    .ask(msg, timeout)
+    .await;
+
+// Each receipt indicates success, timeout, or error per actor
+pub enum BroadcastReceipt<R> {
+    /// Actor replied successfully within the timeout.
+    Ok { actor_id: ActorId, reply: R },
+    /// Actor did not reply within the timeout.
+    Timeout { actor_id: ActorId },
+    /// Actor was unreachable or stopped.
+    Error { actor_id: ActorId, error: ActorSendError },
+}
+```
+
+### Plan
+
+| # | Feature | Description | Status |
+|---|---------|-------------|--------|
+| BC1 | BroadcastRef<A> | A reference to a group of actors of the same type. Holds `Vec<Box<dyn ActorRef<A>>>`. | 🔲 Not started |
+| BC2 | `broadcast.tell(msg)` | Fire-and-forget: clone and send `msg` to all actors. Requires `M: Clone`. Errors on individual actors are logged but don't fail the broadcast. | 🔲 Not started |
+| BC3 | `broadcast.ask(msg, timeout)` | Request-reply: clone and send `msg` to all actors, collect `BroadcastReceipt<R>` within timeout. Uses `tokio::time::timeout` per actor. | 🔲 Not started |
+| BC4 | BroadcastReceipt<R> | Per-actor result enum: Ok, Timeout, Error. | 🔲 Not started |
+| BC5 | Dynamic group membership | `group.add(actor_ref)`, `group.remove(actor_id)`. Thread-safe via interior mutability. | 🔲 Not started |
+| BC6 | Integration with actor pools | `PoolRef` can expose a `BroadcastRef` for sending to all workers. | 🔲 Not started |
+| BC7 | Interceptor support | Outbound interceptors run once per target actor (not once for the whole broadcast). | 🔲 Not started |
+| BC8 | Dead letter routing | Actors that are stopped get their messages routed to the dead letter handler. | 🔲 Not started |
+| BC9 | Tests | Broadcast tell/ask, partial failure, timeout, empty group, dynamic membership. | 🔲 Not started |
+
+### Design Notes
+
+- **`M: Clone` required** — the message must be cloneable since it's sent to
+  multiple actors. This is a new constraint not present in tell/ask.
+- **Concurrency** — all asks are dispatched concurrently via `join_all`,
+  not sequentially. The timeout applies per-actor, not globally.
+- **Backend-agnostic** — `BroadcastRef` works at the `ActorRef<A>` trait
+  level, so it works with any adapter (ractor, kameo, coerce, mock).
+- **Not a new actor** — `BroadcastRef` is a client-side utility, not a
+  router actor. For router-actor semantics, see `PoolRef` (AP1-AP8).
+- **Relation to processing groups (NR4)** — processing groups provide
+  cluster-wide membership discovery; `BroadcastRef` provides the send
+  primitive. They compose: `runtime.group("workers")` returns actors,
+  `BroadcastRef::new(actors)` enables broadcast.
+- **Priority:** Medium — useful for pub/sub patterns but not blocking
+  other work.
 
 ---
 
