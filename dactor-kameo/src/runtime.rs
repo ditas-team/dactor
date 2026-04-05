@@ -70,7 +70,7 @@ struct KameoDactorActor<A: Actor> {
     stop_reason: Option<String>,
     dead_letter_handler: Arc<Option<Arc<dyn DeadLetterHandler>>>,
     /// Notified when the actor stops (for await_stop).
-    stop_notifier: Option<tokio::sync::oneshot::Sender<()>>,
+    stop_notifier: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 }
 
 /// Arguments passed to the kameo actor at spawn time.
@@ -82,7 +82,7 @@ struct KameoSpawnArgs<A: Actor> {
     interceptors: Vec<Box<dyn InboundInterceptor>>,
     watchers: WatcherMap,
     dead_letter_handler: Arc<Option<Arc<dyn DeadLetterHandler>>>,
-    stop_notifier: Option<tokio::sync::oneshot::Sender<()>>,
+    stop_notifier: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 }
 
 impl<A: Actor + 'static> kameo::Actor for KameoDactorActor<A> {
@@ -116,7 +116,16 @@ impl<A: Actor + 'static> kameo::Actor for KameoDactorActor<A> {
         self.ctx.send_mode = None;
         self.ctx.headers = Headers::new();
         self.ctx.set_cancellation_token(None);
-        self.actor.on_stop().await;
+
+        // Run on_stop with panic catching so we can propagate errors
+        let stop_result =
+            std::panic::AssertUnwindSafe(self.actor.on_stop())
+                .catch_unwind()
+                .await;
+        let stop_err = match stop_result {
+            Ok(()) => None,
+            Err(_panic) => Some("actor panicked in on_stop".to_string()),
+        };
 
         // Notify all watchers that this actor has terminated.
         let actor_id = self.ctx.actor_id.clone();
@@ -143,9 +152,13 @@ impl<A: Actor + 'static> kameo::Actor for KameoDactorActor<A> {
             }
         }
 
-        // Notify await_stop() waiters
+        // Notify await_stop() waiters with the result
         if let Some(tx) = self.stop_notifier.take() {
-            let _ = tx.send(());
+            let result = match &stop_err {
+                Some(e) => Err(e.clone()),
+                None => Ok(()),
+            };
+            let _ = tx.send(result);
         }
 
         Ok(())
@@ -730,7 +743,8 @@ pub struct KameoRuntime {
     /// Native kameo system actor refs (lazily started via `start_system_actors()`).
     system_actors: Option<KameoSystemActorRefs>,
     /// Stop notification receivers for await_stop(), keyed by ActorId.
-    stop_receivers: Arc<Mutex<HashMap<ActorId, tokio::sync::oneshot::Receiver<()>>>>,
+    #[allow(clippy::type_complexity)]
+    stop_receivers: Arc<Mutex<HashMap<ActorId, tokio::sync::oneshot::Receiver<Result<(), String>>>>>,
 }
 
 /// References to the native kameo system actors spawned by the runtime.
@@ -1155,8 +1169,9 @@ impl KameoRuntime {
 
     /// Wait for an actor to stop.
     ///
-    /// Returns `Ok(())` when the actor finishes. The stop receiver is consumed
-    /// and removed from the map.
+    /// Returns `Ok(())` when the actor finishes cleanly, or `Err` if the
+    /// actor panicked in `on_stop`. The stop receiver is consumed and removed
+    /// from the map.
     ///
     /// Returns `Ok(())` immediately if no stop receiver is stored for this ID.
     pub async fn await_stop(&self, actor_id: &ActorId) -> Result<(), String> {
@@ -1165,7 +1180,10 @@ impl KameoRuntime {
             receivers.remove(actor_id)
         };
         match rx {
-            Some(rx) => rx.await.map_err(|_| "stop notifier dropped".to_string()),
+            Some(rx) => rx
+                .await
+                .map_err(|_| "stop notifier dropped".to_string())
+                .and_then(|r| r),
             None => Ok(()),
         }
     }
@@ -1181,9 +1199,10 @@ impl KameoRuntime {
         };
         let mut first_error = None;
         for (_, rx) in receivers {
-            if let Err(e) = rx.await {
+            let result = rx.await.map_err(|e| format!("stop notifier dropped: {e}")).and_then(|r| r);
+            if let Err(e) = result {
                 if first_error.is_none() {
-                    first_error = Some(format!("stop notifier dropped: {e}"));
+                    first_error = Some(e);
                 }
             }
         }
