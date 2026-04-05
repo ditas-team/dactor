@@ -151,6 +151,18 @@ async fn conformance_rapid_stop_and_send() {
     test_rapid_stop_and_send(|name, init| runtime.spawn::<ConformanceCounter>(name, init)).await;
 }
 
+#[tokio::test]
+async fn conformance_transform_doubler() {
+    let runtime = KameoRuntime::new();
+    test_transform_doubler(|name, init| runtime.spawn::<ConformanceDoubler>(name, init)).await;
+}
+
+#[tokio::test]
+async fn conformance_transform_empty() {
+    let runtime = KameoRuntime::new();
+    test_transform_empty(|name, init| runtime.spawn::<ConformanceDoubler>(name, init)).await;
+}
+
 // ---------------------------------------------------------------------------
 // Kameo-specific: re-exports & default
 // ---------------------------------------------------------------------------

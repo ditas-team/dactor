@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::actor::{Actor, ActorRef, AskReply, ReduceHandler, Handler, ExpandHandler};
+use crate::actor::{Actor, ActorRef, AskReply, ReduceHandler, Handler, ExpandHandler, TransformHandler};
 use crate::errors::ActorSendError;
 use crate::message::Message;
 #[cfg(feature = "metrics")]
@@ -301,6 +301,20 @@ impl<A: Actor, R: ActorRef<A>> ActorRef<A> for PoolRef<A, R> {
     {
         self.select_worker()
             .reduce(input, buffer, batch_config, cancel)
+    }
+
+    fn transform<Item, Output>(
+        &self,
+        input: BoxStream<Item>,
+        buffer: usize,
+        cancel: Option<CancellationToken>,
+    ) -> Result<BoxStream<Output>, ActorSendError>
+    where
+        A: TransformHandler<Item, Output>,
+        Item: Send + 'static,
+        Output: Send + 'static,
+    {
+        self.select_worker().transform(input, buffer, cancel)
     }
 }
 

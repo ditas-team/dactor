@@ -80,6 +80,18 @@ async fn conformance_on_error_resume() {
     test_on_error_resume(|name, args| runtime.spawn::<ConformanceResumeActor>(name, args)).await;
 }
 
+#[tokio::test]
+async fn conformance_transform_doubler() {
+    let runtime = CoerceRuntime::new();
+    test_transform_doubler(|name, init| runtime.spawn::<ConformanceDoubler>(name, init)).await;
+}
+
+#[tokio::test]
+async fn conformance_transform_empty() {
+    let runtime = CoerceRuntime::new();
+    test_transform_empty(|name, init| runtime.spawn::<ConformanceDoubler>(name, init)).await;
+}
+
 // ---------------------------------------------------------------------------
 // Coerce-specific tests
 // ---------------------------------------------------------------------------

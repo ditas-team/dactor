@@ -9,7 +9,7 @@ use std::any::Any;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use crate::actor::{Actor, ActorContext, ReduceHandler, Handler, ExpandHandler};
+use crate::actor::{Actor, ActorContext, ReduceHandler, Handler, ExpandHandler, TransformHandler};
 use crate::errors::RuntimeError;
 use crate::interceptor::{Disposition, SendMode};
 use crate::message::Message;
@@ -20,8 +20,9 @@ use crate::stream::{StreamReceiver, StreamSender};
 // ---------------------------------------------------------------------------
 
 /// Type-erased message envelope. Each concrete message type is wrapped in a
-/// `TypedDispatch<M>`, `AskDispatch<M>`, `ExpandDispatch<M>`, or
-/// `ReduceDispatch<M>` that knows how to invoke the appropriate handler.
+/// `TypedDispatch<M>`, `AskDispatch<M>`, `ExpandDispatch<M>`,
+/// `ReduceDispatch<M>`, or `TransformDispatch<M>` that knows how to invoke
+/// the appropriate handler.
 #[async_trait]
 pub trait Dispatch<A: Actor>: Send {
     /// Dispatch the message to the actor's handler.
@@ -326,3 +327,98 @@ where
     }
 }
 
+// ---------------------------------------------------------------------------
+// TransformDispatch
+// ---------------------------------------------------------------------------
+
+/// Transform envelope: carries a StreamReceiver for input items and a
+/// StreamSender for output items. The actor consumes input, produces output.
+pub struct TransformDispatch<A, Item, Output>
+where
+    A: TransformHandler<Item, Output>,
+    Item: Send + 'static,
+    Output: Send + 'static,
+{
+    /// Receiver for incoming stream items.
+    pub receiver: StreamReceiver<Item>,
+    /// Sender for pushing output items.
+    pub sender: StreamSender<Output>,
+    /// Optional cancellation token.
+    pub cancel: Option<CancellationToken>,
+    /// Phantom data for the actor type.
+    _phantom: std::marker::PhantomData<fn() -> A>,
+}
+
+impl<A, Item, Output> TransformDispatch<A, Item, Output>
+where
+    A: TransformHandler<Item, Output>,
+    Item: Send + 'static,
+    Output: Send + 'static,
+{
+    /// Create a new TransformDispatch.
+    pub fn new(
+        receiver: StreamReceiver<Item>,
+        sender: StreamSender<Output>,
+        cancel: Option<CancellationToken>,
+    ) -> Self {
+        Self {
+            receiver,
+            sender,
+            cancel,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+#[async_trait]
+impl<A, Item, Output> Dispatch<A> for TransformDispatch<A, Item, Output>
+where
+    A: TransformHandler<Item, Output>,
+    Item: Send + 'static,
+    Output: Send + 'static,
+{
+    async fn dispatch(self: Box<Self>, actor: &mut A, ctx: &mut ActorContext) -> DispatchResult {
+        let mut receiver = self.receiver;
+        let sender = self.sender;
+        let cancel = self.cancel;
+        let mut cancelled = false;
+
+        while let Some(item) = receiver.recv().await {
+            // Check cancellation before processing each item
+            if let Some(ref token) = cancel {
+                if token.is_cancelled() {
+                    cancelled = true;
+                    break;
+                }
+            }
+            actor.handle_transform(item, &sender, ctx).await;
+        }
+
+        // Only call on_transform_complete if the stream ended normally (not cancelled)
+        if !cancelled {
+            actor.on_transform_complete(&sender, ctx).await;
+        }
+
+        DispatchResult::tell()
+    }
+
+    fn message_any(&self) -> &dyn Any {
+        &()
+    }
+
+    fn send_mode(&self) -> SendMode {
+        SendMode::Transform
+    }
+
+    fn message_type_name(&self) -> &'static str {
+        std::any::type_name::<Item>()
+    }
+
+    fn reject(self: Box<Self>, _: Disposition, _: &str) {}
+
+    fn cancel(self: Box<Self>) {}
+
+    fn cancel_token(&self) -> Option<CancellationToken> {
+        self.cancel.clone()
+    }
+}

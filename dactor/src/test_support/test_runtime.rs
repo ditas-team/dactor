@@ -18,11 +18,12 @@ use tokio::sync::mpsc;
 
 use crate::actor::{
     Actor, ActorContext, ActorError, ActorRef, AskReply, ReduceHandler, Handler, ExpandHandler,
+    TransformHandler,
 };
 use crate::dead_letter::{DeadLetterEvent, DeadLetterHandler, DeadLetterReason};
 #[allow(unused_imports)]
 use crate::dispatch::DispatchResult;
-use crate::dispatch::{AskDispatch, BoxedDispatch, ReduceDispatch, ExpandDispatch, TypedDispatch};
+use crate::dispatch::{AskDispatch, BoxedDispatch, ReduceDispatch, ExpandDispatch, TransformDispatch, TypedDispatch};
 use crate::errors::{ActorSendError, ErrorAction, RuntimeError};
 #[allow(unused_imports)]
 use crate::interceptor::OutboundContext;
@@ -434,6 +435,7 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
                         buffer,
                         pipeline,
                         std::any::type_name::<M>(),
+                        SendMode::Expand,
                     ),
                 )
             }
@@ -444,6 +446,7 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
                     buffer,
                     pipeline,
                     std::any::type_name::<M>(),
+                    SendMode::Expand,
                 ))
             }
         }
@@ -499,11 +502,49 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
 
         Ok(AskReply::new(reply_rx))
     }
-}
 
-// ---------------------------------------------------------------------------
-// Watch registry (DeathWatch)
-// ---------------------------------------------------------------------------
+    fn transform<Item, Output>(
+        &self,
+        input: BoxStream<Item>,
+        buffer: usize,
+        cancel: Option<CancellationToken>,
+    ) -> Result<BoxStream<Output>, ActorSendError>
+    where
+        A: TransformHandler<Item, Output>,
+        Item: Send + 'static,
+        Output: Send + 'static,
+    {
+        let buffer = buffer.max(1);
+        let pipeline = self.outbound_pipeline();
+
+        let (item_tx, item_rx) = tokio::sync::mpsc::channel(buffer);
+        let (output_tx, output_rx) = tokio::sync::mpsc::channel(buffer);
+        let receiver = StreamReceiver::new(item_rx);
+        let sender = StreamSender::new(output_tx);
+        let dispatch: BoxedDispatch<A> = Box::new(TransformDispatch::new(
+            receiver,
+            sender,
+            cancel.clone(),
+        ));
+        self.sender.send(Some(dispatch))?;
+
+        crate::runtime_support::spawn_transform_drain(
+            input,
+            item_tx,
+            cancel,
+            pipeline.clone(),
+            std::any::type_name::<Item>(),
+        );
+
+        Ok(crate::runtime_support::wrap_stream_with_interception(
+            output_rx,
+            buffer,
+            pipeline,
+            std::any::type_name::<Output>(),
+            SendMode::Transform,
+        ))
+    }
+}
 
 /// A type-erased entry in the watch registry.
 struct WatchEntry {
@@ -1103,7 +1144,7 @@ impl Default for TestRuntime {
 mod tests {
     use super::*;
     use crate::actor::ActorContext;
-    use crate::actor::{ReduceHandler, ExpandHandler};
+    use crate::actor::{ReduceHandler, ExpandHandler, TransformHandler};
     use crate::message::Message;
     use crate::node::NodeId;
     use crate::stream::{StreamReceiver, StreamSender};
@@ -3260,6 +3301,202 @@ mod tests {
         assert_eq!(reply, 20);
     }
 
+    // ── Transform (N→M) tests ──────────────────────────────
+
+    #[tokio::test]
+    async fn test_transform_doubler() {
+        use tokio_stream::StreamExt;
+
+        struct Doubler;
+        impl Actor for Doubler {
+            type Args = ();
+            type Deps = ();
+            fn create(_: (), _: ()) -> Self { Doubler }
+        }
+
+        #[async_trait]
+        impl TransformHandler<i32, i32> for Doubler {
+            async fn handle_transform(
+                &mut self,
+                item: i32,
+                sender: &StreamSender<i32>,
+                _ctx: &mut ActorContext,
+            ) {
+                let _ = sender.send(item * 2).await;
+            }
+        }
+
+        let runtime = TestRuntime::new();
+        let actor = runtime.spawn::<Doubler>("doubler", ()).await.unwrap();
+
+        let input = Box::pin(futures::stream::iter(vec![1, 2, 3, 4, 5]));
+        let output: Vec<i32> = actor
+            .transform::<i32, i32>(input, 8, None)
+            .unwrap()
+            .collect()
+            .await;
+        assert_eq!(output, vec![2, 4, 6, 8, 10]);
+    }
+
+    #[tokio::test]
+    async fn test_transform_splitter() {
+        use tokio_stream::StreamExt;
+
+        struct Splitter;
+        impl Actor for Splitter {
+            type Args = ();
+            type Deps = ();
+            fn create(_: (), _: ()) -> Self { Splitter }
+        }
+
+        #[async_trait]
+        impl TransformHandler<String, String> for Splitter {
+            async fn handle_transform(
+                &mut self,
+                item: String,
+                sender: &StreamSender<String>,
+                _ctx: &mut ActorContext,
+            ) {
+                for word in item.split_whitespace() {
+                    if sender.send(word.to_string()).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let runtime = TestRuntime::new();
+        let actor = runtime.spawn::<Splitter>("splitter", ()).await.unwrap();
+
+        let input = Box::pin(futures::stream::iter(vec![
+            "hello world".to_string(),
+            "foo bar baz".to_string(),
+        ]));
+        let output: Vec<String> = actor
+            .transform::<String, String>(input, 8, None)
+            .unwrap()
+            .collect()
+            .await;
+        assert_eq!(output, vec!["hello", "world", "foo", "bar", "baz"]);
+    }
+
+    #[tokio::test]
+    async fn test_transform_filter() {
+        use tokio_stream::StreamExt;
+
+        struct EvenFilter;
+        impl Actor for EvenFilter {
+            type Args = ();
+            type Deps = ();
+            fn create(_: (), _: ()) -> Self { EvenFilter }
+        }
+
+        #[async_trait]
+        impl TransformHandler<i32, i32> for EvenFilter {
+            async fn handle_transform(
+                &mut self,
+                item: i32,
+                sender: &StreamSender<i32>,
+                _ctx: &mut ActorContext,
+            ) {
+                if item % 2 == 0 {
+                    let _ = sender.send(item).await;
+                }
+            }
+        }
+
+        let runtime = TestRuntime::new();
+        let actor = runtime.spawn::<EvenFilter>("filter", ()).await.unwrap();
+
+        let input = Box::pin(futures::stream::iter(1..=10));
+        let output: Vec<i32> = actor
+            .transform::<i32, i32>(input, 8, None)
+            .unwrap()
+            .collect()
+            .await;
+        assert_eq!(output, vec![2, 4, 6, 8, 10]);
+    }
+
+    #[tokio::test]
+    async fn test_transform_empty_input() {
+        use tokio_stream::StreamExt;
+
+        struct Doubler;
+        impl Actor for Doubler {
+            type Args = ();
+            type Deps = ();
+            fn create(_: (), _: ()) -> Self { Doubler }
+        }
+
+        #[async_trait]
+        impl TransformHandler<i32, i32> for Doubler {
+            async fn handle_transform(
+                &mut self,
+                item: i32,
+                sender: &StreamSender<i32>,
+                _ctx: &mut ActorContext,
+            ) {
+                let _ = sender.send(item * 2).await;
+            }
+        }
+
+        let runtime = TestRuntime::new();
+        let actor = runtime.spawn::<Doubler>("doubler", ()).await.unwrap();
+
+        let input = Box::pin(futures::stream::iter(Vec::<i32>::new()));
+        let output: Vec<i32> = actor
+            .transform::<i32, i32>(input, 8, None)
+            .unwrap()
+            .collect()
+            .await;
+        assert!(output.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_transform_on_complete_emits_final() {
+        use tokio_stream::StreamExt;
+
+        struct SumAndEmit {
+            sum: i32,
+        }
+        impl Actor for SumAndEmit {
+            type Args = ();
+            type Deps = ();
+            fn create(_: (), _: ()) -> Self { SumAndEmit { sum: 0 } }
+        }
+
+        #[async_trait]
+        impl TransformHandler<i32, i32> for SumAndEmit {
+            async fn handle_transform(
+                &mut self,
+                item: i32,
+                _sender: &StreamSender<i32>,
+                _ctx: &mut ActorContext,
+            ) {
+                self.sum += item;
+            }
+
+            async fn on_transform_complete(
+                &mut self,
+                sender: &StreamSender<i32>,
+                _ctx: &mut ActorContext,
+            ) {
+                let _ = sender.send(self.sum).await;
+            }
+        }
+
+        let runtime = TestRuntime::new();
+        let actor = runtime.spawn::<SumAndEmit>("sum-emit", ()).await.unwrap();
+
+        let input = Box::pin(futures::stream::iter(vec![10, 20, 30]));
+        let output: Vec<i32> = actor
+            .transform::<i32, i32>(input, 8, None)
+            .unwrap()
+            .collect()
+            .await;
+        assert_eq!(output, vec![60]);
+    }
+
     // ── Cancellation tests ──────────────────────────────
 
     #[tokio::test]
@@ -3586,6 +3823,26 @@ mod tests {
             let runtime = TestRuntime::new();
             conformance::test_on_error_resume(|name, init| {
                 runtime.spawn::<conformance::ConformanceResumeActor>(name, init)
+            })
+            .await;
+        }
+
+        // ── Conformance transform tests ───────────────────────────────────
+
+        #[tokio::test]
+        async fn conformance_transform_doubler() {
+            let runtime = TestRuntime::new();
+            conformance::test_transform_doubler(|name, init| {
+                runtime.spawn::<conformance::ConformanceDoubler>(name, init)
+            })
+            .await;
+        }
+
+        #[tokio::test]
+        async fn conformance_transform_empty() {
+            let runtime = TestRuntime::new();
+            conformance::test_transform_empty(|name, init| {
+                runtime.spawn::<conformance::ConformanceDoubler>(name, init)
             })
             .await;
         }

@@ -89,7 +89,7 @@ pub struct ActorContext {
     pub actor_id: ActorId,
     /// Human-readable name of the actor.
     pub actor_name: String,
-    /// How the current message was sent (Tell, Ask, Expand, Reduce).
+    /// How the current message was sent (Tell, Ask, Expand, Reduce, Transform).
     /// `None` during on_start/on_stop (no message being processed).
     pub send_mode: Option<SendMode>,
     /// Headers attached to the current message.
@@ -214,6 +214,36 @@ pub trait ReduceHandler<Item: Send + 'static, Reply: Send + 'static>: Actor {
     ) -> Reply;
 }
 
+/// Implemented by actors that handle transform (N→M) requests.
+///
+/// Receives items from an input stream and produces items to an output stream.
+/// For each input item, the handler may push zero or more output items via the
+/// [`StreamSender`]. When the input stream ends, [`on_transform_complete`] is
+/// called to allow final items to be emitted.
+///
+/// Generic parameters:
+/// - `Item` — the type of items the caller streams to the actor.
+/// - `Output` — the type of items the actor pushes to the output stream.
+#[async_trait]
+pub trait TransformHandler<Item: Send + 'static, Output: Send + 'static>: Actor {
+    /// Handle one input item. Push zero or more output items via `sender`.
+    async fn handle_transform(
+        &mut self,
+        item: Item,
+        sender: &StreamSender<Output>,
+        ctx: &mut ActorContext,
+    );
+
+    /// Called when the input stream ends. Optionally push final items.
+    async fn on_transform_complete(
+        &mut self,
+        sender: &StreamSender<Output>,
+        ctx: &mut ActorContext,
+    ) {
+        let _ = (sender, ctx);
+    }
+}
+
 /// A future that resolves to the reply from an `ask()` call.
 ///
 /// Wraps a `oneshot::Receiver` and implements `Future` so that callers can
@@ -326,6 +356,32 @@ pub trait ActorRef<A: Actor>: Clone + Send + Sync + 'static {
         A: ReduceHandler<Item, Reply>,
         Item: Send + 'static,
         Reply: Send + 'static;
+
+    /// Transform: stream items to the actor and receive a stream of outputs.
+    ///
+    /// The caller provides items via `input`. For each input item the actor's
+    /// [`TransformHandler::handle_transform`] may push zero or more output items.
+    /// When the input stream ends, [`TransformHandler::on_transform_complete`]
+    /// is called to allow final items to be emitted.
+    ///
+    /// `buffer` controls the internal channel capacity (backpressure).
+    ///
+    /// Pass a [`CancellationToken`] to cooperatively cancel the transform.
+    ///
+    /// Usage:
+    /// ```ignore
+    /// let output: BoxStream<String> = actor.transform::<i32, String>(input, 8, None)?;
+    /// ```
+    fn transform<Item, Output>(
+        &self,
+        input: BoxStream<Item>,
+        buffer: usize,
+        cancel: Option<CancellationToken>,
+    ) -> Result<BoxStream<Output>, ActorSendError>
+    where
+        A: TransformHandler<Item, Output>,
+        Item: Send + 'static,
+        Output: Send + 'static;
 }
 
 /// Create a [`CancellationToken`] that automatically cancels after the given duration.

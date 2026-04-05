@@ -35,7 +35,7 @@ pub mod clock;
 pub mod cluster;
 /// Dead letter handling for undeliverable messages.
 pub mod dead_letter;
-/// Message dispatch envelopes for tell, ask, stream, and feed.
+/// Message dispatch envelopes for tell, ask, stream, feed, and transform.
 pub mod dispatch;
 /// Error types for actor operations.
 pub mod errors;
@@ -98,7 +98,7 @@ pub mod prelude {
 pub use actor::cancel_after;
 pub use actor::ReduceHandler;
 pub use actor::{Actor, ActorContext, ActorError, ActorRef, SpawnConfig};
-pub use actor::{AskReply, Handler, ExpandHandler};
+pub use actor::{AskReply, Handler, ExpandHandler, TransformHandler};
 pub use async_trait::async_trait;
 #[cfg(feature = "serde")]
 pub use batched_transport::{

@@ -30,7 +30,7 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use crate::actor::{Actor, ActorRef, AskReply, ReduceHandler, Handler, ExpandHandler};
+use crate::actor::{Actor, ActorRef, AskReply, ReduceHandler, Handler, ExpandHandler, TransformHandler};
 use crate::errors::{ActorSendError, RuntimeError};
 use crate::interceptor::{Disposition, OutboundContext, OutboundInterceptor, SendMode};
 use crate::message::{Headers, Message, RuntimeHeaders};
@@ -469,6 +469,22 @@ impl<A: Actor + Sync> ActorRef<A> for RemoteActorRef<A> {
     {
         Err(ActorSendError(
             "remote feed not yet implemented — requires streaming transport support".into(),
+        ))
+    }
+
+    fn transform<Item, Output>(
+        &self,
+        _input: BoxStream<Item>,
+        _buffer: usize,
+        _cancel: Option<CancellationToken>,
+    ) -> Result<BoxStream<Output>, ActorSendError>
+    where
+        A: TransformHandler<Item, Output>,
+        Item: Send + 'static,
+        Output: Send + 'static,
+    {
+        Err(ActorSendError(
+            "remote transform not yet implemented — requires streaming transport support".into(),
         ))
     }
 }

@@ -28,6 +28,8 @@ pub enum SendMode {
     Expand,
     /// Batch feed: deliver pre-collected items without per-item replies.
     Reduce,
+    /// Transform: actor consumes input stream and produces output stream.
+    Transform,
 }
 
 /// Metadata about an inbound message and its target actor.
@@ -42,7 +44,7 @@ pub struct InboundContext<'a> {
     pub actor_name: &'a str,
     /// The Rust type name of the message.
     pub message_type: &'static str,
-    /// How the message was sent (Tell, Ask, Expand, Reduce).
+    /// How the message was sent (Tell, Ask, Expand, Reduce, Transform).
     pub send_mode: SendMode,
     /// Whether the message originated from a remote node.
     pub remote: bool,
@@ -118,10 +120,10 @@ pub struct DropNotice {
     pub message_type: &'static str,
     /// The interceptor that returned `Disposition::Drop`.
     pub interceptor_name: &'static str,
-    /// How the message was sent (Tell, Ask, Expand, Reduce).
+    /// How the message was sent (Tell, Ask, Expand, Reduce, Transform).
     pub send_mode: SendMode,
     /// Context string describing where the drop happened
-    /// (e.g., "outbound on_send", "stream reply", "feed item").
+    /// (e.g., "outbound on_send", "stream reply", "feed item", "transform input item").
     pub context: &'static str,
     /// For stream/feed items, the zero-based sequence number.
     /// `None` for message-level drops (tell/ask/stream initial request).

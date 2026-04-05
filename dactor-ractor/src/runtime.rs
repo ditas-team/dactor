@@ -14,9 +14,10 @@ use tokio_util::sync::CancellationToken;
 
 use dactor::actor::{
     Actor, ActorContext, ActorError, ActorRef, AskReply, ReduceHandler, Handler, ExpandHandler,
+    TransformHandler,
 };
 use dactor::dead_letter::{DeadLetterEvent, DeadLetterHandler, DeadLetterReason};
-use dactor::dispatch::{AskDispatch, Dispatch, ReduceDispatch, ExpandDispatch, TypedDispatch};
+use dactor::dispatch::{AskDispatch, Dispatch, ReduceDispatch, ExpandDispatch, TransformDispatch, TypedDispatch};
 use dactor::errors::{ActorSendError, ErrorAction, RuntimeError};
 use dactor::interceptor::{
     Disposition, DropObserver, InboundContext, InboundInterceptor, OutboundInterceptor, Outcome,
@@ -26,8 +27,8 @@ use dactor::mailbox::MailboxConfig;
 use dactor::message::{Headers, Message, RuntimeHeaders};
 use dactor::node::{ActorId, NodeId};
 use dactor::runtime_support::{
-    spawn_reduce_batched_drain, spawn_reduce_drain, wrap_batched_stream_with_interception,
-    wrap_stream_with_interception, OutboundPipeline,
+    spawn_reduce_batched_drain, spawn_reduce_drain, spawn_transform_drain,
+    wrap_batched_stream_with_interception, wrap_stream_with_interception, OutboundPipeline,
 };
 use dactor::stream::{
     BatchConfig, BatchReader, BatchWriter, BoxStream, StreamReceiver, StreamSender,
@@ -599,14 +600,16 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
                     buffer,
                     pipeline,
                     std::any::type_name::<M>(),
+                    SendMode::Expand,
                 ))
             }
             None => Ok(wrap_stream_with_interception(
-                rx,
-                buffer,
-                pipeline,
-                std::any::type_name::<M>(),
-            )),
+                    rx,
+                    buffer,
+                    pipeline,
+                    std::any::type_name::<M>(),
+                    SendMode::Expand,
+                )),
         }
     }
 
@@ -660,6 +663,49 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
         }
 
         Ok(AskReply::new(reply_rx))
+    }
+
+    fn transform<Item, Output>(
+        &self,
+        input: BoxStream<Item>,
+        buffer: usize,
+        cancel: Option<CancellationToken>,
+    ) -> Result<BoxStream<Output>, ActorSendError>
+    where
+        A: TransformHandler<Item, Output>,
+        Item: Send + 'static,
+        Output: Send + 'static,
+    {
+        let buffer = buffer.max(1);
+        let (item_tx, item_rx) = tokio::sync::mpsc::channel(buffer);
+        let (output_tx, output_rx) = tokio::sync::mpsc::channel(buffer);
+        let receiver = StreamReceiver::new(item_rx);
+        let sender = StreamSender::new(output_tx);
+        let dispatch: Box<dyn Dispatch<A>> = Box::new(TransformDispatch::new(
+            receiver,
+            sender,
+            cancel.clone(),
+        ));
+        self.inner
+            .cast(DactorMsg(dispatch))
+            .map_err(|e| ActorSendError(e.to_string()))?;
+
+        let pipeline = self.outbound_pipeline();
+        spawn_transform_drain(
+            input,
+            item_tx,
+            cancel,
+            pipeline.clone(),
+            std::any::type_name::<Item>(),
+        );
+
+        Ok(wrap_stream_with_interception(
+            output_rx,
+            buffer,
+            pipeline,
+            std::any::type_name::<Output>(),
+            SendMode::Transform,
+        ))
     }
 }
 
@@ -1246,3 +1292,4 @@ impl Default for RactorRuntime {
         Self::new()
     }
 }
+

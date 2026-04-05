@@ -791,13 +791,13 @@ trait TransformHandler<Item: Send + 'static, Output: Send + 'static>: Actor {
 
 | # | Feature | Description | Status |
 |---|---------|-------------|--------|
-| TF1 | TransformHandler trait | `on_item(item, sender, ctx)` + `on_complete(sender, ctx)` | 🔲 Not started |
-| TF2 | `actor_ref.transform()` | Wires input stream → actor → output stream with shared lifecycle | 🔲 Not started |
-| TF3 | Backpressure coupling | Output stream backpressure slows input consumption | 🔲 Not started |
+| TF1 | TransformHandler trait | `on_item(item, sender, ctx)` + `on_complete(sender, ctx)` | ✅ PR #94 |
+| TF2 | `actor_ref.transform()` | Wires input stream → actor → output stream with shared lifecycle | ✅ PR #94 |
+| TF3 | Backpressure coupling | Output stream backpressure slows input consumption | ✅ PR #94 |
 | TF4 | Batch support | `Option<BatchConfig>` for both input and output | 🔲 Not started |
-| TF5 | Interceptor integration | Outbound pipeline on each output item | 🔲 Not started |
-| TF6 | Cancellation | Single CancellationToken cancels both input and output | 🔲 Not started |
-| TF7 | Adapter wiring | Wire into ractor, kameo, coerce, TestRuntime | 🔲 Not started |
+| TF5 | Interceptor integration | Outbound pipeline on each output item | ✅ PR #94 |
+| TF6 | Cancellation | Single CancellationToken cancels both input and output | ✅ PR #94 |
+| TF7 | Adapter wiring | Wire into ractor, kameo, coerce, TestRuntime | ✅ PR #94 |
 
 ### Streaming API Naming Review
 

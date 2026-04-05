@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::actor::{
     Actor, ActorContext, ActorError, ActorRef, ReduceHandler, Handler, ExpandHandler,
+    TransformHandler,
 };
 use std::future::Future;
 use crate::errors::{ActorSendError, ErrorAction, RuntimeError};
@@ -794,5 +795,80 @@ where
     assert!(ask_result.is_err(), "ask after stop should return error");
 }
 
+// ══════════════════════════════════════════════════════
+// Transform Actor Definitions
+// ══════════════════════════════════════════════════════
 
+/// Transform actor: doubles each input item.
+pub struct ConformanceDoubler;
+
+impl Actor for ConformanceDoubler {
+    type Args = ();
+    type Deps = ();
+    fn create(_: (), _: ()) -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl TransformHandler<i32, i32> for ConformanceDoubler {
+    async fn handle_transform(
+        &mut self,
+        item: i32,
+        sender: &StreamSender<i32>,
+        _ctx: &mut ActorContext,
+    ) {
+        let _ = sender.send(item * 2).await;
+    }
+}
+
+// ══════════════════════════════════════════════════════
+// Conformance Tests – Transform
+// ══════════════════════════════════════════════════════
+
+/// Test: transform doubles each item in a stream.
+pub async fn test_transform_doubler<R, F, Fut>(spawn: F)
+where
+    R: ActorRef<ConformanceDoubler>,
+    F: FnOnce(&'static str, ()) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
+{
+    use tokio_stream::StreamExt;
+
+    let actor = spawn("conf-doubler", ()).await.unwrap();
+    let input: BoxStream<i32> = Box::pin(futures::stream::iter(vec![1, 2, 3, 4, 5]));
+    let output: Vec<i32> = actor
+        .transform::<i32, i32>(input, 8, None)
+        .unwrap()
+        .collect()
+        .await;
+    assert_eq!(
+        output,
+        vec![2, 4, 6, 8, 10],
+        "transform doubler: expected doubled values"
+    );
+}
+
+/// Test: transform with empty input produces empty output.
+pub async fn test_transform_empty<R, F, Fut>(spawn: F)
+where
+    R: ActorRef<ConformanceDoubler>,
+    F: FnOnce(&'static str, ()) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
+{
+    use tokio_stream::StreamExt;
+
+    let actor = spawn("conf-doubler-empty", ()).await.unwrap();
+    let input: BoxStream<i32> = Box::pin(futures::stream::iter(Vec::<i32>::new()));
+    let output: Vec<i32> = actor
+        .transform::<i32, i32>(input, 8, None)
+        .unwrap()
+        .collect()
+        .await;
+    assert!(
+        output.is_empty(),
+        "transform empty: expected empty output, got {:?}",
+        output
+    );
+}
 
