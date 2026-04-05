@@ -703,28 +703,29 @@ This phase brings coerce to feature parity with ractor/kameo.
 
 | # | Feature | Description | Priority | Status |
 |---|---------|-------------|----------|--------|
-| CP1 | Integrate real coerce | Replace TestRuntime with real `coerce::actor::Actor` spawning via `into_actor()`. Already added as dependency. | High | 🔲 Not started |
-| CP2 | CoerceClusterEvents | Implement `ClusterEvents` trait for coerce adapter (callback-based, same pattern as ractor/kameo) | High | 🔲 Not started |
-| CP3 | ClusterEvent emission | Wire `connect_peer()`/`disconnect_peer()` to emit NodeJoined/NodeLeft via CoerceClusterEvents | High | 🔲 Not started |
-| CP4 | Lifecycle handles | Implement `await_stop()`/`await_all()`/`cleanup_finished()` — wire oneshot into coerce actor stop lifecycle | High | 🔲 Not started |
+| CP1 | Integrate real coerce | Replace TestRuntime with real `coerce::actor::Actor` spawning via `start_actor()`. Type-erased `DactorMsg` dispatch through coerce's mailbox. | High | ✅ Done |
+| CP2 | CoerceClusterEvents | Implement `ClusterEvents` trait for coerce adapter (callback-based, same pattern as ractor/kameo) | High | ✅ Done |
+| CP3 | ClusterEvent emission | Wire `connect_peer()`/`disconnect_peer()` to emit NodeJoined/NodeLeft via CoerceClusterEvents | High | ✅ Done |
+| CP4 | Lifecycle handles | Implement `await_stop()`/`await_all()`/`cleanup_finished()` — wire oneshot into coerce actor stop lifecycle | High | ✅ Done |
 | CP5 | Native system actors | Implement coerce native actors for SpawnManager, WatchManager, CancelManager, NodeDirectory | Medium | 🔲 Not started |
 | CP6 | Runtime auto-start | `start_system_actors()` spawns native coerce system actors | Medium | 🔲 Not started |
-| CP7 | Interceptor pipeline | Ensure inbound/outbound interceptor pipelines work with real coerce actors (not just TestRuntime delegation) | Medium | 🔲 Not started |
-| CP8 | Watch/unwatch | Wire coerce's actor lifecycle into WatchManager for real DeathWatch notifications | Medium | 🔲 Not started |
+| CP7 | Interceptor pipeline | Ensure inbound/outbound interceptor pipelines work with real coerce actors (not just TestRuntime delegation) | Medium | ✅ Done |
+| CP8 | Watch/unwatch | Wire coerce's actor lifecycle into WatchManager for real DeathWatch notifications | Medium | ✅ Done |
 | CP9 | Mailbox config | Wire coerce's mailbox options (bounded/unbounded) instead of ignoring MailboxConfig | Low | 🔲 Not started |
-| CP10 | Comprehensive tests | Adapter tests, system actor tests, lifecycle tests, conformance suite — all on real coerce runtime | High | 🔲 Not started |
+| CP10 | Comprehensive tests | Adapter tests, system actor tests, lifecycle tests, conformance suite — all on real coerce runtime | High | ✅ Done |
 
 ### Design Notes
 
-- **CP1 is the gate** — all other items depend on replacing TestRuntime with
-  real coerce actors. Without this, everything is just wrapping a test mock.
-- **coerce crate maintenance risk** — the crate may have compatibility issues or
-  be under-maintained. If integration is blocked, document the blockers and
-  keep the stub with a clear upgrade path.
-- **CP2-CP4 can be done on the stub** as interim work if CP1 is blocked,
-  but the real value comes from CP1.
-- **Priority: High** — coerce parity is needed before v1.0. The stub was
-  acceptable for API design but not for production readiness.
+- **CP1 is complete** — TestRuntime replaced with real coerce actors using
+  `CoerceDactorActor<A>` wrapper, type-erased `DactorMsg<A>` dispatch, and
+  coerce's `start_actor()` for synchronous spawning.
+- **CP2-CP4, CP7-CP8, CP10 also complete** — ClusterEvents, lifecycle handles,
+  interceptor pipelines, watch/unwatch, and comprehensive tests all work on
+  real coerce actors. All 41 tests pass (16 conformance + 24 system actor + 1 doc).
+- **CP5-CP6 remain** — native coerce system actors (currently struct-based).
+- **CP9 remains** — bounded mailbox support (coerce uses unbounded internally).
+- **Limitation:** dactor actors used with the coerce adapter must be `Send + Sync`
+  (required by `coerce::actor::Actor`). This is satisfied by most actors.
 
 ---
 

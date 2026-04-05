@@ -12,14 +12,14 @@ use tokio_util::sync::CancellationToken;
 // SpawnManager wiring
 // ---------------------------------------------------------------------------
 
-#[test]
-fn sa10_runtime_has_spawn_manager() {
+#[tokio::test]
+async fn sa10_runtime_has_spawn_manager() {
     let runtime = CoerceRuntime::new();
     assert_eq!(runtime.spawn_manager().spawned_actors().len(), 0);
 }
 
-#[test]
-fn sa10_register_factory_and_create() {
+#[tokio::test]
+async fn sa10_register_factory_and_create() {
     let mut runtime = CoerceRuntime::new();
     runtime.register_factory("test::Counter", |bytes: &[u8]| {
         let value: i32 = serde_json::from_slice(bytes)
@@ -46,8 +46,8 @@ fn sa10_register_factory_and_create() {
     assert_eq!(runtime.spawn_manager().spawned_actors().len(), 1);
 }
 
-#[test]
-fn sa10_spawn_unknown_type_fails() {
+#[tokio::test]
+async fn sa10_spawn_unknown_type_fails() {
     let mut runtime = CoerceRuntime::new();
     let request = SpawnRequest {
         type_name: "nonexistent::Actor".into(),
@@ -70,8 +70,8 @@ fn sa10_spawn_unknown_type_fails() {
     assert_eq!(runtime.spawn_manager().spawned_actors().len(), 0);
 }
 
-#[test]
-fn sa10_with_node_id() {
+#[tokio::test]
+async fn sa10_with_node_id() {
     let mut runtime = CoerceRuntime::with_node_id(NodeId("node-42".into()));
     runtime.register_factory("test::Actor", |_| Ok(Box::new(())));
 
@@ -86,8 +86,8 @@ fn sa10_with_node_id() {
     assert_eq!(actor_id.node, NodeId("node-42".into()));
 }
 
-#[test]
-fn sa10_multiple_spawns_get_unique_ids() {
+#[tokio::test]
+async fn sa10_multiple_spawns_get_unique_ids() {
     let mut runtime = CoerceRuntime::new();
     runtime.register_factory("test::Actor", |_| Ok(Box::new(())));
 
@@ -108,8 +108,8 @@ fn sa10_multiple_spawns_get_unique_ids() {
     assert_eq!(unique.len(), 5);
 }
 
-#[test]
-fn sa10_malformed_bytes_returns_error() {
+#[tokio::test]
+async fn sa10_malformed_bytes_returns_error() {
     let mut runtime = CoerceRuntime::new();
     runtime.register_factory("test::Counter", |bytes: &[u8]| {
         let _: i32 = serde_json::from_slice(bytes)
@@ -131,14 +131,14 @@ fn sa10_malformed_bytes_returns_error() {
 // WatchManager wiring
 // ---------------------------------------------------------------------------
 
-#[test]
-fn sa10_watch_manager() {
+#[tokio::test]
+async fn sa10_watch_manager() {
     let runtime = CoerceRuntime::new();
     assert_eq!(runtime.watch_manager().watched_count(), 0);
 }
 
-#[test]
-fn sa10_remote_watch_and_notify() {
+#[tokio::test]
+async fn sa10_remote_watch_and_notify() {
     let mut runtime = CoerceRuntime::new();
     let target = ActorId { node: NodeId("n1".into()), local: 1 };
     let watcher = ActorId { node: NodeId("n2".into()), local: 10 };
@@ -153,8 +153,8 @@ fn sa10_remote_watch_and_notify() {
     assert_eq!(runtime.watch_manager().watched_count(), 0);
 }
 
-#[test]
-fn sa10_remote_unwatch() {
+#[tokio::test]
+async fn sa10_remote_unwatch() {
     let mut runtime = CoerceRuntime::new();
     let target = ActorId { node: NodeId("n1".into()), local: 1 };
     let watcher = ActorId { node: NodeId("n2".into()), local: 10 };
@@ -165,8 +165,8 @@ fn sa10_remote_unwatch() {
     assert_eq!(runtime.notify_terminated(&target).len(), 0);
 }
 
-#[test]
-fn sa10_unwatch_nonexistent_is_noop() {
+#[tokio::test]
+async fn sa10_unwatch_nonexistent_is_noop() {
     let mut runtime = CoerceRuntime::new();
     let target = ActorId { node: NodeId("n1".into()), local: 1 };
     let watcher = ActorId { node: NodeId("n2".into()), local: 2 };
@@ -178,14 +178,14 @@ fn sa10_unwatch_nonexistent_is_noop() {
 // CancelManager wiring
 // ---------------------------------------------------------------------------
 
-#[test]
-fn sa10_cancel_manager() {
+#[tokio::test]
+async fn sa10_cancel_manager() {
     let runtime = CoerceRuntime::new();
     assert_eq!(runtime.cancel_manager().active_count(), 0);
 }
 
-#[test]
-fn sa10_register_and_cancel() {
+#[tokio::test]
+async fn sa10_register_and_cancel() {
     let mut runtime = CoerceRuntime::new();
     let token = CancellationToken::new();
     let token_clone = token.clone();
@@ -199,14 +199,14 @@ fn sa10_register_and_cancel() {
     assert_eq!(runtime.cancel_manager().active_count(), 0);
 }
 
-#[test]
-fn sa10_cancel_unknown_request() {
+#[tokio::test]
+async fn sa10_cancel_unknown_request() {
     let mut runtime = CoerceRuntime::new();
     assert!(matches!(runtime.cancel_request("nope"), CancelResponse::NotFound { .. }));
 }
 
-#[test]
-fn sa10_double_cancel_returns_not_found() {
+#[tokio::test]
+async fn sa10_double_cancel_returns_not_found() {
     let mut runtime = CoerceRuntime::new();
     runtime.register_cancel("req-1".into(), CancellationToken::new());
 
@@ -214,8 +214,8 @@ fn sa10_double_cancel_returns_not_found() {
     assert!(matches!(runtime.cancel_request("req-1"), CancelResponse::NotFound { .. }));
 }
 
-#[test]
-fn sa10_complete_request_cleans_up_token() {
+#[tokio::test]
+async fn sa10_complete_request_cleans_up_token() {
     let mut runtime = CoerceRuntime::new();
     runtime.register_cancel("req-cleanup".into(), CancellationToken::new());
     assert_eq!(runtime.cancel_manager().active_count(), 1);
@@ -229,14 +229,14 @@ fn sa10_complete_request_cleans_up_token() {
 // NodeDirectory wiring
 // ---------------------------------------------------------------------------
 
-#[test]
-fn sa10_node_directory() {
+#[tokio::test]
+async fn sa10_node_directory() {
     let runtime = CoerceRuntime::new();
     assert_eq!(runtime.node_directory().peer_count(), 0);
 }
 
-#[test]
-fn sa10_connect_and_disconnect_peer() {
+#[tokio::test]
+async fn sa10_connect_and_disconnect_peer() {
     let mut runtime = CoerceRuntime::new();
     let peer = NodeId("peer-1".into());
 
@@ -249,8 +249,8 @@ fn sa10_connect_and_disconnect_peer() {
     assert_eq!(runtime.node_directory().peer_count(), 1);
 }
 
-#[test]
-fn sa10_reconnect_preserves_address() {
+#[tokio::test]
+async fn sa10_reconnect_preserves_address() {
     let mut runtime = CoerceRuntime::new();
     let peer = NodeId("peer-1".into());
 
@@ -266,8 +266,8 @@ fn sa10_reconnect_preserves_address() {
     );
 }
 
-#[test]
-fn sa10_reconnect_updates_address() {
+#[tokio::test]
+async fn sa10_reconnect_updates_address() {
     let mut runtime = CoerceRuntime::new();
     let peer = NodeId("peer-1".into());
 
@@ -281,8 +281,8 @@ fn sa10_reconnect_updates_address() {
     );
 }
 
-#[test]
-fn sa10_node_id_accessor() {
+#[tokio::test]
+async fn sa10_node_id_accessor() {
     let runtime = CoerceRuntime::new();
     assert_eq!(runtime.node_id(), &NodeId("coerce-node".into()));
 
@@ -294,8 +294,8 @@ fn sa10_node_id_accessor() {
 // Cross-system-actor integration
 // ---------------------------------------------------------------------------
 
-#[test]
-fn sa10_all_system_actors_initialized() {
+#[tokio::test]
+async fn sa10_all_system_actors_initialized() {
     let runtime = CoerceRuntime::new();
     assert_eq!(runtime.spawn_manager().spawned_actors().len(), 0);
     assert_eq!(runtime.watch_manager().watched_count(), 0);
@@ -303,8 +303,8 @@ fn sa10_all_system_actors_initialized() {
     assert_eq!(runtime.node_directory().peer_count(), 0);
 }
 
-#[test]
-fn sa10_with_node_id_initializes_all() {
+#[tokio::test]
+async fn sa10_with_node_id_initializes_all() {
     let runtime = CoerceRuntime::with_node_id(NodeId("test-node".into()));
     assert_eq!(runtime.node_id(), &NodeId("test-node".into()));
     assert_eq!(runtime.spawn_manager().spawned_actors().len(), 0);

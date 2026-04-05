@@ -177,6 +177,7 @@ dependencies = [
  "async-trait",
  "coerce",
  "dactor",
+ "futures",
  "serde_json",
  "tokio",
  "tokio-util",
