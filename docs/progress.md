@@ -804,33 +804,42 @@ The current naming (`stream`, `feed`, `transform`) is **verb-oriented** and
 describes the communication direction. However, from a **stream processing**
 perspective, these names may be confusing:
 
-| Current Name | Stream Semantics | Better Name? |
+| Current Name | Stream Semantics | Proposed Name |
 |-------------|------------------|--------------|
-| `stream(msg)` → stream of items | **Produce** / **Emit** — actor generates items | `stream` is reasonable (producer pattern) |
-| `feed(input)` → single reply | **Reduce** / **Fold** — consume stream, produce aggregate | `reduce` or `fold` — standard stream terminology |
-| `transform(input)` → stream of items | **Map** / **FlatMap** — consume stream, produce stream | `transform` or `map_stream` |
-| `ask(msg)` → single reply | **Request-Reply** | `ask` is standard (Akka/Erlang) |
+| `tell(msg)` → no reply | **Fire-and-forget** | `tell` (no change) |
+| `ask(msg)` → single reply | **Request-Reply** (1→1) | `ask` (no change) |
+| `stream(msg)` → stream of items | **Expand** (1→N) — one request expands into many items | `expand` |
+| `feed(input)` → single reply | **Reduce** (N→1) — consume stream, produce aggregate | `reduce` |
+| `transform(input)` → stream of items | **Transform** (N→M) — consume stream, produce stream | `transform` |
 
-**Proposed renaming for consideration:**
+**Proposed full naming scheme (stream-processing aligned):**
 
 ```
-feed()      → reduce()      // consumes a stream, returns a single result
-stream()    → stream()      // produces a stream (no change, already clear)
-transform() → transform()   // input stream → output stream
-ask()       → ask()         // single request-reply (no change)
-tell()      → tell()        // fire-and-forget (no change)
+tell(msg)              → tell(msg)              // 1→0  fire-and-forget
+ask(msg)               → ask(msg)               // 1→1  request-reply
+stream(msg)            → expand(msg)            // 1→N  one request, many results
+feed(input)            → reduce(input)          // N→1  many inputs, one result
+transform(input)       → transform(input)       // N→M  many inputs, many results
 ```
 
-The `reduce` rename better communicates the semantics: "feed a stream of
-items to the actor and reduce them to a single reply value." This aligns
-with `Iterator::fold()`, `Stream::fold()`, and MapReduce terminology.
+This naming scheme maps naturally to **cardinality**:
 
-**Decision needed:** Whether to rename `feed` → `reduce` is a breaking API
-change. Options:
+```
+         Input
+         1       N
+Reply  ┌───────┬──────────┐
+  0    │ tell  │          │
+  1    │ ask   │ reduce   │
+  N    │expand │transform │
+       └───────┴──────────┘
+```
+
+**Decision needed:** Renaming `stream` → `expand` and `feed` → `reduce` are
+breaking API changes. Options:
 
 1. **Rename now** (before v1.0) — clean API, one-time migration
-2. **Alias** — add `reduce()` as an alias, deprecate `feed()` over time
-3. **Keep `feed`** — it's already established in the codebase and tests
+2. **Alias** — add `expand()`/`reduce()` as aliases, deprecate `stream()`/`feed()` over time
+3. **Keep current names** — they're already established in the codebase
 
 **Recommendation:** Option 2 (alias + deprecate) — lets users migrate
 gradually without breaking existing code.
