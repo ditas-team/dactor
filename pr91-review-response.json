@@ -1,0 +1,8 @@
+{
+  "message": "Unprocessable Entity",
+  "errors": [
+    "Review Can not request changes on your own pull request"
+  ],
+  "documentation_url": "https://docs.github.com/rest/pulls/reviews#create-a-review-for-a-pull-request",
+  "status": "422"
+}

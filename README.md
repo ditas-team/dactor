@@ -11,7 +11,7 @@ Write your actor logic once, swap the runtime underneath.
 ## Key Features
 
 - **4 communication patterns** — `tell` (fire-and-forget), `ask`
-  (request-reply), `stream` (server-streaming), `feed` (client-streaming)
+  (request-reply), `expand` (server-streaming), `reduce` (client-streaming)
 - **Transparent batching** — `BatchConfig` on `expand()` / `reduce()` groups
   items into batches (max_items + max_delay) to reduce per-item overhead
 - **Actor pools** — `PoolRef` with `RoundRobin`, `Random`, and `KeyBased`
@@ -30,7 +30,7 @@ Write your actor logic once, swap the runtime underneath.
   `CancellationToken`
 - **Bounded & unbounded mailboxes** — configurable `OverflowStrategy`
   (Block, RejectWithError, DropNewest)
-- **Cooperative cancellation** — `CancellationToken` on ask / stream / feed,
+- **Cooperative cancellation** — `CancellationToken` on ask / expand / reduce,
   `ctx.cancelled()` for select!-based cancellation
 - **Persistence** — `PersistentActor`, `EventSourced`, `DurableState` traits
   with recovery pipeline (`recover_event_sourced`, `recover_durable_state`),
@@ -110,8 +110,8 @@ async fn main() {
 |---------|--------|-------------|
 | **Tell** | `actor.tell(msg)` | Fire-and-forget — no reply, returns immediately |
 | **Ask** | `actor.ask(msg, cancel)` | Request-reply — returns `AskReply<T>` future |
-| **Stream** | `actor.expand(msg, buf, batch, cancel)` | Server-streaming — handler sends multiple items via `StreamSender`. Pass `Some(BatchConfig)` or `None`. |
-| **Feed** | `actor.feed::<Item, Reply>(input, buf, batch, cancel)` | Client-streaming — sends a `BoxStream` of items, gets one reply. Pass `Some(BatchConfig)` or `None`. |
+| **Expand** | `actor.expand(msg, buf, batch, cancel)` | Server-streaming — handler sends multiple items via `StreamSender`. Pass `Some(BatchConfig)` or `None`. |
+| **Reduce** | `actor.reduce::<Item, Reply>(input, buf, batch, cancel)` | Client-streaming — sends a `BoxStream` of items, gets one reply. Pass `Some(BatchConfig)` or `None`. |
 
 ## Architecture
 
@@ -141,7 +141,7 @@ async fn main() {
 | `EventSourced` | Event-sourcing — `apply()`, `persist()`, `snapshot()`, `restore_snapshot()` |
 | `DurableState` | Durable-state — `save_state()`, `restore_state()` |
 | `SupervisionStrategy` | Determines supervisor response to child failure — `on_child_failed()` |
-| `ActorRef<A>` | Typed handle — `tell`, `ask`, `stream`, `feed`, `stop`, `is_alive` |
+| `ActorRef<A>` | Typed handle — `tell`, `ask`, `expand`, `reduce`, `stop`, `is_alive` |
 | `Message` | Message trait with associated `Reply` type |
 | `InboundInterceptor` | Runs on actor task before handler (logging, auth, metrics, `on_expand_item`) |
 | `OutboundInterceptor` | Runs on caller task before send (rate limiting, tracing, `on_reply`) |
@@ -178,8 +178,8 @@ examples:
 |---------|-------------|---------|
 | [`readme_quickstart`](dactor/examples/readme_quickstart.rs) | Quick start — basic counter with tell + ask | `cargo run --example readme_quickstart -p dactor --features test-support` |
 | [`basic_counter`](dactor/examples/basic_counter.rs) | Tell + ask patterns with a counter actor | `cargo run --example basic_counter -p dactor --features test-support` |
-| [`streaming`](dactor/examples/streaming.rs) | Server-streaming and client-streaming (feed) | `cargo run --example streaming -p dactor --features test-support` |
-| [`batch_streaming`](dactor/examples/batch_streaming.rs) | Transparent batching for stream/feed with `BatchConfig` | `cargo run --example batch_streaming -p dactor --features test-support` |
+| [`streaming`](dactor/examples/streaming.rs) | Server-streaming and client-streaming (reduce) | `cargo run --example streaming -p dactor --features test-support` |
+| [`batch_streaming`](dactor/examples/batch_streaming.rs) | Transparent batching for expand/reduce with `BatchConfig` | `cargo run --example batch_streaming -p dactor --features test-support` |
 | [`cancellation`](dactor/examples/cancellation.rs) | Cancellation tokens and `cancel_after()` for streams | `cargo run --example cancellation -p dactor --features test-support` |
 | [`supervision`](dactor/examples/supervision.rs) | Supervision strategies (OneForOne, AllForOne, RestForOne) | `cargo run --example supervision -p dactor --features test-support` |
 | [`interceptors`](dactor/examples/interceptors.rs) | Inbound/outbound interceptor pipelines | `cargo run --example interceptors -p dactor --features test-support` |

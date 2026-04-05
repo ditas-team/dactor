@@ -1,0 +1,31 @@
+{
+  "body": "## Review by Gemini\n\nNice rename sweep overall, but I found a few blocking inconsistencies before this lands:\n\n- the public rename is still incomplete in docs and handler method names\n- the new cluster behavior doc documents discovery/reconnect APIs that do not exist yet and overstates current split-brain support\n\nAlso, cargo fmt --all --check is still failing locally on the renamed imports.",
+  "event": "REQUEST_CHANGES",
+  "comments": [
+    {
+      "side": "RIGHT",
+      "line": 187,
+      "path": "dactor/src/actor.rs",
+      "body": "The rename looks incomplete here: implementers now opt into `ExpandHandler` / `ReduceHandler`, but still have to define `handle_stream()` / `handle_feed()`, and the surrounding doc comments keep the old terminology. If this PR is meant to finish the pre-release rename, these public trait method names/docs should probably move to `handle_expand()` / `handle_reduce()` as well."
+    },
+    {
+      "side": "RIGHT",
+      "line": 114,
+      "path": "README.md",
+      "body": "This README still has a few user-facing leftovers from the old naming (`stream` / `feed` at lines 14, 33, 114, and 144). In particular, this row still advertises `actor.feed::<...>()`, which does not match the renamed `actor.reduce::<...>()` API."
+    },
+    {
+      "side": "RIGHT",
+      "line": 4,
+      "path": "docs/cluster-behavior.md",
+      "body": "Important wording tweak: this intro says \"split-brain resolution\", but the doc later correctly says dactor does **not** provide automatic split-brain resolution. Rephrasing this to something like \"split-brain handling\" or \"partition recovery\" would avoid implying built-in SBR."
+    },
+    {
+      "side": "RIGHT",
+      "line": 213,
+      "path": "docs/cluster-behavior.md",
+      "body": "This section reads like concrete, supported configuration, but `RetryingDiscovery` and `DnsDiscovery` do not exist in the crate today (and `remote.rs` still describes discovery/networking as stubs). Could we either mark this as future/design guidance or rewrite it around the APIs that actually ship today, like `StaticSeeds`, `connect_peer()`, and `cluster_events()`?"
+    }
+  ],
+  "commit_id": "318d0d4a9efffb4bd4f20c4b80cfb0b95f3679cd"
+}

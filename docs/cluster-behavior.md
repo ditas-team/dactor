@@ -251,7 +251,180 @@ let discovery = RetryingDiscovery::new(
 
 ---
 
-## Scenario 3: Split-Brain — Two 2-Node Clusters
+## Scenario 3: Graceful Node Removal (Scale-Down / Maintenance)
+
+### Setup
+- 4-node cluster, all healthy
+- Autoscaler decides to remove `node-4` (scale-down), or operator
+  triggers maintenance drain on `node-4`
+
+### Graceful Shutdown Phases
+
+```
+Phase 1: DRAINING        Phase 2: STOPPING         Phase 3: DISCONNECTED
+─────────────────        ─────────────────         ───────────────────
+• Stop accepting new     • Cancel in-flight        • on_stop() called
+  remote spawns on         operations                on all actors
+  node-4                 • Flush pending           • System actors stop
+• Existing actors          persistence writes      • Transport closes
+  finish current         • Actor state saved       • NodeLeft emitted
+  messages                 (if persistent)           on surviving nodes
+• Queue drains           • Watchers notified       • Node process exits
+```
+
+### Step-by-step
+
+```
+Time  Event                                  Who Does It
+─────────────────────────────────────────────────────────────────
+
+t0    Shutdown signal received               K8s SIGTERM / operator API
+      → node-4 enters DRAINING phase
+
+t1    Stop accepting new work                Application / Runtime
+      → SpawnManager stops accepting remote SpawnRequests
+      → Node marked as "draining" in application logic
+      → New tell/ask from remote nodes may be rejected or redirected
+
+t2    Drain existing mailboxes               Runtime
+      → Each actor processes remaining messages in its mailbox
+      → No new messages accepted from remote nodes
+      → Local actors continue processing until idle
+      → Expand/reduce streams complete or are cancelled
+
+t3    Cancel in-flight operations             CancelManager
+      → All active CancellationTokens are cancelled
+      → In-flight ask() calls return RuntimeError::Cancelled
+      → In-flight expand/reduce streams terminate
+      → Callers on remote nodes see channel closed or Cancelled error
+
+t4    Persist state (if configured)          Application actors
+      → EventSourced actors flush pending events to journal
+      → DurableState actors save final state to storage
+      → Snapshot taken if configured (SnapshotConfig)
+      → ⚠️ Application must ensure persistence completes before
+        actor stops — use on_stop() for final flush
+
+t5    Stop all actors                        Runtime
+      → actor.stop() called on each actor (or ActorSystem::shutdown())
+      → on_stop() lifecycle hook called on each actor
+      → Actors perform cleanup (close connections, flush buffers)
+      → JoinHandles / stop_notifiers resolve
+
+t6    Notify watchers                        WatchManager
+      → ChildTerminated sent to all local watchers
+      → Remote watchers receive WatchNotification
+      → WatchManager entries cleaned up
+
+t7    System actors stop                     Runtime
+      → SpawnManager, WatchManager, CancelManager, NodeDirectory stop
+      → No more system-level message processing
+
+t8    Disconnect from cluster                Transport / NodeDirectory
+      → Transport connections to peers closed
+      → Peers detect disconnection:
+        • Health check fails, or
+        • TCP connection closed
+      → Each surviving node:
+        runtime.disconnect_peer(NodeId("node-4"))
+        → ClusterEvent::NodeLeft(node-4) emitted
+
+t9    Node process exits                     OS
+      → K8s pod terminates, VMSS instance deallocated
+      → Cluster continues with 3 nodes
+```
+
+### Actor Behavior During Graceful Shutdown
+
+| Actor Type | During Drain (t1-t2) | During Stop (t5) | State Preservation |
+|-----------|---------------------|------------------|-------------------|
+| **Stateless actors** | Finish current message, then idle | `on_stop()` called — no-op | None needed |
+| **EventSourced actors** | Continue processing, persist events | `on_stop()` flushes pending events + optional snapshot | Events in journal survive restart |
+| **DurableState actors** | Continue processing, save state | `on_stop()` saves final state | State in storage survives restart |
+| **Actors with in-flight ask** | Reply sent normally if completed before stop | Reply channel dropped → caller sees channel closed | Caller must handle `RecvError` |
+| **Actors with active expand** | Stream items sent until stop | `StreamSender` dropped → stream ends | Caller sees stream end |
+| **Actors with active reduce** | Input consumed until stop | `StreamReceiver` dropped → reduce ends early | Partial result or error |
+
+### Cancellation During Shutdown
+
+When the runtime initiates shutdown:
+
+1. **Explicit cancellation** — `CancelManager` cancels all registered tokens.
+   This is the cooperative path: actors check `ctx.cancelled()` and exit
+   their handler early.
+
+2. **Implicit cancellation** — if an actor doesn't check the token, it
+   continues processing until `actor.stop()` is called. At that point,
+   the mailbox is closed and `on_stop()` runs.
+
+3. **Timeout** — K8s sends SIGTERM, then waits `terminationGracePeriodSeconds`
+   (default 30s) before SIGKILL. The application should ensure all actors
+   stop within this window.
+
+```rust
+// Recommended graceful shutdown pattern
+async fn graceful_shutdown(runtime: &RactorRuntime) {
+    // 1. Stop accepting new work
+    // (application-level: remove from load balancer, stop listening)
+
+    // 2. Cancel all in-flight operations
+    // CancelManager cancels all registered tokens
+
+    // 3. Wait for actors to finish (with timeout)
+    let shutdown_timeout = Duration::from_secs(25); // leave 5s buffer for K8s
+    match tokio::time::timeout(shutdown_timeout, runtime.await_all()).await {
+        Ok(Ok(())) => tracing::info!("all actors stopped cleanly"),
+        Ok(Err(e)) => tracing::warn!("some actors failed: {e}"),
+        Err(_) => tracing::error!("shutdown timed out — some actors may be killed"),
+    }
+}
+```
+
+### Stateful Actor Persistence on Shutdown
+
+For actors using EventSourced or DurableState persistence:
+
+```rust
+#[async_trait]
+impl Actor for MyStatefulActor {
+    // ...
+
+    async fn on_stop(&mut self) {
+        // Flush any buffered events to the journal
+        if let Some(ref journal) = self.journal {
+            if let Err(e) = journal.flush().await {
+                tracing::error!("failed to flush journal on shutdown: {e}");
+            }
+        }
+
+        // Take a final snapshot for faster recovery
+        if let Some(ref snapshot_store) = self.snapshot_store {
+            if let Err(e) = snapshot_store.save(&self.state).await {
+                tracing::error!("failed to save snapshot on shutdown: {e}");
+            }
+        }
+    }
+}
+```
+
+**Recovery after restart:**
+1. New actor spawns on the same or different node
+2. `pre_recovery()` called — loads latest snapshot
+3. Events since snapshot replayed via `apply()`
+4. `post_recovery()` called — actor ready for new messages
+
+### Platform-Specific Graceful Shutdown
+
+| Platform | Signal | Grace Period | Best Practice |
+|----------|--------|-------------|---------------|
+| **Kubernetes** | SIGTERM → SIGKILL | `terminationGracePeriodSeconds` (default 30s) | Set grace period > expected drain time. Use preStop hook for deregistration. |
+| **AWS ECS** | SIGTERM → SIGKILL | `stopTimeout` (default 30s) | Configure task stop timeout. Use ECS task state change events for monitoring. |
+| **AWS EC2 ASG** | Lifecycle hook | Configurable (up to 7200s) | Use `autoscaling:EC2_INSTANCE_TERMINATING` hook. Complete hook after actors drained. |
+| **Azure VMSS** | Terminate event | Configurable | Use scheduled events API to detect pending termination. |
+
+---
+
+## Scenario 4: Split-Brain — Two 2-Node Clusters
 
 ### The Problem
 
