@@ -488,16 +488,17 @@ impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
         Ok(AskReply::new(rx))
     }
 
-    fn expand<M>(
+    fn expand<M, OutputItem>(
         &self,
         msg: M,
         buffer: usize,
         batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
-    ) -> Result<BoxStream<M::Reply>, ActorSendError>
+    ) -> Result<BoxStream<OutputItem>, ActorSendError>
     where
-        A: ExpandHandler<M>,
-        M: Message,
+        A: ExpandHandler<M, OutputItem>,
+        M: Send + 'static,
+        OutputItem: Send + 'static,
     {
         let pipeline = self.outbound_pipeline();
         let result = pipeline.run_on_send(SendMode::Expand, &msg);
@@ -533,7 +534,7 @@ impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
 
         match batch_config {
             Some(batch_config) => {
-                let (batch_tx, batch_rx) = tokio::sync::mpsc::channel::<Vec<M::Reply>>(buffer);
+                let (batch_tx, batch_rx) = tokio::sync::mpsc::channel::<Vec<OutputItem>>(buffer);
                 let reader = BatchReader::new(batch_rx);
                 let batch_delay = batch_config.max_delay;
                 tokio::spawn(async move {
@@ -585,16 +586,16 @@ impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
         }
     }
 
-    fn reduce<Item, Reply>(
+    fn reduce<InputItem, Reply>(
         &self,
-        input: BoxStream<Item>,
+        input: BoxStream<InputItem>,
         buffer: usize,
         batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
     ) -> Result<AskReply<Reply>, ActorSendError>
     where
-        A: ReduceHandler<Item, Reply>,
-        Item: Send + 'static,
+        A: ReduceHandler<InputItem, Reply>,
+        InputItem: Send + 'static,
         Reply: Send + 'static,
     {
         let buffer = buffer.max(1);
@@ -620,7 +621,7 @@ impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
                     batch_config,
                     cancel,
                     pipeline,
-                    std::any::type_name::<Item>(),
+                    std::any::type_name::<InputItem>(),
                 );
             }
             None => {
@@ -629,7 +630,7 @@ impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
                     item_tx,
                     cancel,
                     pipeline,
-                    std::any::type_name::<Item>(),
+                    std::any::type_name::<InputItem>(),
                 );
             }
         }
@@ -637,16 +638,16 @@ impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
         Ok(AskReply::new(reply_rx))
     }
 
-    fn transform<Item, Output>(
+    fn transform<InputItem, OutputItem>(
         &self,
-        input: BoxStream<Item>,
+        input: BoxStream<InputItem>,
         buffer: usize,
         cancel: Option<CancellationToken>,
-    ) -> Result<BoxStream<Output>, ActorSendError>
+    ) -> Result<BoxStream<OutputItem>, ActorSendError>
     where
-        A: TransformHandler<Item, Output>,
-        Item: Send + 'static,
-        Output: Send + 'static,
+        A: TransformHandler<InputItem, OutputItem>,
+        InputItem: Send + 'static,
+        OutputItem: Send + 'static,
     {
         let buffer = buffer.max(1);
         let (item_tx, item_rx) = tokio::sync::mpsc::channel(buffer);
@@ -668,14 +669,14 @@ impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
             item_tx,
             cancel,
             pipeline.clone(),
-            std::any::type_name::<Item>(),
+            std::any::type_name::<InputItem>(),
         );
 
         Ok(wrap_stream_with_interception(
             output_rx,
             buffer,
             pipeline,
-            std::any::type_name::<Output>(),
+            std::any::type_name::<OutputItem>(),
             SendMode::Transform,
         ))
     }

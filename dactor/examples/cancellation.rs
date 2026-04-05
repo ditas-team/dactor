@@ -40,7 +40,7 @@ impl Actor for SlowProducer {
 }
 
 #[async_trait]
-impl ExpandHandler<GetNumbers> for SlowProducer {
+impl ExpandHandler<GetNumbers, u32> for SlowProducer {
     async fn handle_expand(
         &mut self,
         _msg: GetNumbers,

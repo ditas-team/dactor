@@ -772,7 +772,7 @@ mod stream_tests {
     }
 
     #[async_trait]
-    impl ExpandHandler<StreamN> for Streamer {
+    impl ExpandHandler<StreamN, u32> for Streamer {
         async fn handle_expand(
             &mut self,
             msg: StreamN,
@@ -793,7 +793,7 @@ mod stream_tests {
     }
 
     #[async_trait]
-    impl ExpandHandler<StreamEmpty> for Streamer {
+    impl ExpandHandler<StreamEmpty, u32> for Streamer {
         async fn handle_expand(
             &mut self,
             _msg: StreamEmpty,

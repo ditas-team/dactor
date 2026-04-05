@@ -4,54 +4,90 @@
 
 ---
 
-## Current Status (PR #78)
+## Current Status (PR #95)
 - Phase 3: ✅ Complete (features, examples, conformance, batching)
 - Phase 4: ✅ Complete — R1-R6, R3b, R6b-c, S1-S4, SE1-SE5, C1-C5, P1-P3 all done
 - Phase 6: ✅ Complete (supervision, pools, timers, on_reply, AM1-AM7 all done)
 - Phase 7: ✅ Complete (metrics, dead letters, circuit breaker, drop observer; O4 dropped)
-- Phase 8: NR1 done (actor registry), NR2-NR4 need adapter wiring; SA9 done
-- Zero clippy warnings, cargo doc clean, 368 core tests, 502 total
+- Phase 8: ✅ NR1-NR3 done; NR4 (processing groups) remaining
+- Phase 9: ✅ NA1-NA9 done (native system actors + runtime auto-start); NA10 (transport routing) remaining
+- Phase 10: ✅ Complete (JH1-JH5: lifecycle handles, await_stop, panic propagation)
+- Phase 11: ✅ Complete (AS1-AS5,AS7: async spawn, Result return, removed std::thread bridge)
+- Phase 12: ✅ CP1-CP8,CP10 done (coerce real actors, parity tests); CP9 (mailbox config) remaining
+- Phase 13: TF1-TF3,TF5-TF7 done (TransformHandler, N→M streaming); TF4 (batch) remaining
+- Phase 14: 🔲 Broadcast (BC1-BC9) — planned, not started
+- Zero clippy warnings, 682+ tests, all workspace tests pass
 - Build: `cargo clippy --workspace --exclude dactor-test-harness --all-targets --all-features -- -D warnings`
 - Test: `cargo test --workspace --exclude dactor-test-harness --features test-support` (exclude test-harness due to protoc permission issue)
-- Next: SA1-SA8 (ractor/kameo adapter wiring), SA10 (coerce), SE6 (protobuf), NR2-NR4
+- Next: see "Pending Work" section below
 
-### Session 2026-04-04 Summary (PRs #62-#78)
-- **R1** (#62): Transport trait, InMemoryTransport, TransportRegistry
-- **R2** (#63): WireEnvelope pipeline — TypeRegistry, JsonSerializer, HeaderRegistry
-- **R3** (#64): RemoteActorRef — location-transparent remote actor ref with tell/ask
-- **S1-S4** (#65): System actors — SpawnManager, WatchManager, CancelManager, NodeDirectory
-- **C1-C5+R4** (#66): Cluster management — ClusterEventEmitter, AdapterCluster, HealthChecker
-- **Progress** (#67): Added R3b, R6, SA1-SA10, T11 tracking items
-- **R3b** (#68): Outbound interceptor pipeline wired into RemoteActorRef (on_send, on_reply, headers)
-- **R6** (#69): WireInterceptor — envelope-level load control (accept/delay/reject/drop)
-- **R6b+R6c** (#70): WireEnvelope.target_name + wire interceptor metrics & dead letter integration
-- **P1-P3** (#71): Remote spawn — SpawnConfig.target_node + ActorFactory/ErasedActorFactory/JsonActorFactory
-- **SE5** (#72): ActorRefEnvelope — serializable actor ref with type checking (try_into_builder)
-- **R5** (#73): BatchedTransportSender — batched remote sends (serde-gated, tell-only)
-- **AM5** (#74): OutboundPriorityQueue — 5-lane priority queue with fairness + capacity
-- **O4** (#75): OtelInterceptor — CLOSED, tracing is app responsibility
-- **AM6** (#76): Pluggable WireEnvelopeComparer — StrictPriority + AgingWireComparer
-- **AM7** (#77): Stream item ordering — FIFO bypass with interleaving
-- **SA9** (#78): MockCluster system actor wiring — SpawnManager, WatchManager, CancelManager, NodeDirectory
+### Session 2026-04-05 Summary (PRs #80-#95)
+- **SA1-SA4** (#80): RactorRuntime system actor wiring — SpawnManager, WatchManager, CancelManager, NodeDirectory
+- **SA5-SA8** (#81): KameoRuntime system actor wiring
+- **SA10** (#82): CoerceRuntime system actor wiring + dual ID counter fix
+- **NA1-NA4** (#83): Native ractor system actors — real ractor::Actor impls with mailboxes
+- **NA5-NA8** (#84): Native kameo system actors — per-message-type kameo::message::Message impls
+- **NA9** (#85): Runtime auto-start — start_system_actors() with lazy initialization
+- **NR2-NR3** (#86): ClusterEvent emission wired into connect_peer/disconnect_peer
+- **JH1-JH3** (#87): Lifecycle handles — await_stop, await_all, cleanup_finished + adapter impl docs
+- **CP1-CP4,CP7-CP8** (#88): Coerce adapter rewrite — real coerce-rs actors replacing TestRuntime stub
+- **CP10** (#89): Coerce parity tests — 29 new tests (interceptors, lifecycle, stream, feed, watch, events)
+- **CP5-CP6** (#90): Coerce native system actors + runtime auto-start + Phase 14 broadcast plan
+- **Rename** (#91): stream→expand, feed→reduce + cluster-behavior.md docs + handle_stream→handle_expand, handle_feed→handle_reduce
+- **JH4-JH5** (#92): Panic propagation through await_stop + TestRuntime lifecycle handles
+- **AS1-AS5,AS7** (#93): Async spawn — all spawn methods async, return Result, removed ractor std::thread bridge
+- **TF1-TF3,TF5-TF7** (#94): TransformHandler — N→M streaming pattern completing the cardinality matrix
+- **Rename** (#95): Transform type params Item→InputItem, Output→OutputItem (+ reduce/expand pending)
 
 ### Key Design Decisions Made This Session
-- WireEnvelope.target_name is sender-supplied (hint, not authoritative) — documented in §9.0.4
-- ActorRefEnvelope uses std::any::type_name (not stable across compiler versions) — security doc added
-- BatchedTransportSender is serde-only and tell-only (ask/stream can't be batched)
-- OutboundPriorityQueue: pluggable WireEnvelopeComparer with Instant param for stable ordering
-- Stream/feed items bypass priority queue via FIFO with interleaving (prevents starvation)
-- O4 (OtelInterceptor) dropped — tracing should be added by application, not framework
-- SE6 (protobuf for system serialization) tracked as future work
-- Design doc updated: §5.5, §9.0-9.0.5, §9.2, §9.3, §9.6, §11.4 for all implementation
+- System actors are plain structs wrapped in native provider actors (not standalone)
+- Native actor spawning is lazy via start_system_actors() — new() stays sync
+- Dual struct+actor pattern: struct for backward-compat sync API, actor for transport routing
+- register_factory() forwards to both struct and native actor via Arc-wrapped factory
+- Lifecycle handles use oneshot channels (all backends), not JoinHandle (ractor-specific)
+- on_stop() panics caught via catch_unwind, propagated through await_stop() as Err(String)
+- Streaming API renamed for cardinality semantics: stream→expand(1→N), feed→reduce(N→1)
+- TransformHandler is the 5th call pattern completing: tell(1→0), ask(1→1), expand(1→N), reduce(N→1), transform(N→M)
+- ExpandHandler to be refactored: M::Reply → explicit OutputItem generic (pending)
+- Coerce adapter upgraded from TestRuntime stub to real coerce-rs actors (coerce 0.8.11)
+- DactorMsg uses Mutex<Option<Box<dyn Dispatch>>> for Sync safety in coerce (not unsafe impl)
+- ClusterEvent emission uses catch_unwind for subscriber panic isolation
+- connect_peer() preserves address on reconnect (address-only None doesn't overwrite)
+- Pre-release: API changes done freely (no backward compat needed)
+- Phase 14 broadcast plan: BroadcastRef<A> with tell(M: Clone) and ask(timeout) → Vec<BroadcastReceipt>
 
 ### Multi-Model Review Process
-Every PR was reviewed by 4 AI models (GPT-5.2, GPT-5.4, Claude Haiku 4.5, Claude Sonnet 4.5).
+Every PR was reviewed by 4 AI models (GPT-5.4, Gemini/Goldeneye, Claude Haiku 4.5, Claude Sonnet 4.5).
 Findings were consolidated, addressed, and verified before merge. Key patterns found:
-- Span lifecycle issues in tracing (led to O4 redesign then drop)
-- Starvation risks in priority queues (led to interleaving + fairness)
-- Type safety gaps in ActorRefEnvelope (led to try_into_builder)
-- Mutex poisoning in rate limiters (led to unwrap_or_else pattern)
-- Missing comparer-mode code paths in priority queue (full rewrite)
+- Dual node ID / counter collision in coerce stub (fixed with REMOTE_ID_OFFSET, then real actors)
+- unsafe impl Sync for DactorMsg was UB — replaced with Mutex wrapper
+- ActorType::Anonymous breaks coerce system shutdown — changed to Tracked
+- handle_spawn_request() originally dropped created actor — now returns Result<(ActorId, Box<dyn Any>)>
+- SpawnResult as Result promotes domain failures to kameo handler errors — replaced with SpawnOutcome enum
+- wrap_stream_with_interception hardcoded SendMode::Expand — now takes send_mode parameter
+- on_transform_complete ran after cancellation — now gated on cancelled flag
+- Ractor stop_reason inference bug — track on_stop_panicked independently via local bool
+- await_all() early return on first error — now collects first error but awaits ALL actors
+- &'static str in conformance helpers required by Rust async closure lifetime rules
+
+### Pending Work for Next Session
+1. **In-progress (PR #95)**: Rename reduce/expand type params to InputItem/OutputItem + ExpandHandler refactor (M::Reply → explicit OutputItem)
+2. **NR4**: Processing groups — actor group pub/sub
+3. **NA10**: Transport routing — WireEnvelope system messages to native actor mailboxes
+4. **SE6**: Protobuf system serialization
+5. **TF4**: Transform batch support
+6. **BC1-BC9**: Broadcast — BroadcastRef, tell/ask with timeout, receipts
+7. **T1-T11**: E2E integration tests (blocked by protoc permission)
+8. **CP9**: Coerce mailbox config wiring
+9. **AP6**: LeastLoaded pool routing
+10. **Phase 10 JH4/JH5**: Consider renaming ReduceHandler<Item,Reply> → ReduceHandler<InputItem,Reply> for full consistency
+
+### Documentation Created This Session
+- `docs/cluster-behavior.md` — K8s/EKS/VMSS autoscale, simultaneous restart, graceful shutdown, split-brain
+- `dactor-ractor/docs/implementation.md` — ractor adapter architecture + limitations
+- `dactor-kameo/docs/implementation.md` — kameo adapter architecture + limitations
+- `dactor-coerce/docs/implementation.md` — coerce adapter architecture + parity gaps
+- `dactor-mock/docs/implementation.md` — mock cluster testing patterns
 
 ---
 

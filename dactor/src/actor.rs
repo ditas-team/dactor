@@ -183,14 +183,21 @@ pub trait Handler<M: Message>: Actor {
 /// Implemented by actors that handle expand (server-streaming) requests.
 /// The handler receives the request and a `StreamSender` to push items into.
 /// When this method returns, the stream closes on the caller side.
+///
+/// Generic parameters:
+/// - `M` — the request message type.
+/// - `OutputItem` — the type of items pushed into the output stream.
 #[async_trait]
-pub trait ExpandHandler<M: Message>: Actor {
+pub trait ExpandHandler<M, OutputItem: Send + 'static>: Actor
+where
+    M: Send + 'static,
+{
     /// Handle an expand request. Push items into `sender`.
     /// When this method returns, the stream closes.
     async fn handle_expand(
         &mut self,
         msg: M,
-        sender: StreamSender<M::Reply>,
+        sender: StreamSender<OutputItem>,
         ctx: &mut ActorContext,
     );
 }
@@ -202,14 +209,14 @@ pub trait ExpandHandler<M: Message>: Actor {
 /// final reply.
 ///
 /// Generic parameters:
-/// - `Item` — the type of items the caller streams to the actor.
+/// - `InputItem` — the type of items the caller streams to the actor.
 /// - `Reply` — the type returned after the actor consumes all items.
 #[async_trait]
-pub trait ReduceHandler<Item: Send + 'static, Reply: Send + 'static>: Actor {
+pub trait ReduceHandler<InputItem: Send + 'static, Reply: Send + 'static>: Actor {
     /// Handle a reduce request. Pull items from `receiver` and return a reply.
     async fn handle_reduce(
         &mut self,
-        receiver: StreamReceiver<Item>,
+        receiver: StreamReceiver<InputItem>,
         ctx: &mut ActorContext,
     ) -> Reply;
 }
@@ -222,22 +229,22 @@ pub trait ReduceHandler<Item: Send + 'static, Reply: Send + 'static>: Actor {
 /// called to allow final items to be emitted.
 ///
 /// Generic parameters:
-/// - `Item` — the type of items the caller streams to the actor.
-/// - `Output` — the type of items the actor pushes to the output stream.
+/// - `InputItem` — the type of items the caller streams to the actor.
+/// - `OutputItem` — the type of items the actor pushes to the output stream.
 #[async_trait]
-pub trait TransformHandler<Item: Send + 'static, Output: Send + 'static>: Actor {
+pub trait TransformHandler<InputItem: Send + 'static, OutputItem: Send + 'static>: Actor {
     /// Handle one input item. Push zero or more output items via `sender`.
     async fn handle_transform(
         &mut self,
-        item: Item,
-        sender: &StreamSender<Output>,
+        item: InputItem,
+        sender: &StreamSender<OutputItem>,
         ctx: &mut ActorContext,
     );
 
     /// Called when the input stream ends. Optionally push final items.
     async fn on_transform_complete(
         &mut self,
-        sender: &StreamSender<Output>,
+        sender: &StreamSender<OutputItem>,
         ctx: &mut ActorContext,
     ) {
         let _ = (sender, ctx);
@@ -322,16 +329,17 @@ pub trait ActorRef<A: Actor>: Clone + Send + Sync + 'static {
     /// for remote actors). `None` means unbatched per-item delivery.
     ///
     /// Pass a [`CancellationToken`] to cooperatively cancel the stream.
-    fn expand<M>(
+    fn expand<M, OutputItem>(
         &self,
         msg: M,
         buffer: usize,
         batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
-    ) -> Result<BoxStream<M::Reply>, ActorSendError>
+    ) -> Result<BoxStream<OutputItem>, ActorSendError>
     where
-        A: ExpandHandler<M>,
-        M: Message;
+        A: ExpandHandler<M, OutputItem>,
+        M: Send + 'static,
+        OutputItem: Send + 'static;
 
     /// Client-streaming (feed): stream items to the actor and receive a reply.
     ///
@@ -345,16 +353,16 @@ pub trait ActorRef<A: Actor>: Clone + Send + Sync + 'static {
     /// Pass a [`CancellationToken`] to cooperatively cancel the feed.
     ///
     /// Usage: `let reply = actor.reduce::<u64, u64>(input, 8, None, None)?.await?;`
-    fn reduce<Item, Reply>(
+    fn reduce<InputItem, Reply>(
         &self,
-        input: BoxStream<Item>,
+        input: BoxStream<InputItem>,
         buffer: usize,
         batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
     ) -> Result<AskReply<Reply>, ActorSendError>
     where
-        A: ReduceHandler<Item, Reply>,
-        Item: Send + 'static,
+        A: ReduceHandler<InputItem, Reply>,
+        InputItem: Send + 'static,
         Reply: Send + 'static;
 
     /// Transform: stream items to the actor and receive a stream of outputs.
@@ -372,16 +380,16 @@ pub trait ActorRef<A: Actor>: Clone + Send + Sync + 'static {
     /// ```ignore
     /// let output: BoxStream<String> = actor.transform::<i32, String>(input, 8, None)?;
     /// ```
-    fn transform<Item, Output>(
+    fn transform<InputItem, OutputItem>(
         &self,
-        input: BoxStream<Item>,
+        input: BoxStream<InputItem>,
         buffer: usize,
         cancel: Option<CancellationToken>,
-    ) -> Result<BoxStream<Output>, ActorSendError>
+    ) -> Result<BoxStream<OutputItem>, ActorSendError>
     where
-        A: TransformHandler<Item, Output>,
-        Item: Send + 'static,
-        Output: Send + 'static;
+        A: TransformHandler<InputItem, OutputItem>,
+        InputItem: Send + 'static,
+        OutputItem: Send + 'static;
 }
 
 /// Create a [`CancellationToken`] that automatically cancels after the given duration.

@@ -31,7 +31,7 @@ impl Actor for NumberServer {
 }
 
 #[async_trait]
-impl ExpandHandler<GetNumbers> for NumberServer {
+impl ExpandHandler<GetNumbers, u64> for NumberServer {
     async fn handle_expand(
         &mut self,
         _msg: GetNumbers,

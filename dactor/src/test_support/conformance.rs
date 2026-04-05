@@ -87,7 +87,7 @@ impl Message for StreamNumbers {
 }
 
 #[async_trait]
-impl ExpandHandler<StreamNumbers> for ConformanceStreamer {
+impl ExpandHandler<StreamNumbers, u64> for ConformanceStreamer {
     async fn handle_expand(
         &mut self,
         msg: StreamNumbers,

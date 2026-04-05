@@ -272,47 +272,48 @@ impl<A: Actor, R: ActorRef<A>> ActorRef<A> for PoolRef<A, R> {
         self.select_worker().ask(msg, cancel)
     }
 
-    fn expand<M>(
+    fn expand<M, OutputItem>(
         &self,
         msg: M,
         buffer: usize,
         batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
-    ) -> Result<BoxStream<M::Reply>, ActorSendError>
+    ) -> Result<BoxStream<OutputItem>, ActorSendError>
     where
-        A: ExpandHandler<M>,
-        M: Message,
+        A: ExpandHandler<M, OutputItem>,
+        M: Send + 'static,
+        OutputItem: Send + 'static,
     {
         self.select_worker()
             .expand(msg, buffer, batch_config, cancel)
     }
 
-    fn reduce<Item, Reply>(
+    fn reduce<InputItem, Reply>(
         &self,
-        input: BoxStream<Item>,
+        input: BoxStream<InputItem>,
         buffer: usize,
         batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
     ) -> Result<AskReply<Reply>, ActorSendError>
     where
-        A: ReduceHandler<Item, Reply>,
-        Item: Send + 'static,
+        A: ReduceHandler<InputItem, Reply>,
+        InputItem: Send + 'static,
         Reply: Send + 'static,
     {
         self.select_worker()
             .reduce(input, buffer, batch_config, cancel)
     }
 
-    fn transform<Item, Output>(
+    fn transform<InputItem, OutputItem>(
         &self,
-        input: BoxStream<Item>,
+        input: BoxStream<InputItem>,
         buffer: usize,
         cancel: Option<CancellationToken>,
-    ) -> Result<BoxStream<Output>, ActorSendError>
+    ) -> Result<BoxStream<OutputItem>, ActorSendError>
     where
-        A: TransformHandler<Item, Output>,
-        Item: Send + 'static,
-        Output: Send + 'static,
+        A: TransformHandler<InputItem, OutputItem>,
+        InputItem: Send + 'static,
+        OutputItem: Send + 'static,
     {
         self.select_worker().transform(input, buffer, cancel)
     }

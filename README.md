@@ -136,7 +136,7 @@ async fn main() {
 | `Actor` | Core trait with `create()`, `on_start()`, `on_stop()`, `on_error()` |
 | `Handler<M>` | Per-message handler — `async fn handle(&mut self, msg, ctx) -> M::Reply` |
 | `ExpandHandler<M>` | Server-streaming handler — sends items via `StreamSender` |
-| `ReduceHandler<Item, Reply>` | Client-streaming handler — receives `StreamReceiver<Item>`, returns `Reply` |
+| `ReduceHandler<InputItem, Reply>` | Client-streaming handler — receives `StreamReceiver<InputItem>`, returns `Reply` |
 | `PersistentActor` | Base persistence trait with `persistence_id()` and recovery hooks |
 | `EventSourced` | Event-sourcing — `apply()`, `persist()`, `snapshot()`, `restore_snapshot()` |
 | `DurableState` | Durable-state — `save_state()`, `restore_state()` |
