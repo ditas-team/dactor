@@ -546,7 +546,7 @@ messages.
 | NA6 | Kameo native WatchManager | `kameo::Actor` impl wrapping `WatchManager` | ✅ PR #84 |
 | NA7 | Kameo native CancelManager | `kameo::Actor` impl wrapping `CancelManager` | ✅ PR #84 |
 | NA8 | Kameo native NodeDirectory | `kameo::Actor` impl wrapping `NodeDirectory` | ✅ PR #84 |
-| NA9 | Runtime auto-start | Each adapter runtime spawns its system actors during `new()` and holds refs | 🔲 Not started |
+| NA9 | Runtime auto-start | Each adapter runtime spawns its system actors during `new()` and holds refs | ✅ PR #85 |
 | NA10 | Transport routing | Incoming `WireEnvelope` with system message types routed to the correct system actor mailbox | 🔲 Not started |
 
 ### Design Notes

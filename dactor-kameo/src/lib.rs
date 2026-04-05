@@ -46,7 +46,7 @@ pub mod runtime;
 pub mod system_actors;
 
 pub use cluster::KameoClusterEvents;
-pub use runtime::{KameoActorRef, KameoRuntime, SpawnOptions};
+pub use runtime::{KameoActorRef, KameoRuntime, KameoSystemActorRefs, SpawnOptions};
 pub use system_actors::{
     CancelManagerActor, NodeDirectoryActor, SpawnManagerActor, WatchManagerActor,
 };

@@ -155,15 +155,15 @@ async fn conformance_rapid_stop_and_send() {
 // Kameo-specific: re-exports & default
 // ---------------------------------------------------------------------------
 
-#[test]
-fn reexports_core_types() {
+#[tokio::test]
+async fn reexports_core_types() {
     let _ = dactor_kameo::dactor::NodeId("1".into());
     let _rt = dactor_kameo::KameoRuntime::new();
     let _events = dactor_kameo::KameoClusterEvents::new();
 }
 
-#[test]
-fn runtime_is_default() {
+#[tokio::test]
+async fn runtime_is_default() {
     let _rt = KameoRuntime::default();
 }
 

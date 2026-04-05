@@ -46,7 +46,7 @@ pub mod runtime;
 pub mod system_actors;
 
 pub use cluster::RactorClusterEvents;
-pub use runtime::{RactorActorRef, RactorRuntime, SpawnOptions};
+pub use runtime::{RactorActorRef, RactorRuntime, RactorSystemActorRefs, SpawnOptions};
 pub use system_actors::{
     CancelManagerActor, NodeDirectoryActor, SpawnManagerActor, WatchManagerActor,
 };

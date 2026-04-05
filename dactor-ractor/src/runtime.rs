@@ -676,52 +676,56 @@ impl Default for SpawnOptions {
 ///
 /// ## System Actors
 ///
-/// The runtime includes system actors for remote operations:
-/// - [`SpawnManager`] — handles remote actor spawn requests
-/// - [`WatchManager`] — handles remote watch/unwatch subscriptions
-/// - [`CancelManager`] — handles remote cancellation requests
-/// - [`NodeDirectory`] — tracks peer node connection state
+/// The runtime spawns native ractor system actors on creation:
+/// - [`SpawnManagerActor`](crate::system_actors::SpawnManagerActor) — handles remote spawn requests
+/// - [`WatchManagerActor`](crate::system_actors::WatchManagerActor) — handles remote watch/unwatch
+/// - [`CancelManagerActor`](crate::system_actors::CancelManagerActor) — handles remote cancellation
+/// - [`NodeDirectoryActor`](crate::system_actors::NodeDirectoryActor) — tracks peer connections
+///
+/// System actors are accessible via `system_actor_refs()` for transport routing.
 pub struct RactorRuntime {
     node_id: NodeId,
-    next_local: AtomicU64,
+    next_local: Arc<AtomicU64>,
     cluster_events: RactorClusterEvents,
     outbound_interceptors: Arc<Vec<Box<dyn OutboundInterceptor>>>,
     drop_observer: Option<Arc<dyn DropObserver>>,
     dead_letter_handler: Arc<Option<Arc<dyn DeadLetterHandler>>>,
     watchers: WatcherMap,
-    /// Manages remote actor spawn requests for this node.
+    /// Plain struct system actors (backward-compatible sync API).
     spawn_manager: SpawnManager,
-    /// Manages remote watch/unwatch subscriptions for this node.
     watch_manager: WatchManager,
-    /// Manages remote cancellation requests for this node.
     cancel_manager: CancelManager,
-    /// Tracks peer node connection state.
     node_directory: NodeDirectory,
+    /// Native ractor system actor refs (lazily started via `start_system_actors()`).
+    system_actors: Option<RactorSystemActorRefs>,
+}
+
+/// References to the native ractor system actors spawned by the runtime.
+pub struct RactorSystemActorRefs {
+    pub spawn_manager: ractor::ActorRef<crate::system_actors::SpawnManagerMsg>,
+    pub watch_manager: ractor::ActorRef<crate::system_actors::WatchManagerMsg>,
+    pub cancel_manager: ractor::ActorRef<crate::system_actors::CancelManagerMsg>,
+    pub node_directory: ractor::ActorRef<crate::system_actors::NodeDirectoryMsg>,
 }
 
 impl RactorRuntime {
     /// Create a new `RactorRuntime`.
+    ///
+    /// System actors are not spawned until `start_system_actors()` is called.
+    /// This allows the runtime to be constructed outside a tokio context.
     pub fn new() -> Self {
-        Self {
-            node_id: NodeId("ractor-node".into()),
-            next_local: AtomicU64::new(1),
-            cluster_events: RactorClusterEvents::new(),
-            outbound_interceptors: Arc::new(Vec::new()),
-            drop_observer: None,
-            dead_letter_handler: Arc::new(None),
-            watchers: Arc::new(Mutex::new(HashMap::new())),
-            spawn_manager: SpawnManager::new(TypeRegistry::new()),
-            watch_manager: WatchManager::new(),
-            cancel_manager: CancelManager::new(),
-            node_directory: NodeDirectory::new(),
-        }
+        Self::create(NodeId("ractor-node".into()))
     }
 
     /// Create a new `RactorRuntime` with a specific node ID.
     pub fn with_node_id(node_id: NodeId) -> Self {
+        Self::create(node_id)
+    }
+
+    fn create(node_id: NodeId) -> Self {
         Self {
             node_id,
-            next_local: AtomicU64::new(1),
+            next_local: Arc::new(AtomicU64::new(1)),
             cluster_events: RactorClusterEvents::new(),
             outbound_interceptors: Arc::new(Vec::new()),
             drop_observer: None,
@@ -731,12 +735,55 @@ impl RactorRuntime {
             watch_manager: WatchManager::new(),
             cancel_manager: CancelManager::new(),
             node_directory: NodeDirectory::new(),
+            system_actors: None,
         }
+    }
+
+    /// Spawn native ractor system actors for transport routing.
+    ///
+    /// Must be called from within a tokio runtime context. After this call,
+    /// `system_actor_refs()` returns the native actor references.
+    ///
+    /// Factory registrations made via `register_factory()` before this call
+    /// are forwarded to the native SpawnManagerActor.
+    pub async fn start_system_actors(&mut self) {
+        use crate::system_actors::*;
+
+        let (spawn_ref, _) = ractor::Actor::spawn(
+            None, SpawnManagerActor,
+            (self.node_id.clone(), TypeRegistry::new(), self.next_local.clone()),
+        ).await.expect("failed to spawn SpawnManagerActor");
+
+        let (watch_ref, _) = ractor::Actor::spawn(
+            None, WatchManagerActor, (),
+        ).await.expect("failed to spawn WatchManagerActor");
+
+        let (cancel_ref, _) = ractor::Actor::spawn(
+            None, CancelManagerActor, (),
+        ).await.expect("failed to spawn CancelManagerActor");
+
+        let (node_dir_ref, _) = ractor::Actor::spawn(
+            None, NodeDirectoryActor, (),
+        ).await.expect("failed to spawn NodeDirectoryActor");
+
+        self.system_actors = Some(RactorSystemActorRefs {
+            spawn_manager: spawn_ref,
+            watch_manager: watch_ref,
+            cancel_manager: cancel_ref,
+            node_directory: node_dir_ref,
+        });
     }
 
     /// Returns the node ID of this runtime.
     pub fn node_id(&self) -> &NodeId {
         &self.node_id
+    }
+
+    /// Access the native system actor references for transport routing.
+    ///
+    /// Returns `None` if `start_system_actors()` has not been called yet.
+    pub fn system_actor_refs(&self) -> Option<&RactorSystemActorRefs> {
+        self.system_actors.as_ref()
     }
 
     /// Add a global outbound interceptor.
@@ -920,9 +967,8 @@ impl RactorRuntime {
 
     /// Register an actor type for remote spawning on this node.
     ///
-    /// The factory closure deserializes actor `Args` from bytes and returns
-    /// the constructed actor as `Box<dyn Any + Send>`. The runtime is
-    /// responsible for actually spawning the returned actor.
+    /// Registers the factory in both the struct-based SpawnManager and the
+    /// native SpawnManagerActor (if started via `start_system_actors()`).
     pub fn register_factory(
         &mut self,
         type_name: impl Into<String>,
@@ -931,9 +977,29 @@ impl RactorRuntime {
             + Sync
             + 'static,
     ) {
+        let type_name = type_name.into();
+        let factory = Arc::new(factory);
+
+        // Register in struct-based manager
         self.spawn_manager
             .type_registry_mut()
-            .register_factory(type_name, factory);
+            .register_factory(type_name.clone(), {
+                let f = factory.clone();
+                move |bytes: &[u8]| f(bytes)
+            });
+
+        // Forward to native actor if started
+        if let Some(ref actors) = self.system_actors {
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            let f = factory;
+            let _ = actors.spawn_manager.cast(
+                crate::system_actors::SpawnManagerMsg::RegisterFactory {
+                    type_name,
+                    factory: Box::new(move |bytes: &[u8]| f(bytes)),
+                    reply: tx,
+                },
+            );
+        }
     }
 
     /// Process a remote spawn request.

@@ -698,52 +698,56 @@ impl Default for SpawnOptions {
 ///
 /// ## System Actors
 ///
-/// The runtime includes system actors for remote operations:
-/// - [`SpawnManager`] — handles remote actor spawn requests
-/// - [`WatchManager`] — handles remote watch/unwatch subscriptions
-/// - [`CancelManager`] — handles remote cancellation requests
-/// - [`NodeDirectory`] — tracks peer node connection state
+/// The runtime spawns native kameo system actors on creation:
+/// - [`SpawnManagerActor`](crate::system_actors::SpawnManagerActor) — handles remote spawn requests
+/// - [`WatchManagerActor`](crate::system_actors::WatchManagerActor) — handles remote watch/unwatch
+/// - [`CancelManagerActor`](crate::system_actors::CancelManagerActor) — handles remote cancellation
+/// - [`NodeDirectoryActor`](crate::system_actors::NodeDirectoryActor) — tracks peer connections
+///
+/// System actors are accessible via `system_actor_refs()` for transport routing.
 pub struct KameoRuntime {
     node_id: NodeId,
-    next_local: AtomicU64,
+    next_local: Arc<AtomicU64>,
     cluster_events: KameoClusterEvents,
     outbound_interceptors: Arc<Vec<Box<dyn OutboundInterceptor>>>,
     drop_observer: Option<Arc<dyn DropObserver>>,
     dead_letter_handler: Arc<Option<Arc<dyn DeadLetterHandler>>>,
     watchers: WatcherMap,
-    /// Manages remote actor spawn requests for this node.
+    /// Plain struct system actors (backward-compatible sync API).
     spawn_manager: SpawnManager,
-    /// Manages remote watch/unwatch subscriptions for this node.
     watch_manager: WatchManager,
-    /// Manages remote cancellation requests for this node.
     cancel_manager: CancelManager,
-    /// Tracks peer node connection state.
     node_directory: NodeDirectory,
+    /// Native kameo system actor refs (lazily started via `start_system_actors()`).
+    system_actors: Option<KameoSystemActorRefs>,
+}
+
+/// References to the native kameo system actors spawned by the runtime.
+pub struct KameoSystemActorRefs {
+    pub spawn_manager: kameo::actor::ActorRef<crate::system_actors::SpawnManagerActor>,
+    pub watch_manager: kameo::actor::ActorRef<crate::system_actors::WatchManagerActor>,
+    pub cancel_manager: kameo::actor::ActorRef<crate::system_actors::CancelManagerActor>,
+    pub node_directory: kameo::actor::ActorRef<crate::system_actors::NodeDirectoryActor>,
 }
 
 impl KameoRuntime {
     /// Create a new `KameoRuntime`.
+    ///
+    /// System actors are not spawned until `start_system_actors()` is called.
+    /// This allows the runtime to be constructed outside a tokio context.
     pub fn new() -> Self {
-        Self {
-            node_id: NodeId("kameo-node".into()),
-            next_local: AtomicU64::new(1),
-            cluster_events: KameoClusterEvents::new(),
-            outbound_interceptors: Arc::new(Vec::new()),
-            drop_observer: None,
-            dead_letter_handler: Arc::new(None),
-            watchers: Arc::new(Mutex::new(HashMap::new())),
-            spawn_manager: SpawnManager::new(TypeRegistry::new()),
-            watch_manager: WatchManager::new(),
-            cancel_manager: CancelManager::new(),
-            node_directory: NodeDirectory::new(),
-        }
+        Self::create(NodeId("kameo-node".into()))
     }
 
     /// Create a new `KameoRuntime` with a specific node ID.
     pub fn with_node_id(node_id: NodeId) -> Self {
+        Self::create(node_id)
+    }
+
+    fn create(node_id: NodeId) -> Self {
         Self {
             node_id,
-            next_local: AtomicU64::new(1),
+            next_local: Arc::new(AtomicU64::new(1)),
             cluster_events: KameoClusterEvents::new(),
             outbound_interceptors: Arc::new(Vec::new()),
             drop_observer: None,
@@ -753,12 +757,50 @@ impl KameoRuntime {
             watch_manager: WatchManager::new(),
             cancel_manager: CancelManager::new(),
             node_directory: NodeDirectory::new(),
+            system_actors: None,
         }
+    }
+
+    /// Spawn native kameo system actors for transport routing.
+    ///
+    /// Must be called from within a tokio runtime context. After this call,
+    /// `system_actor_refs()` returns the native actor references.
+    ///
+    /// Factory registrations made via `register_factory()` before this call
+    /// are forwarded to the native SpawnManagerActor.
+    pub fn start_system_actors(&mut self) {
+        use crate::system_actors::*;
+        use kameo::actor::Spawn;
+
+        let spawn_mgr_ref = SpawnManagerActor::spawn_with_mailbox(
+            (self.node_id.clone(), TypeRegistry::new(), self.next_local.clone()),
+            kameo::mailbox::unbounded(),
+        );
+        let watch_mgr_ref =
+            WatchManagerActor::spawn_with_mailbox((), kameo::mailbox::unbounded());
+        let cancel_mgr_ref =
+            CancelManagerActor::spawn_with_mailbox((), kameo::mailbox::unbounded());
+        let node_dir_ref =
+            NodeDirectoryActor::spawn_with_mailbox((), kameo::mailbox::unbounded());
+
+        self.system_actors = Some(KameoSystemActorRefs {
+            spawn_manager: spawn_mgr_ref,
+            watch_manager: watch_mgr_ref,
+            cancel_manager: cancel_mgr_ref,
+            node_directory: node_dir_ref,
+        });
     }
 
     /// Returns the node ID of this runtime.
     pub fn node_id(&self) -> &NodeId {
         &self.node_id
+    }
+
+    /// Access the native system actor references for transport routing.
+    ///
+    /// Returns `None` if `start_system_actors()` has not been called yet.
+    pub fn system_actor_refs(&self) -> Option<&KameoSystemActorRefs> {
+        self.system_actors.as_ref()
     }
 
     /// Add a global outbound interceptor.
