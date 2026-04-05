@@ -43,9 +43,13 @@
 
 pub mod cluster;
 pub mod runtime;
+pub mod system_actors;
 
 pub use cluster::CoerceClusterEvents;
-pub use runtime::{CoerceActorRef, CoerceRuntime, SpawnOptions};
+pub use runtime::{CoerceActorRef, CoerceRuntime, CoerceSystemActorRefs, SpawnOptions};
+pub use system_actors::{
+    CancelManagerActor, NodeDirectoryActor, SpawnManagerActor, WatchManagerActor,
+};
 
 // Re-export the core dactor crate for convenience.
 pub use dactor;

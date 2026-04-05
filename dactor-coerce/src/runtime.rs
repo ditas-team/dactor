@@ -651,6 +651,14 @@ impl Default for SpawnOptions {
 // CoerceRuntime
 // ---------------------------------------------------------------------------
 
+/// References to the native coerce system actors spawned by the runtime.
+pub struct CoerceSystemActorRefs {
+    pub spawn_manager: LocalActorRef<crate::system_actors::SpawnManagerActor>,
+    pub watch_manager: LocalActorRef<crate::system_actors::WatchManagerActor>,
+    pub cancel_manager: LocalActorRef<crate::system_actors::CancelManagerActor>,
+    pub node_directory: LocalActorRef<crate::system_actors::NodeDirectoryActor>,
+}
+
 /// A dactor v0.2 runtime backed by coerce-rs.
 ///
 /// Actors are spawned as real coerce actors. Messages are delivered through
@@ -668,6 +676,9 @@ impl Default for SpawnOptions {
 /// - [`WatchManager`] — handles remote watch/unwatch subscriptions
 /// - [`CancelManager`] — handles remote cancellation requests
 /// - [`NodeDirectory`] — tracks peer node connection state
+///
+/// Native coerce system actors are accessible via `system_actor_refs()` for
+/// transport routing after calling `start_system_actors()`.
 pub struct CoerceRuntime {
     node_id: NodeId,
     next_local: Arc<AtomicU64>,
@@ -682,6 +693,8 @@ pub struct CoerceRuntime {
     watch_manager: WatchManager,
     cancel_manager: CancelManager,
     node_directory: NodeDirectory,
+    /// Native coerce system actor refs (lazily started via `start_system_actors()`).
+    system_actors: Option<CoerceSystemActorRefs>,
     /// Stop notification receivers for await_stop(), keyed by ActorId.
     stop_receivers: Arc<Mutex<HashMap<ActorId, tokio::sync::oneshot::Receiver<()>>>>,
 }
@@ -716,6 +729,7 @@ impl CoerceRuntime {
             watch_manager: WatchManager::new(),
             cancel_manager: CancelManager::new(),
             node_directory: NodeDirectory::new(),
+            system_actors: None,
             stop_receivers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -761,6 +775,75 @@ impl CoerceRuntime {
     /// Access the cluster events subsystem.
     pub fn cluster_events(&self) -> &CoerceClusterEvents {
         &self.cluster_events
+    }
+
+    /// Spawn native coerce system actors for transport routing.
+    ///
+    /// Must be called from within a tokio runtime context. After this call,
+    /// `system_actor_refs()` returns the native actor references.
+    pub fn start_system_actors(&mut self) {
+        use crate::system_actors::*;
+
+        let spawn_mgr = SpawnManagerActor::new(
+            self.node_id.clone(),
+            TypeRegistry::new(),
+            self.next_local.clone(),
+        );
+        let watch_mgr = WatchManagerActor::new();
+        let cancel_mgr = CancelManagerActor::new();
+        let node_dir = NodeDirectoryActor::new();
+
+        let system = self.system.clone();
+        let spawn_mgr_ref = coerce::actor::scheduler::start_actor(
+            spawn_mgr,
+            coerce::actor::new_actor_id(),
+            coerce::actor::scheduler::ActorType::Tracked,
+            None,
+            Some(system.clone()),
+            None,
+            "dactor-spawn-manager".to_string().into(),
+        );
+        let watch_mgr_ref = coerce::actor::scheduler::start_actor(
+            watch_mgr,
+            coerce::actor::new_actor_id(),
+            coerce::actor::scheduler::ActorType::Tracked,
+            None,
+            Some(system.clone()),
+            None,
+            "dactor-watch-manager".to_string().into(),
+        );
+        let cancel_mgr_ref = coerce::actor::scheduler::start_actor(
+            cancel_mgr,
+            coerce::actor::new_actor_id(),
+            coerce::actor::scheduler::ActorType::Tracked,
+            None,
+            Some(system.clone()),
+            None,
+            "dactor-cancel-manager".to_string().into(),
+        );
+        let node_dir_ref = coerce::actor::scheduler::start_actor(
+            node_dir,
+            coerce::actor::new_actor_id(),
+            coerce::actor::scheduler::ActorType::Tracked,
+            None,
+            Some(system),
+            None,
+            "dactor-node-directory".to_string().into(),
+        );
+
+        self.system_actors = Some(CoerceSystemActorRefs {
+            spawn_manager: spawn_mgr_ref,
+            watch_manager: watch_mgr_ref,
+            cancel_manager: cancel_mgr_ref,
+            node_directory: node_dir_ref,
+        });
+    }
+
+    /// Access the native system actor references for transport routing.
+    ///
+    /// Returns `None` if `start_system_actors()` has not been called yet.
+    pub fn system_actor_refs(&self) -> Option<&CoerceSystemActorRefs> {
+        self.system_actors.as_ref()
     }
 
     /// Spawn an actor with `Deps = ()`.
@@ -907,9 +990,8 @@ impl CoerceRuntime {
 
     /// Register an actor type for remote spawning on this node.
     ///
-    /// The factory closure deserializes actor `Args` from bytes and returns
-    /// the constructed actor as `Box<dyn Any + Send>`. The runtime is
-    /// responsible for actually spawning the returned actor.
+    /// Registers the factory in both the struct-based SpawnManager and the
+    /// native SpawnManagerActor (if started via `start_system_actors()`).
     pub fn register_factory(
         &mut self,
         type_name: impl Into<String>,
@@ -918,9 +1000,27 @@ impl CoerceRuntime {
             + Sync
             + 'static,
     ) {
+        let type_name = type_name.into();
+        let factory = Arc::new(factory);
+
+        // Register in struct-based manager
         self.spawn_manager
             .type_registry_mut()
-            .register_factory(type_name, factory);
+            .register_factory(type_name.clone(), {
+                let f = factory.clone();
+                move |bytes: &[u8]| f(bytes)
+            });
+
+        // Forward to native actor if started
+        if let Some(ref actors) = self.system_actors {
+            let f = factory;
+            let _ = actors.spawn_manager.notify(
+                crate::system_actors::RegisterFactory {
+                    type_name,
+                    factory: Box::new(move |bytes: &[u8]| f(bytes)),
+                },
+            );
+        }
     }
 
     /// Process a remote spawn request.
