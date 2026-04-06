@@ -445,6 +445,19 @@ impl<A: Actor + Send + Sync> CoerceActorRef<A> {
             }));
         }
     }
+
+    /// Send a dispatch envelope through the bounded channel (if configured)
+    /// or directly to the coerce actor.
+    fn send_dispatch(&self, dispatch: Box<dyn Dispatch<A>>) -> Result<(), ActorSendError> {
+        let dactor_msg = DactorMsg::new(dispatch);
+        if let Some(ref btx) = self.bounded_tx {
+            btx.try_send(dactor_msg)
+        } else {
+            self.inner
+                .notify(dactor_msg)
+                .map_err(|e| ActorSendError(e.to_string()))
+        }
+    }
 }
 
 impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
@@ -458,7 +471,7 @@ impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
 
     fn is_alive(&self) -> bool {
         if let Some(ref btx) = self.bounded_tx {
-            !btx.is_closed()
+            !btx.is_closed() && self.inner.is_valid()
         } else {
             self.inner.is_valid()
         }
@@ -490,13 +503,7 @@ impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
         }
 
         let dispatch: Box<dyn Dispatch<A>> = Box::new(TypedDispatch { msg });
-        let dactor_msg = DactorMsg::new(dispatch);
-        let send_result = if let Some(ref btx) = self.bounded_tx {
-            btx.try_send(dactor_msg)
-        } else {
-            self.inner.notify(dactor_msg).map_err(|e| ActorSendError(e.to_string()))
-        };
-        send_result.map_err(|e| {
+        self.send_dispatch(dispatch).map_err(|e| {
             let reason = if e.0.contains("full") {
                 DeadLetterReason::MailboxFull
             } else {
@@ -556,13 +563,7 @@ impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
             reply_tx: tx,
             cancel,
         });
-        let dactor_msg = DactorMsg::new(dispatch);
-        let send_result = if let Some(ref btx) = self.bounded_tx {
-            btx.try_send(dactor_msg)
-        } else {
-            self.inner.notify(dactor_msg).map_err(|e| ActorSendError(e.to_string()))
-        };
-        send_result.map_err(|e| {
+        self.send_dispatch(dispatch).map_err(|e| {
             let reason = if e.0.contains("full") {
                 DeadLetterReason::MailboxFull
             } else {
@@ -618,9 +619,7 @@ impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
             sender,
             cancel,
         });
-        self.inner
-            .notify(DactorMsg::new(dispatch))
-            .map_err(|e| ActorSendError(e.to_string()))?;
+        self.send_dispatch(dispatch)?;
 
         match batch_config {
             Some(batch_config) => {
@@ -697,9 +696,7 @@ impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
             reply_tx,
             cancel: cancel.clone(),
         });
-        self.inner
-            .notify(DactorMsg::new(dispatch))
-            .map_err(|e| ActorSendError(e.to_string()))?;
+        self.send_dispatch(dispatch)?;
 
         let pipeline = self.outbound_pipeline();
         match batch_config {
@@ -750,9 +747,7 @@ impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
             sender,
             cancel.clone(),
         ));
-        self.inner
-            .notify(DactorMsg::new(dispatch))
-            .map_err(|e| ActorSendError(e.to_string()))?;
+        self.send_dispatch(dispatch)?;
 
         let pipeline = self.outbound_pipeline();
         spawn_transform_drain(
