@@ -66,7 +66,7 @@ impl TestNode {
     }
 
     pub async fn run(self) -> Result<(), Box<dyn std::error::Error>> {
-        let addr = format!("0.0.0.0:{}", self.config.control_port).parse()?;
+        let addr = format!("127.0.0.1:{}", self.config.control_port).parse()?;
         let node_id = self.config.node_id.clone();
         let shutdown_notify = self.shutdown_notify.clone();
 
@@ -117,8 +117,8 @@ impl TestNodeService for TestNode {
         Ok(Response::new(NodeInfoResponse {
             node_id: self.config.node_id.clone(),
             uptime_ms: self.start_time.elapsed().as_millis() as u64,
-            adapter: if self.handler.is_some() {
-                "ractor".to_string()
+            adapter: if let Some(ref handler) = self.handler {
+                handler.adapter_name().to_string()
             } else {
                 "none".to_string()
             },

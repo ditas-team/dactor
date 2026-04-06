@@ -244,10 +244,10 @@ impl TestClusterBuilder {
     /// Build and launch all nodes. Waits for each node to become reachable.
     /// Panics if any node fails to start or connect within the retry window.
     pub async fn build(self) -> TestCluster {
-        let mut nodes = HashMap::new();
+        let mut nodes: HashMap<String, TestNodeHandle> = HashMap::new();
 
         for (node_id, binary, args, port) in self.nodes {
-            let process = Command::new(&binary)
+            let mut process = Command::new(&binary)
                 .args(&args)
                 .env("DACTOR_NODE_ID", &node_id)
                 .env("DACTOR_CONTROL_PORT", port.to_string())
@@ -255,6 +255,11 @@ impl TestClusterBuilder {
                 .stderr(Stdio::null())
                 .spawn()
                 .unwrap_or_else(|e| {
+                    // Kill already-spawned nodes before panicking
+                    for (_, handle) in nodes.iter_mut() {
+                        let _ = handle.process.kill();
+                        let _ = handle.process.wait();
+                    }
                     panic!(
                         "Failed to launch test node '{}' ({}): {}",
                         node_id, binary, e
@@ -276,6 +281,13 @@ impl TestClusterBuilder {
             }
 
             if client.is_none() {
+                // Kill this process and all already-spawned nodes before panicking
+                let _ = process.kill();
+                let _ = process.wait();
+                for (_, handle) in nodes.iter_mut() {
+                    let _ = handle.process.kill();
+                    let _ = handle.process.wait();
+                }
                 panic!(
                     "Failed to connect to test node '{}' at {} after 5s of retries",
                     node_id, addr

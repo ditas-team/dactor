@@ -4,6 +4,7 @@
 //! manages a simple counter actor via the `dactor-ractor` runtime.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -79,6 +80,7 @@ impl Handler<ChildTerminated> for CounterActor {
 struct RactorCommandHandler {
     runtime: RactorRuntime,
     actors: Mutex<HashMap<String, RactorActorRef<CounterActor>>>,
+    live_count: AtomicU32,
 }
 
 impl RactorCommandHandler {
@@ -86,12 +88,17 @@ impl RactorCommandHandler {
         Self {
             runtime,
             actors: Mutex::new(HashMap::new()),
+            live_count: AtomicU32::new(0),
         }
     }
 }
 
 #[async_trait]
 impl CommandHandler for RactorCommandHandler {
+    fn adapter_name(&self) -> &str {
+        "ractor"
+    }
+
     async fn spawn_actor(
         &self,
         actor_type: &str,
@@ -119,6 +126,7 @@ impl CommandHandler for RactorCommandHandler {
             .lock()
             .await
             .insert(actor_name.to_string(), actor_ref);
+        self.live_count.fetch_add(1, Ordering::Relaxed);
         Ok(id)
     }
 
@@ -128,10 +136,13 @@ impl CommandHandler for RactorCommandHandler {
         message_type: &str,
         payload: &[u8],
     ) -> Result<(), String> {
-        let actors = self.actors.lock().await;
-        let actor_ref = actors
-            .get(actor_name)
-            .ok_or_else(|| format!("actor '{}' not found", actor_name))?;
+        let actor_ref = {
+            let actors = self.actors.lock().await;
+            actors
+                .get(actor_name)
+                .ok_or_else(|| format!("actor '{}' not found", actor_name))?
+                .clone()
+        };
 
         match message_type {
             "increment" => {
@@ -154,10 +165,13 @@ impl CommandHandler for RactorCommandHandler {
         message_type: &str,
         _payload: &[u8],
     ) -> Result<Vec<u8>, String> {
-        let actors = self.actors.lock().await;
-        let actor_ref = actors
-            .get(actor_name)
-            .ok_or_else(|| format!("actor '{}' not found", actor_name))?;
+        let actor_ref = {
+            let actors = self.actors.lock().await;
+            actors
+                .get(actor_name)
+                .ok_or_else(|| format!("actor '{}' not found", actor_name))?
+                .clone()
+        };
 
         match message_type {
             "get_count" => {
@@ -172,23 +186,26 @@ impl CommandHandler for RactorCommandHandler {
     }
 
     async fn stop_actor(&self, actor_name: &str) -> Result<(), String> {
-        let mut actors = self.actors.lock().await;
-        let actor_ref = actors
-            .remove(actor_name)
-            .ok_or_else(|| format!("actor '{}' not found", actor_name))?;
+        let actor_ref = {
+            let mut actors = self.actors.lock().await;
+            actors
+                .remove(actor_name)
+                .ok_or_else(|| format!("actor '{}' not found", actor_name))?
+        };
         actor_ref.stop();
-        // Give ractor a moment to process the stop
-        drop(actors);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Wait for actor to actually terminate (up to 1s)
+        for _ in 0..100 {
+            if !actor_ref.is_alive() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        self.live_count.fetch_sub(1, Ordering::Relaxed);
         Ok(())
     }
 
     fn actor_count(&self) -> u32 {
-        // Use try_lock to avoid blocking in sync context
-        self.actors
-            .try_lock()
-            .map(|a| a.values().filter(|r| r.is_alive()).count() as u32)
-            .unwrap_or(0)
+        self.live_count.load(Ordering::Relaxed)
     }
 }
 

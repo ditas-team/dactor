@@ -10,6 +10,9 @@
 /// Implementations should be thread-safe and maintain their own actor registry.
 #[async_trait::async_trait]
 pub trait CommandHandler: Send + Sync + 'static {
+    /// Human-readable adapter name (e.g. "ractor", "kameo", "coerce").
+    fn adapter_name(&self) -> &str;
+
     /// Spawn an actor of the given type with the given name.
     /// Returns the actor ID on success.
     async fn spawn_actor(
