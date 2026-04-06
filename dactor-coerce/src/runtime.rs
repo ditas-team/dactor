@@ -331,13 +331,68 @@ impl<A: Actor + Send + Sync + 'static> CoerceHandler<DactorMsg<A>> for CoerceDac
 ///
 /// Messages are delivered through coerce's mailbox as type-erased dispatch
 /// envelopes, enabling multiple `Handler<M>` impls per actor.
+///
+/// When configured with [`MailboxConfig::Bounded`], a bounded `mpsc` channel
+/// sits in front of the coerce actor.  A forwarding task drains the channel
+/// and delivers messages to coerce, providing backpressure / overflow control
+/// at the dactor level while coerce's internal mailbox remains unbounded.
 pub struct CoerceActorRef<A: Actor + Send + Sync + 'static> {
     id: ActorId,
     name: String,
     inner: LocalActorRef<CoerceDactorActor<A>>,
+    /// When Some, sends go through this bounded channel (a forwarder task
+    /// drains it into `inner`).  When None, sends go directly to `inner`.
+    bounded_tx: Option<BoundedMailboxSender<A>>,
     outbound_interceptors: Arc<Vec<Box<dyn OutboundInterceptor>>>,
     drop_observer: Option<Arc<dyn DropObserver>>,
     dead_letter_handler: Arc<Option<Arc<dyn DeadLetterHandler>>>,
+}
+
+/// Bounded mailbox sender with overflow strategy.
+struct BoundedMailboxSender<A: Actor + Send + Sync + 'static> {
+    tx: tokio::sync::mpsc::Sender<DactorMsg<A>>,
+    overflow: dactor::mailbox::OverflowStrategy,
+}
+
+impl<A: Actor + Send + Sync + 'static> Clone for BoundedMailboxSender<A> {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            overflow: self.overflow,
+        }
+    }
+}
+
+impl<A: Actor + Send + Sync + 'static> BoundedMailboxSender<A> {
+    fn try_send(&self, msg: DactorMsg<A>) -> Result<(), ActorSendError> {
+        use dactor::mailbox::OverflowStrategy;
+        match self.tx.try_send(msg) {
+            Ok(()) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => match self.overflow {
+                OverflowStrategy::RejectWithError => {
+                    Err(ActorSendError("mailbox full".into()))
+                }
+                OverflowStrategy::DropNewest => Ok(()), // silently drop
+                OverflowStrategy::Block => {
+                    // Block not supported in sync tell — reject instead
+                    Err(ActorSendError(
+                        "mailbox full (Block not supported in sync tell)".into(),
+                    ))
+                }
+            },
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                Err(ActorSendError("actor stopped".into()))
+            }
+        }
+    }
+
+    fn is_closed(&self) -> bool {
+        self.tx.is_closed()
+    }
+
+    fn pending(&self) -> usize {
+        self.tx.max_capacity() - self.tx.capacity()
+    }
 }
 
 impl<A: Actor + Send + Sync + 'static> Clone for CoerceActorRef<A> {
@@ -346,6 +401,7 @@ impl<A: Actor + Send + Sync + 'static> Clone for CoerceActorRef<A> {
             id: self.id.clone(),
             name: self.name.clone(),
             inner: self.inner.clone(),
+            bounded_tx: self.bounded_tx.clone(),
             outbound_interceptors: self.outbound_interceptors.clone(),
             drop_observer: self.drop_observer.clone(),
             dead_letter_handler: self.dead_letter_handler.clone(),
@@ -401,7 +457,19 @@ impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
     }
 
     fn is_alive(&self) -> bool {
-        self.inner.is_valid()
+        if let Some(ref btx) = self.bounded_tx {
+            !btx.is_closed()
+        } else {
+            self.inner.is_valid()
+        }
+    }
+
+    fn pending_messages(&self) -> usize {
+        if let Some(ref btx) = self.bounded_tx {
+            btx.pending()
+        } else {
+            0 // unbounded — no depth info
+        }
     }
 
     fn stop(&self) {
@@ -422,13 +490,24 @@ impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
         }
 
         let dispatch: Box<dyn Dispatch<A>> = Box::new(TypedDispatch { msg });
-        self.inner.notify(DactorMsg::new(dispatch)).map_err(|e| {
+        let dactor_msg = DactorMsg::new(dispatch);
+        let send_result = if let Some(ref btx) = self.bounded_tx {
+            btx.try_send(dactor_msg)
+        } else {
+            self.inner.notify(dactor_msg).map_err(|e| ActorSendError(e.to_string()))
+        };
+        send_result.map_err(|e| {
+            let reason = if e.0.contains("full") {
+                DeadLetterReason::MailboxFull
+            } else {
+                DeadLetterReason::ActorStopped
+            };
             self.notify_dead_letter(
                 std::any::type_name::<M>(),
                 SendMode::Tell,
-                DeadLetterReason::ActorStopped,
+                reason,
             );
-            ActorSendError(e.to_string())
+            e
         })
     }
 
@@ -477,13 +556,24 @@ impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
             reply_tx: tx,
             cancel,
         });
-        self.inner.notify(DactorMsg::new(dispatch)).map_err(|e| {
+        let dactor_msg = DactorMsg::new(dispatch);
+        let send_result = if let Some(ref btx) = self.bounded_tx {
+            btx.try_send(dactor_msg)
+        } else {
+            self.inner.notify(dactor_msg).map_err(|e| ActorSendError(e.to_string()))
+        };
+        send_result.map_err(|e| {
+            let reason = if e.0.contains("full") {
+                DeadLetterReason::MailboxFull
+            } else {
+                DeadLetterReason::ActorStopped
+            };
             self.notify_dead_letter(
                 std::any::type_name::<M>(),
                 SendMode::Ask,
-                DeadLetterReason::ActorStopped,
+                reason,
             );
-            ActorSendError(e.to_string())
+            e
         })?;
         Ok(AskReply::new(rx))
     }
@@ -694,8 +784,10 @@ pub struct SpawnOptions {
     pub interceptors: Vec<Box<dyn InboundInterceptor>>,
     /// Mailbox capacity configuration.
     ///
-    /// **Note:** The coerce adapter currently only supports unbounded mailboxes.
-    /// Setting `Bounded` will log a warning and fall back to unbounded.
+    /// When [`Bounded`](MailboxConfig::Bounded), a bounded `mpsc` channel is
+    /// placed in front of the coerce actor to enforce backpressure.  The
+    /// [`OverflowStrategy`](dactor::mailbox::OverflowStrategy) controls what
+    /// happens when the channel is full.
     pub mailbox: MailboxConfig,
 }
 
@@ -913,7 +1005,7 @@ impl CoerceRuntime {
     where
         A: Actor<Deps = ()> + Send + Sync + 'static,
     {
-        Ok(self.spawn_internal::<A>(name, args, (), Vec::new()))
+        Ok(self.spawn_internal::<A>(name, args, (), Vec::new(), MailboxConfig::Unbounded))
     }
 
     /// Spawn an actor with explicit dependencies.
@@ -921,10 +1013,10 @@ impl CoerceRuntime {
     where
         A: Actor + Send + Sync + 'static,
     {
-        Ok(self.spawn_internal::<A>(name, args, deps, Vec::new()))
+        Ok(self.spawn_internal::<A>(name, args, deps, Vec::new(), MailboxConfig::Unbounded))
     }
 
-    /// Spawn an actor with spawn options (including inbound interceptors).
+    /// Spawn an actor with spawn options (including inbound interceptors and mailbox config).
     pub async fn spawn_with_options<A>(
         &self,
         name: &str,
@@ -934,10 +1026,7 @@ impl CoerceRuntime {
     where
         A: Actor<Deps = ()> + Send + Sync + 'static,
     {
-        if !matches!(options.mailbox, MailboxConfig::Unbounded) {
-            tracing::warn!("coerce adapter: bounded mailbox not yet implemented, using unbounded");
-        }
-        Ok(self.spawn_internal::<A>(name, args, (), options.interceptors))
+        Ok(self.spawn_internal::<A>(name, args, (), options.interceptors, options.mailbox))
     }
 
     fn spawn_internal<A>(
@@ -946,6 +1035,7 @@ impl CoerceRuntime {
         args: A::Args,
         deps: A::Deps,
         interceptors: Vec<Box<dyn InboundInterceptor>>,
+        mailbox: MailboxConfig,
     ) -> CoerceActorRef<A>
     where
         A: Actor + Send + Sync + 'static,
@@ -984,6 +1074,24 @@ impl CoerceRuntime {
             name.to_string().into(),
         );
 
+        // Set up optional bounded mailbox channel
+        let bounded_tx = match mailbox {
+            MailboxConfig::Bounded { capacity, overflow } => {
+                let (btx, mut brx) =
+                    tokio::sync::mpsc::channel::<DactorMsg<A>>(capacity);
+                let fwd_ref = coerce_ref.clone();
+                tokio::spawn(async move {
+                    while let Some(msg) = brx.recv().await {
+                        if fwd_ref.notify(msg).is_err() {
+                            break; // actor stopped
+                        }
+                    }
+                });
+                Some(BoundedMailboxSender { tx: btx, overflow })
+            }
+            MailboxConfig::Unbounded => None,
+        };
+
         // Store stop receiver for await_stop()
         self.stop_receivers
             .lock()
@@ -994,6 +1102,7 @@ impl CoerceRuntime {
             id: actor_id,
             name: actor_name,
             inner: coerce_ref,
+            bounded_tx,
             outbound_interceptors: self.outbound_interceptors.clone(),
             drop_observer: self.drop_observer.clone(),
             dead_letter_handler: self.dead_letter_handler.clone(),
