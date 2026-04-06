@@ -370,41 +370,13 @@ pub struct KameoActorRef<A: Actor> {
     id: ActorId,
     name: String,
     inner: kameo::actor::ActorRef<KameoDactorActor<A>>,
-    bounded_tx: Option<BoundedMailboxSender<A>>,
+    bounded_tx: Option<BoundedMailboxSender<DactorMsg<A>>>,
     outbound_interceptors: Arc<Vec<Box<dyn OutboundInterceptor>>>,
     drop_observer: Option<Arc<dyn DropObserver>>,
     dead_letter_handler: Arc<Option<Arc<dyn DeadLetterHandler>>>,
 }
 
-/// Bounded mailbox sender with overflow strategy for kameo adapter.
-struct BoundedMailboxSender<A: Actor> {
-    tx: tokio::sync::mpsc::Sender<DactorMsg<A>>,
-    overflow: dactor::mailbox::OverflowStrategy,
-}
-
-impl<A: Actor> Clone for BoundedMailboxSender<A> {
-    fn clone(&self) -> Self {
-        Self { tx: self.tx.clone(), overflow: self.overflow }
-    }
-}
-
-impl<A: Actor> BoundedMailboxSender<A> {
-    fn try_send(&self, msg: DactorMsg<A>) -> Result<(), ActorSendError> {
-        use dactor::mailbox::OverflowStrategy;
-        match self.tx.try_send(msg) {
-            Ok(()) => Ok(()),
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => match self.overflow {
-                OverflowStrategy::RejectWithError => Err(ActorSendError("mailbox full".into())),
-                OverflowStrategy::DropNewest => Ok(()),
-                OverflowStrategy::Block => Err(ActorSendError("mailbox full (Block not supported in sync tell)".into())),
-            },
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Err(ActorSendError("actor stopped".into())),
-        }
-    }
-
-    fn is_closed(&self) -> bool { self.tx.is_closed() }
-    fn pending(&self) -> usize { self.tx.max_capacity() - self.tx.capacity() }
-}
+use dactor::runtime_support::BoundedMailboxSender;
 
 impl<A: Actor> Clone for KameoActorRef<A> {
     fn clone(&self) -> Self {
@@ -1090,7 +1062,7 @@ impl KameoRuntime {
                         }
                     }
                 });
-                Some(BoundedMailboxSender { tx: btx, overflow })
+                Some(BoundedMailboxSender::new(btx, overflow))
             }
             MailboxConfig::Unbounded => None,
         };

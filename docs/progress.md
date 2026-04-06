@@ -4,7 +4,7 @@
 
 ---
 
-## Current Status (PR #106)
+## Current Status (PR #110)
 - Phase 3: ✅ Complete (features, examples, conformance, batching)
 - Phase 4: ✅ Complete — R1-R6, R3b, R6b-c, S1-S4, SE1-SE5, C1-C5, P1-P3 all done
 - Phase 6: ✅ Complete (supervision, pools, timers, on_reply, AM1-AM7 all done)
@@ -14,15 +14,16 @@
 - Phase 10: ✅ Complete (JH1-JH5: lifecycle handles, await_stop, panic propagation)
 - Phase 11: ✅ Complete (AS1-AS5,AS7: async spawn, Result return, removed std::thread bridge)
 - Phase 12: ✅ Complete (CP1-CP10: coerce real actors, parity tests, mailbox config)
-- Phase 13: ✅ Complete (TF1-TF7: TransformHandler, N→M streaming, batch support)
+- Phase 13: ✅ Complete (TF1-TF7: TransformHandler, N→M streaming, batch support wired in all adapters)
 - Phase 14: ✅ Complete (BC1-BC9: BroadcastRef, tell/ask, receipts, pool integration, dead letters, tests)
 - AP6: ✅ Done (LeastLoaded pool routing + pending_messages trait method)
-- Zero clippy warnings, 714+ tests, all workspace tests pass
+- Bounded mailbox: ✅ All 3 adapters + TestRuntime; shared BoundedMailboxSender in runtime_support
+- Zero clippy warnings, 726+ tests, all workspace tests pass
 - Build: `cargo clippy --workspace --exclude dactor-test-harness --all-targets --all-features -- -D warnings`
 - Test: `cargo test --workspace --exclude dactor-test-harness --features test-support` (exclude test-harness due to protoc permission issue)
 - Next: see "Pending Work" section below
 
-### Session 2026-04-06 Summary (PRs #96, #98-#106)
+### Session 2026-04-06 Summary (PRs #96, #98-#110)
 - **BC1-BC5** (#96): BroadcastRef — tell/ask with timeout, receipts, dynamic membership
 - *PR #97 closed (superseded by #96 + #98)*
 - **BC5b** (#98): BroadcastRef review fixes — #[must_use], TellOutcome rename, RuntimeError::Send normalization, Default, contains()
@@ -34,6 +35,10 @@
 - **Progress** (#104): Update progress.md for session
 - **README** (#105): Update README with new features (transform, broadcast, groups, LeastLoaded)
 - **Adapter mailbox** (#106): Wire bounded mailbox for ractor and kameo adapters (same front-buffer pattern)
+- **Adapter docs** (#107): Update ractor/kameo implementation.md — bounded mailbox, async spawn, lifecycle handles
+- **Conformance** (#108): Add transform batch conformance tests across all 3 adapters
+- **Transform batch** (#109): Wire real BatchWriter/BatchReader into adapter transform() (was ignored)
+- **Refactor** (#110): Extract shared BoundedMailboxSender<T> into runtime_support (~120 lines eliminated)
 
 ### Key Design Decisions Made This Session
 - BroadcastRef is owned (non-shared), not Arc-wrapped — callers use &mut self for membership
@@ -41,8 +46,10 @@
 - Dead letter handler is optional Arc<dyn DeadLetterHandler> with catch_unwind for panic safety
 - LeastLoaded uses two-pass algorithm: find min, collect candidates, round-robin among ties
 - pending_messages() defaults to 0 on ActorRef trait — adapters override when mailbox depth is available
-- Coerce bounded mailbox uses front-buffer pattern: bounded mpsc → forwarder task → coerce unbounded
+- Bounded mailbox uses front-buffer pattern: bounded mpsc → forwarder task → adapter unbounded (all 3 adapters)
+- BoundedMailboxSender<T> extracted to shared runtime_support module (eliminates 3x duplication)
 - ProcessingGroup uses HashMap<ActorId, R> for O(1) membership; iteration order is not guaranteed
+- Transform batching wired into all 3 adapters (was previously ignored with _batch_config)
 - All PRs reviewed by 4 AI models (GPT-5.4, Gemini/Goldeneye, Claude Haiku 4.5, Claude Sonnet 4.5)
 
 ### Multi-Model Review Process

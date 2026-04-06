@@ -15,7 +15,75 @@ use crate::interceptor::{
 };
 use crate::message::{Headers, RuntimeHeaders};
 use crate::node::ActorId;
+use crate::errors::ActorSendError;
+use crate::mailbox::OverflowStrategy;
 use crate::stream::{BatchConfig, BatchReader, BatchWriter, BoxStream};
+
+// ---------------------------------------------------------------------------
+// BoundedMailboxSender
+// ---------------------------------------------------------------------------
+
+/// A bounded `mpsc` channel sender with configurable overflow strategy.
+///
+/// Used by adapter crates to place a capacity-limited front-buffer in front
+/// of the underlying actor's unbounded mailbox.  The adapter spawns a
+/// forwarding task that drains this channel and delivers messages to the
+/// real actor.
+///
+/// Generic over the message type `T` (typically `DactorMsg<A>`).
+pub struct BoundedMailboxSender<T: Send + 'static> {
+    tx: tokio::sync::mpsc::Sender<T>,
+    overflow: OverflowStrategy,
+}
+
+impl<T: Send + 'static> Clone for BoundedMailboxSender<T> {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            overflow: self.overflow,
+        }
+    }
+}
+
+impl<T: Send + 'static> BoundedMailboxSender<T> {
+    /// Create a new bounded mailbox sender.
+    pub fn new(tx: tokio::sync::mpsc::Sender<T>, overflow: OverflowStrategy) -> Self {
+        Self { tx, overflow }
+    }
+
+    /// Try to send a message, respecting the configured overflow strategy.
+    pub fn try_send(&self, msg: T) -> Result<(), ActorSendError> {
+        match self.tx.try_send(msg) {
+            Ok(()) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => match self.overflow {
+                OverflowStrategy::RejectWithError => {
+                    Err(ActorSendError("mailbox full".into()))
+                }
+                OverflowStrategy::DropNewest => Ok(()),
+                OverflowStrategy::Block => Err(ActorSendError(
+                    "mailbox full (Block not supported in sync tell)".into(),
+                )),
+            },
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                Err(ActorSendError("actor stopped".into()))
+            }
+        }
+    }
+
+    /// Check if the underlying channel is closed.
+    pub fn is_closed(&self) -> bool {
+        self.tx.is_closed()
+    }
+
+    /// Approximate number of messages pending in the bounded channel.
+    pub fn pending(&self) -> usize {
+        self.tx.max_capacity() - self.tx.capacity()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OutboundPipeline
+// ---------------------------------------------------------------------------
 
 /// Shared context for outbound pipeline operations.
 /// Bundle this once per ActorRef and pass to all helper functions.
