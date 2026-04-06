@@ -107,7 +107,7 @@ dactor's `on_start`) runs asynchronously on the tokio runtime.
 | Inbound interceptors | ✅ Full pipeline | ✅ Full pipeline | ✅ Full pipeline |
 | Watch/unwatch | ✅ | ✅ | ✅ WatcherMap |
 | Native system actors | ✅ | ✅ | ❌ Struct-based |
-| Bounded mailbox | ⚠️ Warning | ⚠️ Warning | ⚠️ Warning |
+| Bounded mailbox | ✅ Front-buffer | ✅ Front-buffer | ✅ Front-buffer |
 
 ## Limitations
 
@@ -115,5 +115,5 @@ dactor's `on_start`) runs asynchronously on the tokio runtime.
 |-----------|-------------|--------|
 | **Actors must be Send + Sync** | coerce::Actor requires Sync | Most actors satisfy this |
 | **No native system actors** | System actors are plain structs | No mailbox isolation |
-| **Unbounded mailbox only** | coerce uses unbounded mpsc internally | Cannot limit backpressure |
+| **Bounded mailbox is front-buffer** | Bounded mpsc sits in front of coerce's unbounded mailbox | Limits intake but forwarder drains as fast as possible |
 | **Requires tokio context** | ActorSystem::new() spawns internal actors | Must construct within tokio runtime |
