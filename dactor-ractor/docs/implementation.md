@@ -46,30 +46,24 @@ Multiple `Handler<M>` impls per actor are supported through a single
 
 ## Spawn Mechanism
 
-Ractor's `Actor::spawn()` is **async**, but dactor's spawn API is **sync**.
-The adapter bridges this with a dedicated OS thread:
+Both ractor's `Actor::spawn()` and dactor's spawn API are **async**
+(as of Phase 11: AS1).
 
 ```
-spawn_internal(&self, name, args, deps, interceptors)
+async spawn_internal(&self, name, args, deps, interceptors, mailbox)
     │
     ├─ Generate ActorId (next_local.fetch_add)
     ├─ Build RactorSpawnArgs
     │
-    ├─ std::thread::spawn ──────────────────────┐
-    │     handle.block_on(async {               │
-    │         ractor::Actor::spawn(...).await    │
-    │         tx.send(Ok((actor_ref, join_handle)))
-    │     })                                    │
-    │                                           │
-    ├─ rx.recv() ◄──────────────────────────────┘
-    │     (blocks calling thread until spawn completes)
+    ├─ ractor::Actor::spawn(name, wrapper, args).await
     │
-    ├─ Store JoinHandle in join_handles map
+    ├─ (Optional) Set up bounded mailbox:
+    │     ├─ Create bounded mpsc channel (capacity from MailboxConfig)
+    │     └─ Spawn forwarder task: brx.recv() → actor_ref.cast()
+    │
+    ├─ Store stop_rx in stop_receivers map (for await_stop)
     └─ Return RactorActorRef
 ```
-
-**Cost**: ~100μs per spawn (OS thread creation + channel round-trip).
-This will be eliminated when spawn becomes async (Phase 11: AS1).
 
 ## Message Dispatch
 
@@ -173,16 +167,16 @@ struct WatchEntry {
 
 ## Lifecycle Handles
 
-JoinHandles from `ractor::Actor::spawn` are stored in a map:
+Stop receivers are stored for `await_stop()` / panic propagation:
 
 ```rust
-join_handles: Arc<Mutex<HashMap<ActorId, JoinHandle<()>>>>
+stop_receivers: Arc<Mutex<HashMap<ActorId, oneshot::Receiver<Result<(), String>>>>>
 ```
 
-- `await_stop(id)` — removes and awaits the JoinHandle
-- `await_all()` — drains all handles, awaits all (collects first error)
-- `cleanup_finished()` — removes handles for actors that already stopped
-- `active_handle_count()` — number of stored handles (may include finished)
+- `await_stop(id)` — removes and awaits the oneshot receiver
+- `await_all()` — drains all receivers, awaits all (collects first error)
+- `cleanup_finished()` — removes receivers for actors that already stopped
+- `active_handle_count()` — number of stored receivers (may include finished)
 
 ## Native System Actors
 
@@ -203,9 +197,9 @@ System actors use ractor's `cast()` for fire-and-forget messages and
 
 | Limitation | Description | Planned Fix |
 |-----------|-------------|-------------|
-| **Bounded mailbox** | Only unbounded supported; bounded logs a warning | Phase 11 or provider-specific work |
+| **Bounded mailbox** | ✅ Front-buffer via bounded `mpsc` channel (PR #106) | — |
 | **Restart** | `ErrorAction::Restart` treated as `Resume` | Requires ractor restart mechanism |
-| **Sync spawn** | OS thread per spawn (~100μs overhead) | Phase 11: AS1 (async spawn) |
+| **Sync spawn** | ✅ Async spawn (Phase 11: AS1, PR #93) | — |
 | **Remote watch auto-wiring** | `notify_terminated()` must be called manually | NA10 (transport routing) |
 | **Global actor registry** | Named ractor actors use a global registry; name collisions across runtimes possible | Use `None` names or unique prefixes |
 | **Panic handling** | Handler panics caught via `catch_unwind`; may not catch all FFI panics | Inherent Rust limitation |

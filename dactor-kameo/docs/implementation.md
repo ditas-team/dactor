@@ -62,7 +62,8 @@ spawn_internal(&self, name, args, deps, interceptors)
     └─ Return KameoActorRef
 ```
 
-**No OS thread overhead** — this is a key advantage over the ractor adapter.
+**Spawn is synchronous** — kameo's `spawn_with_mailbox()` internally calls
+`tokio::spawn` and returns immediately (no async bridge needed).
 
 ## Message Dispatch
 
@@ -170,7 +171,7 @@ domain failures (unknown actor type) to handler errors.
 
 | Limitation | Description | Planned Fix |
 |-----------|-------------|-------------|
-| **Bounded mailbox** | Only unbounded supported; bounded logs a warning | Provider-specific work |
+| **Bounded mailbox** | ✅ Front-buffer via bounded `mpsc` channel (PR #106) | — |
 | **Restart** | `ErrorAction::Restart` treated as `Resume` | Requires kameo supervision integration |
 | **Remote watch auto-wiring** | `notify_terminated()` must be called manually | NA10 (transport routing) |
 | **Reply type wrapping** | Some reply types need newtype wrappers for `kameo::Reply` trait | Inherent kameo design |

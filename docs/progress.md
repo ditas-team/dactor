@@ -4,7 +4,7 @@
 
 ---
 
-## Current Status (PR #104)
+## Current Status (PR #106)
 - Phase 3: ✅ Complete (features, examples, conformance, batching)
 - Phase 4: ✅ Complete — R1-R6, R3b, R6b-c, S1-S4, SE1-SE5, C1-C5, P1-P3 all done
 - Phase 6: ✅ Complete (supervision, pools, timers, on_reply, AM1-AM7 all done)
@@ -22,7 +22,7 @@
 - Test: `cargo test --workspace --exclude dactor-test-harness --features test-support` (exclude test-harness due to protoc permission issue)
 - Next: see "Pending Work" section below
 
-### Session 2026-04-06 Summary (PRs #96, #98-#103)
+### Session 2026-04-06 Summary (PRs #96, #98-#106)
 - **BC1-BC5** (#96): BroadcastRef — tell/ask with timeout, receipts, dynamic membership
 - *PR #97 closed (superseded by #96 + #98)*
 - **BC5b** (#98): BroadcastRef review fixes — #[must_use], TellOutcome rename, RuntimeError::Send normalization, Default, contains()
@@ -31,6 +31,9 @@
 - **TF4** (#101): Transform batch support — Option<BatchConfig> on ActorRef::transform() across all adapters
 - **CP9** (#102): Coerce bounded mailbox — BoundedMailboxSender, forwarding task, send_dispatch() helper
 - **NR4** (#103): ProcessingGroup — named actor groups with HashMap-backed O(1) join/leave, to_broadcast(), prune_dead()
+- **Progress** (#104): Update progress.md for session
+- **README** (#105): Update README with new features (transform, broadcast, groups, LeastLoaded)
+- **Adapter mailbox** (#106): Wire bounded mailbox for ractor and kameo adapters (same front-buffer pattern)
 
 ### Key Design Decisions Made This Session
 - BroadcastRef is owned (non-shared), not Arc-wrapped — callers use &mut self for membership
