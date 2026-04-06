@@ -190,6 +190,16 @@ impl<A: Actor, R: ActorRef<A>> PoolRef<A, R> {
         &self.workers[idx]
     }
 
+    /// Return a [`BroadcastRef`](crate::broadcast::BroadcastRef) that wraps
+    /// all workers in this pool, enabling broadcast `tell` / `ask` to every
+    /// worker simultaneously.
+    ///
+    /// The returned group is a snapshot — later changes to the pool are
+    /// **not** reflected.
+    pub fn to_broadcast(&self) -> crate::broadcast::BroadcastRef<A, R> {
+        crate::broadcast::BroadcastRef::new(self.workers.clone())
+    }
+
     /// Fire-and-forget a keyed message, routing by [`Keyed::routing_key`].
     pub fn tell_keyed<M>(&self, msg: M) -> Result<(), ActorSendError>
     where
