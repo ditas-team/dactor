@@ -20,12 +20,15 @@
 //! actor.
 
 use std::marker::PhantomData;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
 use crate::actor::{Actor, ActorRef, Handler};
+use crate::dead_letter::{DeadLetterEvent, DeadLetterHandler, DeadLetterReason};
 use crate::errors::{ActorSendError, RuntimeError};
+use crate::interceptor::SendMode;
 use crate::message::Message;
 use crate::node::ActorId;
 
@@ -108,10 +111,33 @@ impl BroadcastTellResult {
 /// exclusively borrow the group.  For concurrent access, wrap in
 /// `Arc<tokio::sync::RwLock<…>>`.
 ///
+/// # Interceptors (BC7)
+///
+/// Outbound interceptors are **not** run at the broadcast level.  Each
+/// member's [`ActorRef::tell`] / [`ActorRef::ask`] invocation runs through
+/// whatever interceptor pipeline the underlying adapter has configured,
+/// so interceptors execute **once per target actor**, not once for the
+/// whole broadcast.
+///
+/// # Dead Letters (BC8)
+///
+/// Attach a [`DeadLetterHandler`] via [`with_dead_letter_handler`](Self::with_dead_letter_handler)
+/// to be notified when a member cannot accept a message (actor stopped,
+/// mailbox full, etc.).  Dead letters are emitted only for **send-level
+/// failures**, not for timeouts or handler errors:
+///
+/// - [`BroadcastReceipt::SendError`] → dead letter emitted
+/// - [`BroadcastReceipt::Timeout`] → **no** dead letter (use the receipt)
+/// - [`BroadcastReceipt::ReplyError`] → **no** dead letter (message was delivered)
+///
+/// Without a handler, failures are still recorded in
+/// [`BroadcastTellResult`] / [`BroadcastReceipt`] but not routed elsewhere.
+///
 /// Generic over actor type `A` and a single concrete [`ActorRef`]
 /// implementation `R`. The constraint mirrors [`PoolRef`](crate::pool::PoolRef).
 pub struct BroadcastRef<A: Actor, R: ActorRef<A>> {
     refs: Vec<R>,
+    dead_letter_handler: Option<Arc<dyn DeadLetterHandler>>,
     _phantom: PhantomData<fn() -> A>,
 }
 
@@ -119,6 +145,7 @@ impl<A: Actor, R: ActorRef<A>> Clone for BroadcastRef<A, R> {
     fn clone(&self) -> Self {
         Self {
             refs: self.refs.clone(),
+            dead_letter_handler: self.dead_letter_handler.clone(),
             _phantom: PhantomData,
         }
     }
@@ -138,8 +165,16 @@ impl<A: Actor, R: ActorRef<A>> BroadcastRef<A, R> {
     pub fn new(refs: Vec<R>) -> Self {
         Self {
             refs,
+            dead_letter_handler: None,
             _phantom: PhantomData,
         }
+    }
+
+    /// Attach a [`DeadLetterHandler`] that is notified whenever a `tell` or
+    /// `ask` cannot deliver to a member.
+    pub fn with_dead_letter_handler(mut self, handler: Arc<dyn DeadLetterHandler>) -> Self {
+        self.dead_letter_handler = Some(handler);
+        self
     }
 
     /// Number of members in the group.
@@ -179,6 +214,10 @@ impl<A: Actor, R: ActorRef<A>> BroadcastRef<A, R> {
     }
 
     /// Fire-and-forget: deliver a cloned message to every member.
+    ///
+    /// If a [`DeadLetterHandler`] is attached, failed sends are routed to
+    /// it in addition to being recorded in the returned
+    /// [`BroadcastTellResult`].
     pub fn tell<M>(&self, msg: M) -> BroadcastTellResult
     where
         A: Handler<M>,
@@ -187,6 +226,14 @@ impl<A: Actor, R: ActorRef<A>> BroadcastRef<A, R> {
         let mut outcomes = Vec::with_capacity(self.refs.len());
         for actor_ref in &self.refs {
             let result = actor_ref.tell(msg.clone());
+            if let Err(ref err) = result {
+                self.route_dead_letter::<M>(
+                    &actor_ref.id(),
+                    &actor_ref.name(),
+                    err,
+                    SendMode::Tell,
+                );
+            }
             outcomes.push(BroadcastTellOutcome {
                 actor_id: actor_ref.id(),
                 result,
@@ -204,18 +251,24 @@ impl<A: Actor, R: ActorRef<A>> BroadcastRef<A, R> {
     /// **cooperative** — handlers that check [`ActorContext`](crate::actor::ActorContext)
     /// cancellation will exit early, but handlers that ignore it may continue
     /// running.
+    ///
+    /// If a [`DeadLetterHandler`] is attached, send-level failures are
+    /// routed to it.
     pub async fn ask<M>(&self, msg: M, timeout: Duration) -> Vec<BroadcastReceipt<M::Reply>>
     where
         A: Handler<M> + 'static,
         M: Message + Clone,
     {
+        let dl = self.dead_letter_handler.clone();
         let futures: Vec<_> = self
             .refs
             .iter()
             .map(|actor_ref| {
                 let id = actor_ref.id();
+                let name = actor_ref.name();
                 let token = CancellationToken::new();
                 let reply_future = actor_ref.ask(msg.clone(), Some(token.clone()));
+                let dl = dl.clone();
                 async move {
                     match reply_future {
                         Ok(ask_reply) => {
@@ -225,11 +278,18 @@ impl<A: Actor, R: ActorRef<A>> BroadcastRef<A, R> {
                                     reply,
                                 },
                                 Ok(Err(RuntimeError::Send(error))) => {
+                                    if let Some(ref handler) = dl {
+                                        emit_dead_letter::<M>(
+                                            handler, &id, &name, &error, SendMode::Ask,
+                                        );
+                                    }
                                     BroadcastReceipt::SendError {
                                         actor_id: id,
                                         error,
                                     }
                                 }
+                                // Handler-level errors are not dead letters —
+                                // the message was delivered but processing failed.
                                 Ok(Err(e)) => BroadcastReceipt::ReplyError {
                                     actor_id: id,
                                     error: e,
@@ -240,10 +300,17 @@ impl<A: Actor, R: ActorRef<A>> BroadcastRef<A, R> {
                                 }
                             }
                         }
-                        Err(e) => BroadcastReceipt::SendError {
-                            actor_id: id,
-                            error: e,
-                        },
+                        Err(e) => {
+                            if let Some(ref handler) = dl {
+                                emit_dead_letter::<M>(
+                                    handler, &id, &name, &e, SendMode::Ask,
+                                );
+                            }
+                            BroadcastReceipt::SendError {
+                                actor_id: id,
+                                error: e,
+                            }
+                        }
                     }
                 }
             })
@@ -251,11 +318,58 @@ impl<A: Actor, R: ActorRef<A>> BroadcastRef<A, R> {
 
         futures::future::join_all(futures).await
     }
+
+    /// Route a failed send to the dead letter handler, if configured.
+    fn route_dead_letter<M: Message>(
+        &self,
+        target_id: &ActorId,
+        target_name: &str,
+        error: &ActorSendError,
+        send_mode: SendMode,
+    ) {
+        if let Some(ref handler) = self.dead_letter_handler {
+            emit_dead_letter::<M>(handler, target_id, target_name, error, send_mode);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// Dead letter helper
 // ---------------------------------------------------------------------------
+
+fn emit_dead_letter<M: Message>(
+    handler: &Arc<dyn DeadLetterHandler>,
+    target_id: &ActorId,
+    target_name: &str,
+    error: &ActorSendError,
+    send_mode: SendMode,
+) {
+    let reason = if error.0.contains("stopped") || error.0.contains("closed") {
+        DeadLetterReason::ActorStopped
+    } else if error.0.contains("not found") {
+        DeadLetterReason::ActorNotFound
+    } else if error.0.contains("full") {
+        DeadLetterReason::MailboxFull
+    } else {
+        // Unrecognized error text — default to ActorStopped as the most
+        // common cause. The original error string is preserved in the
+        // BroadcastTellOutcome / BroadcastReceipt for precise diagnosis.
+        DeadLetterReason::ActorStopped
+    };
+    let event = DeadLetterEvent {
+        target_id: target_id.clone(),
+        target_name: Some(target_name.to_owned()),
+        message_type: std::any::type_name::<M>(),
+        send_mode,
+        reason,
+        message: None,
+    };
+    // Guard against panicking custom handlers — don't let a bad handler
+    // abort the entire broadcast.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        handler.on_dead_letter(event);
+    }));
+}
 
 #[cfg(test)]
 mod tests {
@@ -666,5 +780,101 @@ mod tests {
         }
         assert!(has_ok, "live actor should reply");
         assert!(has_send_err, "stopped actor should yield SendError or ReplyError");
+    }
+
+    // -- BC6: PoolRef::to_broadcast() ---------------------------------------
+
+    #[tokio::test]
+    async fn test_pool_to_broadcast() {
+        use crate::pool::{PoolRef, PoolRouting};
+
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let rt = TestRuntime::new();
+
+        let mut workers = Vec::new();
+        for i in 0..3 {
+            let r = rt
+                .spawn::<Accumulator>(&format!("w-{i}"), (i as u64, received.clone()))
+                .await
+                .unwrap();
+            workers.push(r);
+        }
+
+        let pool = PoolRef::new(workers, PoolRouting::RoundRobin);
+        let group = pool.to_broadcast();
+
+        assert_eq!(group.len(), 3);
+
+        let result = group.tell(Ping);
+        assert_eq!(result.succeeded(), 3);
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let ids = received.lock().await;
+        assert_eq!(ids.len(), 3);
+    }
+
+    // -- BC8: Dead letter routing -------------------------------------------
+
+    #[tokio::test]
+    async fn test_broadcast_tell_dead_letter_routing() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let rt = TestRuntime::new();
+        let group = spawn_group(&rt, 3, received).await;
+
+        let collector = Arc::new(crate::dead_letter::CollectingDeadLetterHandler::new());
+        let group = group.with_dead_letter_handler(collector.clone() as Arc<dyn DeadLetterHandler>);
+
+        // Stop one actor
+        group.refs[1].stop();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let result = group.tell(Ping);
+        assert_eq!(result.succeeded(), 2);
+        assert_eq!(result.failed(), 1);
+
+        // Dead letter handler should have been notified
+        let events = collector.events();
+        assert_eq!(events.len(), 1, "exactly one dead letter expected");
+        assert_eq!(events[0].target_id, group.refs[1].id());
+        assert!(
+            matches!(events[0].send_mode, SendMode::Tell),
+            "dead letter from tell should have SendMode::Tell"
+        );
+        assert!(
+            matches!(events[0].reason, crate::dead_letter::DeadLetterReason::ActorStopped),
+            "stopped actor should produce ActorStopped reason"
+        );
+        assert!(
+            events[0].target_name.is_some(),
+            "target_name should be populated"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_ask_dead_letter_routing() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let rt = TestRuntime::new();
+        let group = spawn_group(&rt, 2, received).await;
+
+        let collector = Arc::new(crate::dead_letter::CollectingDeadLetterHandler::new());
+        let group = group.with_dead_letter_handler(collector.clone() as Arc<dyn DeadLetterHandler>);
+
+        // Stop one actor
+        group.refs[0].stop();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let receipts = group.ask(GetValue, Duration::from_secs(1)).await;
+        assert_eq!(receipts.len(), 2);
+
+        // Dead letter handler should be notified for the stopped actor
+        let events = collector.events();
+        assert!(
+            !events.is_empty(),
+            "dead letter handler should be notified for stopped actor"
+        );
+        assert!(
+            matches!(events[0].send_mode, SendMode::Ask),
+            "dead letter from ask should have SendMode::Ask"
+        );
     }
 }

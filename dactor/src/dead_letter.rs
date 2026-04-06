@@ -108,6 +108,8 @@ pub struct CollectingDeadLetterHandler {
 pub struct DeadLetterInfo {
     /// The intended target actor.
     pub target_id: ActorId,
+    /// The target actor's name (if known).
+    pub target_name: Option<String>,
     /// The Rust type name of the message.
     pub message_type: String,
     /// How the message was sent.
@@ -150,6 +152,7 @@ impl DeadLetterHandler for CollectingDeadLetterHandler {
     fn on_dead_letter(&self, event: DeadLetterEvent) {
         self.events.lock().unwrap().push(DeadLetterInfo {
             target_id: event.target_id,
+            target_name: event.target_name,
             message_type: event.message_type.to_string(),
             send_mode: event.send_mode,
             reason: event.reason,
