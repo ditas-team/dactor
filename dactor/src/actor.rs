@@ -297,6 +297,16 @@ pub trait ActorRef<A: Actor>: Clone + Send + Sync + 'static {
     /// Check if the actor is still alive.
     fn is_alive(&self) -> bool;
 
+    /// Approximate number of messages pending in the actor's mailbox.
+    ///
+    /// This is a best-effort snapshot that may be stale immediately after
+    /// reading.  Used by [`PoolRouting::LeastLoaded`](crate::pool::PoolRouting::LeastLoaded)
+    /// to route to the least-busy worker.  Returns `0` by default;
+    /// adapters that can query their mailbox depth should override this.
+    fn pending_messages(&self) -> usize {
+        0
+    }
+
     /// Gracefully stop the actor. Closes the mailbox and triggers on_stop.
     fn stop(&self);
 

@@ -40,6 +40,13 @@ pub enum PoolRouting {
     /// Messages implementing [`Keyed`] are routed by their key; others
     /// fall back to round-robin.
     KeyBased,
+    /// Route to the worker with the fewest pending messages.
+    ///
+    /// Requires the underlying [`ActorRef`] to implement
+    /// [`pending_messages()`](ActorRef::pending_messages).  Adapters that
+    /// return `0` (the default) effectively degrade to round-robin.
+    /// **Use when workers have variable processing times or bursty load.**
+    LeastLoaded,
 }
 
 // ---------------------------------------------------------------------------
@@ -90,6 +97,9 @@ pub trait Keyed {
 ///   sessions). Messages sent via the standard `ActorRef` methods
 ///   (`tell()`/`ask()`/`expand()`/`reduce()`) fall back to round-robin,
 ///   since the trait can't enforce `Keyed` bounds.
+/// - **LeastLoaded** — routes to the worker with the fewest pending
+///   messages (via [`ActorRef::pending_messages`]).  Ties are broken by
+///   round-robin.
 pub struct PoolRef<A: Actor, R: ActorRef<A>> {
     workers: Vec<R>,
     routing: PoolRouting,
@@ -180,12 +190,52 @@ impl<A: Actor, R: ActorRef<A>> PoolRef<A, R> {
         (key % (self.workers.len() as u64)) as usize
     }
 
+    /// Select the worker with the fewest pending messages.
+    ///
+    /// When multiple workers tie at the minimum load, round-robin among
+    /// them to avoid thundering-herd on a single worker.
+    ///
+    /// **Performance:** O(n) scan per message where n = pool size.
+    /// For large pools (>100 workers), consider `RoundRobin` or `Random`.
+    ///
+    /// **Concurrency:** Load snapshots are taken without synchronization
+    /// and may become stale before the message is sent.  This is inherent
+    /// to lock-free load balancing and acceptable in practice.
+    fn least_loaded_index(&self) -> usize {
+        // First pass: find the minimum load
+        let min_load = self
+            .workers
+            .iter()
+            .map(|w| w.pending_messages())
+            .min()
+            .unwrap_or(0);
+
+        // Collect indices of all workers tied at the minimum
+        let candidates: Vec<usize> = self
+            .workers
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| w.pending_messages() == min_load)
+            .map(|(i, _)| i)
+            .collect();
+
+        // Round-robin among tied candidates
+        if candidates.len() == 1 {
+            candidates[0]
+        } else {
+            let idx = self.counter.fetch_add(1, Ordering::Relaxed);
+            candidates[(idx as usize) % candidates.len()]
+        }
+    }
+
     /// Select a worker reference based on the current routing strategy
-    /// (RoundRobin or Random; KeyBased falls back to RoundRobin here).
+    /// (RoundRobin or Random; KeyBased falls back to RoundRobin here;
+    /// LeastLoaded picks the worker with the fewest pending messages).
     fn select_worker(&self) -> &R {
         let idx = match &self.routing {
             PoolRouting::RoundRobin | PoolRouting::KeyBased => self.round_robin_index(),
             PoolRouting::Random => self.random_index(),
+            PoolRouting::LeastLoaded => self.least_loaded_index(),
         };
         &self.workers[idx]
     }
@@ -628,5 +678,115 @@ mod tests {
     fn empty_pool_panics() {
         let workers: Vec<crate::test_support::test_runtime::TestActorRef<PoolWorker>> = vec![];
         PoolRef::new(workers, PoolRouting::RoundRobin);
+    }
+
+    // -- AP6: LeastLoaded routing -------------------------------------------
+
+    /// With equal load (unbounded mailboxes always report 0), LeastLoaded
+    /// degrades to round-robin.
+    #[tokio::test]
+    async fn least_loaded_distributes_when_equal() {
+        let rt = TestRuntime::new();
+        let (pool, counters) = make_pool(&rt, 3, PoolRouting::LeastLoaded).await;
+
+        for _ in 0..9 {
+            pool.tell(Ping).unwrap();
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let total: u64 = counters.iter().map(|c| c.load(Ordering::Relaxed)).sum();
+        assert_eq!(total, 9, "all messages should be delivered");
+
+        // With default 0 pending_messages, falls back to round-robin
+        for (i, ctr) in counters.iter().enumerate() {
+            assert_eq!(
+                ctr.load(Ordering::Relaxed),
+                3,
+                "worker {} should have received 3 messages",
+                i
+            );
+        }
+    }
+
+    /// With bounded mailboxes and a slow handler, LeastLoaded should
+    /// prefer workers with fewer pending messages.
+    #[tokio::test]
+    async fn least_loaded_prefers_emptier_workers() {
+        use crate::mailbox::{MailboxConfig, OverflowStrategy};
+        use crate::test_support::test_runtime::SpawnOptions;
+
+        let rt = TestRuntime::new();
+
+        struct SlowWorker;
+
+        impl Actor for SlowWorker {
+            type Args = ();
+            type Deps = ();
+            fn create(_args: (), _deps: ()) -> Self {
+                SlowWorker
+            }
+        }
+
+        #[derive(Clone)]
+        struct SlowPing;
+        impl Message for SlowPing {
+            type Reply = ();
+        }
+
+        #[async_trait]
+        impl Handler<SlowPing> for SlowWorker {
+            async fn handle(&mut self, _msg: SlowPing, _ctx: &mut ActorContext) {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        }
+
+        // Spawn 3 workers with bounded mailboxes (capacity 100)
+        let mut workers = Vec::new();
+        for i in 0..3 {
+            let opts = SpawnOptions {
+                interceptors: Vec::new(),
+                mailbox: MailboxConfig::Bounded {
+                    capacity: 100,
+                    overflow: OverflowStrategy::RejectWithError,
+                },
+            };
+            let r = rt
+                .spawn_with_options::<SlowWorker>(&format!("sw-{i}"), (), opts)
+                .await
+                .unwrap();
+            workers.push(r);
+        }
+
+        let pool = PoolRef::new(workers, PoolRouting::LeastLoaded);
+
+        // Send 6 messages quickly — with slow handlers, they queue up
+        for _ in 0..6 {
+            pool.tell(SlowPing).unwrap();
+        }
+
+        // Give a tiny moment for sends to land
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        // Check that pending_messages is visible
+        let loads: Vec<usize> = pool
+            .workers
+            .iter()
+            .map(|w| w.pending_messages())
+            .collect();
+        let total_pending: usize = loads.iter().sum();
+        assert!(
+            total_pending > 0,
+            "some messages should be pending due to slow handlers, got {:?}",
+            loads
+        );
+
+        // Verify load is distributed — at least 2 workers have messages
+        let workers_with_messages = loads.iter().filter(|&&l| l > 0).count();
+        assert!(
+            workers_with_messages > 1,
+            "messages should be distributed across workers, got loads: {:?}",
+            loads
+        );
     }
 }

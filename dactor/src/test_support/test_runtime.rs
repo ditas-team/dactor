@@ -110,6 +110,14 @@ impl<A: Actor> MailboxSender<A> {
             Self::Bounded { sender, .. } => sender.is_closed(),
         }
     }
+
+    /// Approximate number of messages pending in the mailbox.
+    fn pending(&self) -> usize {
+        match self {
+            Self::Unbounded(_) => 0, // unbounded channels don't expose length
+            Self::Bounded { sender, .. } => sender.max_capacity() - sender.capacity(),
+        }
+    }
 }
 
 impl<A: Actor> Clone for MailboxSender<A> {
@@ -231,6 +239,10 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
 
     fn is_alive(&self) -> bool {
         self.alive.load(Ordering::Acquire) && !self.sender.is_closed()
+    }
+
+    fn pending_messages(&self) -> usize {
+        self.sender.pending()
     }
 
     fn stop(&self) {
