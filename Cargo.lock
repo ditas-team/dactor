@@ -161,6 +161,8 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures",
+ "prost",
+ "prost-build",
  "serde",
  "serde_json",
  "tokio",

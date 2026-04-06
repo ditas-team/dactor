@@ -60,6 +60,8 @@ pub mod outbound_queue;
 pub mod persistence;
 /// Actor pool routing and configuration.
 pub mod pool;
+/// Protobuf serialization for system messages and wire envelope framing.
+pub mod proto;
 /// Named actor registry for service location.
 pub mod registry;
 /// Remote actor types, wire format, and cluster discovery.

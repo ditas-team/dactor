@@ -1441,7 +1441,6 @@ impl dactor::system_router::SystemMessageRouter for CoerceRuntime {
     async fn route_system_envelope(
         &self,
         envelope: dactor::remote::WireEnvelope,
-        serializer: &dyn dactor::remote::MessageSerializer,
     ) -> Result<dactor::system_router::RoutingOutcome, dactor::system_router::RoutingError> {
         use dactor::system_actors::*;
         use dactor::system_router::{RoutingError, RoutingOutcome};
@@ -1455,17 +1454,13 @@ impl dactor::system_router::SystemMessageRouter for CoerceRuntime {
 
         match envelope.message_type.as_str() {
             SYSTEM_MSG_TYPE_SPAWN => {
-                let request = serializer
-                    .deserialize(&envelope.body, &envelope.message_type)
-                    .map_err(|e| RoutingError::new(format!("deserialize SpawnRequest: {e}")))?;
-                let request = request
-                    .downcast::<SpawnRequest>()
-                    .map_err(|_| RoutingError::new("body is not a SpawnRequest"))?;
+                let request = dactor::proto::decode_spawn_request(&envelope.body)
+                    .map_err(|e| RoutingError::new(format!("decode SpawnRequest: {e}")))?;
 
                 let req_id = request.request_id.clone();
                 let outcome = refs
                     .spawn_manager
-                    .send(crate::system_actors::HandleSpawnRequest(*request))
+                    .send(crate::system_actors::HandleSpawnRequest(request))
                     .await
                     .map_err(|e| RoutingError::new(format!("SpawnManager send: {e}")))?;
 
@@ -1489,12 +1484,8 @@ impl dactor::system_router::SystemMessageRouter for CoerceRuntime {
             }
 
             SYSTEM_MSG_TYPE_WATCH => {
-                let request = serializer
-                    .deserialize(&envelope.body, &envelope.message_type)
-                    .map_err(|e| RoutingError::new(format!("deserialize WatchRequest: {e}")))?;
-                let request = request
-                    .downcast::<WatchRequest>()
-                    .map_err(|_| RoutingError::new("body is not a WatchRequest"))?;
+                let request = dactor::proto::decode_watch_request(&envelope.body)
+                    .map_err(|e| RoutingError::new(format!("decode WatchRequest: {e}")))?;
 
                 refs.watch_manager
                     .notify(crate::system_actors::RemoteWatch {
@@ -1507,12 +1498,8 @@ impl dactor::system_router::SystemMessageRouter for CoerceRuntime {
             }
 
             SYSTEM_MSG_TYPE_UNWATCH => {
-                let request = serializer
-                    .deserialize(&envelope.body, &envelope.message_type)
-                    .map_err(|e| RoutingError::new(format!("deserialize UnwatchRequest: {e}")))?;
-                let request = request
-                    .downcast::<UnwatchRequest>()
-                    .map_err(|_| RoutingError::new("body is not an UnwatchRequest"))?;
+                let request = dactor::proto::decode_unwatch_request(&envelope.body)
+                    .map_err(|e| RoutingError::new(format!("decode UnwatchRequest: {e}")))?;
 
                 refs.watch_manager
                     .notify(crate::system_actors::RemoteUnwatch {
@@ -1525,12 +1512,8 @@ impl dactor::system_router::SystemMessageRouter for CoerceRuntime {
             }
 
             SYSTEM_MSG_TYPE_CANCEL => {
-                let request = serializer
-                    .deserialize(&envelope.body, &envelope.message_type)
-                    .map_err(|e| RoutingError::new(format!("deserialize CancelRequest: {e}")))?;
-                let request = request
-                    .downcast::<CancelRequest>()
-                    .map_err(|_| RoutingError::new("body is not a CancelRequest"))?;
+                let request = dactor::proto::decode_cancel_request(&envelope.body)
+                    .map_err(|e| RoutingError::new(format!("decode CancelRequest: {e}")))?;
 
                 let request_id = request
                     .request_id
@@ -1552,18 +1535,8 @@ impl dactor::system_router::SystemMessageRouter for CoerceRuntime {
             }
 
             SYSTEM_MSG_TYPE_CONNECT_PEER => {
-                let peer_id = NodeId(
-                    String::from_utf8(envelope.body)
-                        .map_err(|e| RoutingError::new(format!("invalid ConnectPeer body: {e}")))?,
-                );
-                let address = envelope
-                    .headers
-                    .get("address")
-                    .map(|b| {
-                        String::from_utf8(b.to_vec())
-                            .map_err(|e| RoutingError::new(format!("invalid address header: {e}")))
-                    })
-                    .transpose()?;
+                let (peer_id, address) = dactor::proto::decode_connect_peer(&envelope.body)
+                    .map_err(|e| RoutingError::new(format!("decode ConnectPeer: {e}")))?;
 
                 refs.node_directory
                     .notify(crate::system_actors::ConnectPeer {
@@ -1576,12 +1549,8 @@ impl dactor::system_router::SystemMessageRouter for CoerceRuntime {
             }
 
             SYSTEM_MSG_TYPE_DISCONNECT_PEER => {
-                let peer_id = NodeId(
-                    String::from_utf8(envelope.body)
-                        .map_err(|e| {
-                            RoutingError::new(format!("invalid DisconnectPeer body: {e}"))
-                        })?,
-                );
+                let peer_id = dactor::proto::decode_disconnect_peer(&envelope.body)
+                    .map_err(|e| RoutingError::new(format!("decode DisconnectPeer: {e}")))?;
 
                 refs.node_directory
                     .notify(crate::system_actors::DisconnectPeer(peer_id))

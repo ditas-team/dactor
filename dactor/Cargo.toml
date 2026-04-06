@@ -15,6 +15,7 @@ categories = ["concurrency", "network-programming"]
 [dependencies]
 async-trait = "0.1"
 futures = { version = "0.3", default-features = false, features = ["std"] }
+prost = "0.13"
 tokio = { version = "1", features = ["time", "sync", "rt", "rt-multi-thread", "macros"] }
 tracing = "0.1"
 tokio-stream = "0.1"
@@ -38,6 +39,9 @@ test-support = ["tokio/test-util"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
+
+[build-dependencies]
+prost-build = "0.13"
 
 [[example]]
 name = "basic_counter"

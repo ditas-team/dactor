@@ -12,7 +12,7 @@
 //! # Example
 //!
 //! ```ignore
-//! let outcome = runtime.route_system_envelope(envelope, &serializer).await?;
+//! let outcome = runtime.route_system_envelope(envelope).await?;
 //! match outcome {
 //!     RoutingOutcome::SpawnCompleted { actor_id } => { /* ... */ }
 //!     RoutingOutcome::Acknowledged => { /* tell-style, no reply */ }
@@ -21,7 +21,7 @@
 //! ```
 
 use crate::node::ActorId;
-use crate::remote::{MessageSerializer, WireEnvelope};
+use crate::remote::WireEnvelope;
 use crate::system_actors;
 
 use async_trait::async_trait;
@@ -98,21 +98,27 @@ pub enum RoutingOutcome {
 /// [`route_system_envelope`](SystemMessageRouter::route_system_envelope)
 /// for every incoming envelope whose `message_type` is a well-known system
 /// message type (see [`is_system_message_type`](system_actors::is_system_message_type)).
+///
+/// System message bodies are deserialized using the fixed protobuf wire
+/// format (see [`proto`](crate::proto)). Application messages remain
+/// pluggable via [`MessageSerializer`](crate::remote::MessageSerializer).
 #[async_trait]
 pub trait SystemMessageRouter: Send + Sync {
     /// Route a system message envelope to the appropriate system actor.
+    ///
+    /// System message bodies are deserialized internally using protobuf —
+    /// no external serializer is needed.
     ///
     /// # Errors
     ///
     /// Returns [`RoutingError`] if:
     /// - The `message_type` is not a recognized system message type
     /// - System actors have not been started yet
-    /// - Deserialization of the envelope body fails
+    /// - Deserialization of the protobuf body fails
     /// - The target system actor's mailbox is closed
     async fn route_system_envelope(
         &self,
         envelope: WireEnvelope,
-        serializer: &dyn MessageSerializer,
     ) -> Result<RoutingOutcome, RoutingError>;
 }
 
