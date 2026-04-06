@@ -92,6 +92,18 @@ async fn conformance_transform_empty() {
     test_transform_empty(|name, init| runtime.spawn::<ConformanceDoubler>(name, init)).await;
 }
 
+#[tokio::test]
+async fn conformance_transform_batched() {
+    let runtime = CoerceRuntime::new();
+    test_transform_batched(|name, init| runtime.spawn::<ConformanceDoubler>(name, init)).await;
+}
+
+#[tokio::test]
+async fn conformance_transform_none_batch() {
+    let runtime = CoerceRuntime::new();
+    test_transform_with_none_batch(|name, init| runtime.spawn::<ConformanceDoubler>(name, init)).await;
+}
+
 // ---------------------------------------------------------------------------
 // Coerce-specific tests
 // ---------------------------------------------------------------------------

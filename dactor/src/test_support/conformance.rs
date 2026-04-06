@@ -872,3 +872,50 @@ where
     );
 }
 
+/// Test: transform with BatchConfig delivers all items in order.
+pub async fn test_transform_batched<R, F, Fut>(spawn: F)
+where
+    R: ActorRef<ConformanceDoubler>,
+    F: FnOnce(&'static str, ()) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
+{
+    use tokio_stream::StreamExt;
+
+    let actor = spawn("conf-doubler-batched", ()).await.unwrap();
+    let batch = BatchConfig::new(2, Duration::from_millis(50));
+    let input: BoxStream<i32> = Box::pin(futures::stream::iter(vec![1, 2, 3, 4, 5]));
+    let output: Vec<i32> = actor
+        .transform::<i32, i32>(input, 8, Some(batch), None)
+        .unwrap()
+        .collect()
+        .await;
+    assert_eq!(
+        output,
+        vec![2, 4, 6, 8, 10],
+        "batched transform: expected doubled values in order"
+    );
+}
+
+/// Test: transform with batch_config=None works the same as unbatched.
+pub async fn test_transform_with_none_batch<R, F, Fut>(spawn: F)
+where
+    R: ActorRef<ConformanceDoubler>,
+    F: FnOnce(&'static str, ()) -> Fut,
+    Fut: Future<Output = Result<R, RuntimeError>>,
+{
+    use tokio_stream::StreamExt;
+
+    let actor = spawn("conf-doubler-none-batch", ()).await.unwrap();
+    let input: BoxStream<i32> = Box::pin(futures::stream::iter(vec![10, 20, 30]));
+    let output: Vec<i32> = actor
+        .transform::<i32, i32>(input, 8, None, None)
+        .unwrap()
+        .collect()
+        .await;
+    assert_eq!(
+        output,
+        vec![20, 40, 60],
+        "transform with None batch: expected doubled values"
+    );
+}
+
