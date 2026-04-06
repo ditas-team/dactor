@@ -11,11 +11,75 @@
 //! - [`WatchManager`] — handles remote watch/unwatch subscriptions
 //! - [`CancelManager`] — handles remote cancellation requests
 //! - [`NodeDirectory`] — maps NodeId → connection metadata
+//!
+//! ## System Message Type Constants
+//!
+//! Well-known [`WireEnvelope::message_type`](crate::remote::WireEnvelope::message_type)
+//! values used by the transport router to dispatch incoming envelopes to the
+//! correct system actor mailbox. See [`system_router`](crate::system_router).
 
 use std::collections::{HashMap, HashSet};
 
 use crate::node::{ActorId, NodeId};
 use crate::remote::SerializationError;
+
+// ---------------------------------------------------------------------------
+// System message type constants (for WireEnvelope.message_type matching)
+// ---------------------------------------------------------------------------
+//
+// ⚠️  WIRE PROTOCOL — DO NOT CHANGE THESE VALUES ⚠️
+//
+// These strings are **wire protocol identifiers** sent between nodes.
+// They are NOT Rust type paths, even though they happen to resemble them.
+// Changing any value will break compatibility with remote nodes running
+// older code.  If you rename or refactor the corresponding Rust struct,
+// the constant value here MUST stay the same.
+//
+// A `wire_protocol_constants_are_stable` unit test enforces this.
+// ---------------------------------------------------------------------------
+
+/// Wire protocol identifier for [`SpawnRequest`] messages.
+///
+/// **Do not change** — this is a frozen wire protocol value, not a Rust path.
+pub const SYSTEM_MSG_TYPE_SPAWN: &str = "dactor::system_actors::SpawnRequest";
+
+/// Wire protocol identifier for [`WatchRequest`] messages.
+///
+/// **Do not change** — this is a frozen wire protocol value, not a Rust path.
+pub const SYSTEM_MSG_TYPE_WATCH: &str = "dactor::system_actors::WatchRequest";
+
+/// Wire protocol identifier for [`UnwatchRequest`] messages.
+///
+/// **Do not change** — this is a frozen wire protocol value, not a Rust path.
+pub const SYSTEM_MSG_TYPE_UNWATCH: &str = "dactor::system_actors::UnwatchRequest";
+
+/// Wire protocol identifier for [`CancelRequest`] messages.
+///
+/// **Do not change** — this is a frozen wire protocol value, not a Rust path.
+pub const SYSTEM_MSG_TYPE_CANCEL: &str = "dactor::system_actors::CancelRequest";
+
+/// Wire protocol identifier for peer connect messages routed to [`NodeDirectory`].
+///
+/// **Do not change** — this is a frozen wire protocol value, not a Rust path.
+pub const SYSTEM_MSG_TYPE_CONNECT_PEER: &str = "dactor::system_actors::ConnectPeer";
+
+/// Wire protocol identifier for peer disconnect messages routed to [`NodeDirectory`].
+///
+/// **Do not change** — this is a frozen wire protocol value, not a Rust path.
+pub const SYSTEM_MSG_TYPE_DISCONNECT_PEER: &str = "dactor::system_actors::DisconnectPeer";
+
+/// Returns `true` if `message_type` is a well-known system message type.
+pub fn is_system_message_type(message_type: &str) -> bool {
+    matches!(
+        message_type,
+        SYSTEM_MSG_TYPE_SPAWN
+            | SYSTEM_MSG_TYPE_WATCH
+            | SYSTEM_MSG_TYPE_UNWATCH
+            | SYSTEM_MSG_TYPE_CANCEL
+            | SYSTEM_MSG_TYPE_CONNECT_PEER
+            | SYSTEM_MSG_TYPE_DISCONNECT_PEER
+    )
+}
 
 // ---------------------------------------------------------------------------
 // SpawnManager
@@ -700,6 +764,46 @@ mod tests {
         assert_eq!(
             dir.get_peer(&NodeId("n1".into())).unwrap().status,
             PeerStatus::Disconnected
+        );
+    }
+
+    /// Guard against accidental changes to wire protocol constants.
+    ///
+    /// These strings are sent over the network between nodes. Changing them
+    /// breaks cross-node compatibility. If this test fails, you almost
+    /// certainly need to revert your change to the constant — the wire
+    /// value must stay the same even if the Rust struct is renamed.
+    #[test]
+    fn wire_protocol_constants_are_stable() {
+        assert_eq!(
+            SYSTEM_MSG_TYPE_SPAWN,
+            "dactor::system_actors::SpawnRequest",
+            "SYSTEM_MSG_TYPE_SPAWN is a wire protocol value — do not change"
+        );
+        assert_eq!(
+            SYSTEM_MSG_TYPE_WATCH,
+            "dactor::system_actors::WatchRequest",
+            "SYSTEM_MSG_TYPE_WATCH is a wire protocol value — do not change"
+        );
+        assert_eq!(
+            SYSTEM_MSG_TYPE_UNWATCH,
+            "dactor::system_actors::UnwatchRequest",
+            "SYSTEM_MSG_TYPE_UNWATCH is a wire protocol value — do not change"
+        );
+        assert_eq!(
+            SYSTEM_MSG_TYPE_CANCEL,
+            "dactor::system_actors::CancelRequest",
+            "SYSTEM_MSG_TYPE_CANCEL is a wire protocol value — do not change"
+        );
+        assert_eq!(
+            SYSTEM_MSG_TYPE_CONNECT_PEER,
+            "dactor::system_actors::ConnectPeer",
+            "SYSTEM_MSG_TYPE_CONNECT_PEER is a wire protocol value — do not change"
+        );
+        assert_eq!(
+            SYSTEM_MSG_TYPE_DISCONNECT_PEER,
+            "dactor::system_actors::DisconnectPeer",
+            "SYSTEM_MSG_TYPE_DISCONNECT_PEER is a wire protocol value — do not change"
         );
     }
 }
