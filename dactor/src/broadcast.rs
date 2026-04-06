@@ -48,7 +48,7 @@ pub enum BroadcastReceipt<R> {
         /// Identity of the actor that timed out.
         actor_id: ActorId,
     },
-    /// Dispatching the message failed (actor stopped, mailbox full, etc.).
+    /// A send or transport-level failure prevented delivery to the actor.
     SendError {
         /// Identity of the actor that failed.
         actor_id: ActorId,
@@ -169,8 +169,10 @@ impl<A: Actor, R: ActorRef<A>> BroadcastRef<A, R> {
     /// Remove an actor from the group by its [`ActorId`].
     ///
     /// Uses `swap_remove` for O(1) removal, which **does not preserve**
-    /// membership order.  Returns `Some(actor_ref)` if the actor was found
-    /// and removed, or `None` if no member matched.
+    /// membership order.  If the group contains duplicate entries for the
+    /// same [`ActorId`], only the first match is removed.  Returns
+    /// `Some(actor_ref)` if an actor was found and removed, or `None` if
+    /// no member matched.
     pub fn remove(&mut self, actor_id: &ActorId) -> Option<R> {
         let pos = self.refs.iter().position(|r| r.id() == *actor_id)?;
         Some(self.refs.swap_remove(pos))
@@ -569,5 +571,100 @@ mod tests {
         assert_eq!(timeout_ids.len(), 1, "slow actor should timeout");
         assert_eq!(ok_ids[0], fast_id);
         assert_eq!(timeout_ids[0], slow_id);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_default_is_empty() {
+        let group: BroadcastRef<
+            Accumulator,
+            crate::test_support::test_runtime::TestActorRef<Accumulator>,
+        > = BroadcastRef::default();
+
+        assert!(group.is_empty());
+        assert_eq!(group.len(), 0);
+
+        let tell_result = group.tell(Ping);
+        assert_eq!(tell_result.succeeded(), 0);
+
+        let ask_result = group.ask(GetValue, Duration::from_secs(1)).await;
+        assert!(ask_result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_contains() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let rt = TestRuntime::new();
+        let mut group = spawn_group(&rt, 2, received.clone()).await;
+
+        let id0 = group.refs[0].id();
+        let id1 = group.refs[1].id();
+        let fake_id = ActorId {
+            node: crate::node::NodeId("no-node".into()),
+            local: 999,
+        };
+
+        assert!(group.contains(&id0));
+        assert!(group.contains(&id1));
+        assert!(!group.contains(&fake_id));
+
+        // After removal, contains returns false
+        group.remove(&id0);
+        assert!(!group.contains(&id0));
+        assert!(group.contains(&id1));
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_duplicate_members() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let rt = TestRuntime::new();
+        let mut group = spawn_group(&rt, 1, received.clone()).await;
+
+        // Add the same actor again (duplicate)
+        let dup = group.refs[0].clone();
+        group.add(dup);
+        assert_eq!(group.len(), 2);
+
+        let result = group.tell(Ping);
+        assert_eq!(result.succeeded(), 2);
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Same actor received the message twice
+        let ids = received.lock().await;
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], ids[1]);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_ask_send_error_classification() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let rt = TestRuntime::new();
+        let group = spawn_group(&rt, 2, received).await;
+
+        // Stop one actor so its ask yields a send-level error
+        group.refs[0].stop();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let receipts = group.ask(GetValue, Duration::from_secs(1)).await;
+        assert_eq!(receipts.len(), 2);
+
+        let mut has_ok = false;
+        let mut has_send_err = false;
+        for r in &receipts {
+            match r {
+                BroadcastReceipt::Ok { .. } => has_ok = true,
+                BroadcastReceipt::SendError { .. } => has_send_err = true,
+                BroadcastReceipt::ReplyError { .. } => {
+                    // Also acceptable — some adapters surface send errors
+                    // through the reply channel as RuntimeError::Send
+                    has_send_err = true;
+                }
+                BroadcastReceipt::Timeout { .. } => {
+                    panic!("unexpected timeout for a stopped actor")
+                }
+            }
+        }
+        assert!(has_ok, "live actor should reply");
+        assert!(has_send_err, "stopped actor should yield SendError or ReplyError");
     }
 }
