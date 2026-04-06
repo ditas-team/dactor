@@ -355,13 +355,60 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
 ///
 /// Messages are delivered through ractor's mailbox as type-erased dispatch
 /// envelopes, enabling multiple `Handler<M>` impls per actor.
+///
+/// When configured with [`MailboxConfig::Bounded`], a bounded `mpsc` channel
+/// sits in front of the ractor actor, providing backpressure control at the
+/// dactor level while ractor's internal mailbox remains unbounded.
 pub struct RactorActorRef<A: Actor> {
     id: ActorId,
     name: String,
     inner: ractor::ActorRef<DactorMsg<A>>,
+    bounded_tx: Option<BoundedMailboxSender<A>>,
     outbound_interceptors: Arc<Vec<Box<dyn OutboundInterceptor>>>,
     drop_observer: Option<Arc<dyn DropObserver>>,
     dead_letter_handler: Arc<Option<Arc<dyn DeadLetterHandler>>>,
+}
+
+/// Bounded mailbox sender with overflow strategy for ractor adapter.
+struct BoundedMailboxSender<A: Actor> {
+    tx: tokio::sync::mpsc::Sender<DactorMsg<A>>,
+    overflow: dactor::mailbox::OverflowStrategy,
+}
+
+impl<A: Actor> Clone for BoundedMailboxSender<A> {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            overflow: self.overflow,
+        }
+    }
+}
+
+impl<A: Actor> BoundedMailboxSender<A> {
+    fn try_send(&self, msg: DactorMsg<A>) -> Result<(), ActorSendError> {
+        use dactor::mailbox::OverflowStrategy;
+        match self.tx.try_send(msg) {
+            Ok(()) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => match self.overflow {
+                OverflowStrategy::RejectWithError => Err(ActorSendError("mailbox full".into())),
+                OverflowStrategy::DropNewest => Ok(()),
+                OverflowStrategy::Block => {
+                    Err(ActorSendError("mailbox full (Block not supported in sync tell)".into()))
+                }
+            },
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                Err(ActorSendError("actor stopped".into()))
+            }
+        }
+    }
+
+    fn is_closed(&self) -> bool {
+        self.tx.is_closed()
+    }
+
+    fn pending(&self) -> usize {
+        self.tx.max_capacity() - self.tx.capacity()
+    }
 }
 
 impl<A: Actor> Clone for RactorActorRef<A> {
@@ -370,6 +417,7 @@ impl<A: Actor> Clone for RactorActorRef<A> {
             id: self.id.clone(),
             name: self.name.clone(),
             inner: self.inner.clone(),
+            bounded_tx: self.bounded_tx.clone(),
             outbound_interceptors: self.outbound_interceptors.clone(),
             drop_observer: self.drop_observer.clone(),
             dead_letter_handler: self.dead_letter_handler.clone(),
@@ -413,6 +461,18 @@ impl<A: Actor + 'static> RactorActorRef<A> {
             }));
         }
     }
+
+    /// Send a dispatch envelope through the bounded channel (if configured)
+    /// or directly to the ractor actor.
+    fn send_dispatch(&self, dispatch: Box<dyn Dispatch<A>>) -> Result<(), ActorSendError> {
+        if let Some(ref btx) = self.bounded_tx {
+            btx.try_send(DactorMsg(dispatch))
+        } else {
+            self.inner
+                .cast(DactorMsg(dispatch))
+                .map_err(|e| ActorSendError(e.to_string()))
+        }
+    }
 }
 
 impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
@@ -425,12 +485,25 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
     }
 
     fn is_alive(&self) -> bool {
-        matches!(
+        let inner_alive = matches!(
             self.inner.get_status(),
             ractor::ActorStatus::Running
                 | ractor::ActorStatus::Starting
                 | ractor::ActorStatus::Upgrading
-        )
+        );
+        if let Some(ref btx) = self.bounded_tx {
+            !btx.is_closed() && inner_alive
+        } else {
+            inner_alive
+        }
+    }
+
+    fn pending_messages(&self) -> usize {
+        if let Some(ref btx) = self.bounded_tx {
+            btx.pending()
+        } else {
+            0
+        }
     }
 
     fn stop(&self) {
@@ -451,13 +524,14 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
         }
 
         let dispatch: Box<dyn Dispatch<A>> = Box::new(TypedDispatch { msg });
-        self.inner.cast(DactorMsg(dispatch)).map_err(|e| {
-            self.notify_dead_letter(
-                std::any::type_name::<M>(),
-                SendMode::Tell,
-                DeadLetterReason::ActorStopped,
-            );
-            ActorSendError(e.to_string())
+        self.send_dispatch(dispatch).map_err(|e| {
+            let reason = if e.0.contains("full") {
+                DeadLetterReason::MailboxFull
+            } else {
+                DeadLetterReason::ActorStopped
+            };
+            self.notify_dead_letter(std::any::type_name::<M>(), SendMode::Tell, reason);
+            e
         })
     }
 
@@ -506,13 +580,14 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
             reply_tx: tx,
             cancel,
         });
-        self.inner.cast(DactorMsg(dispatch)).map_err(|e| {
-            self.notify_dead_letter(
-                std::any::type_name::<M>(),
-                SendMode::Ask,
-                DeadLetterReason::ActorStopped,
-            );
-            ActorSendError(e.to_string())
+        self.send_dispatch(dispatch).map_err(|e| {
+            let reason = if e.0.contains("full") {
+                DeadLetterReason::MailboxFull
+            } else {
+                DeadLetterReason::ActorStopped
+            };
+            self.notify_dead_letter(std::any::type_name::<M>(), SendMode::Ask, reason);
+            e
         })?;
         Ok(AskReply::new(rx))
     }
@@ -557,9 +632,7 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
             sender,
             cancel,
         });
-        self.inner
-            .cast(DactorMsg(dispatch))
-            .map_err(|e| ActorSendError(e.to_string()))?;
+        self.send_dispatch(dispatch)?;
 
         match batch_config {
             Some(batch_config) => {
@@ -635,9 +708,7 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
             reply_tx,
             cancel: cancel.clone(),
         });
-        self.inner
-            .cast(DactorMsg(dispatch))
-            .map_err(|e| ActorSendError(e.to_string()))?;
+        self.send_dispatch(dispatch)?;
 
         let pipeline = self.outbound_pipeline();
         match batch_config {
@@ -688,9 +759,7 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
             sender,
             cancel.clone(),
         ));
-        self.inner
-            .cast(DactorMsg(dispatch))
-            .map_err(|e| ActorSendError(e.to_string()))?;
+        self.send_dispatch(dispatch)?;
 
         let pipeline = self.outbound_pipeline();
         spawn_transform_drain(
@@ -723,8 +792,10 @@ pub struct SpawnOptions {
     pub interceptors: Vec<Box<dyn InboundInterceptor>>,
     /// Mailbox capacity configuration.
     ///
-    /// **Note:** The ractor adapter currently only supports unbounded mailboxes.
-    /// Setting `Bounded` will log a warning and fall back to unbounded.
+    /// Mailbox capacity configuration.
+    ///
+    /// When [`Bounded`](MailboxConfig::Bounded), a bounded `mpsc` channel is
+    /// placed in front of the ractor actor to enforce backpressure.
     pub mailbox: MailboxConfig,
 }
 
@@ -900,7 +971,7 @@ impl RactorRuntime {
     where
         A: Actor<Deps = ()> + 'static,
     {
-        self.spawn_internal::<A>(name, args, (), Vec::new()).await
+        self.spawn_internal::<A>(name, args, (), Vec::new(), MailboxConfig::Unbounded).await
     }
 
     /// Spawn an actor with explicit dependencies.
@@ -908,10 +979,10 @@ impl RactorRuntime {
     where
         A: Actor + 'static,
     {
-        self.spawn_internal::<A>(name, args, deps, Vec::new()).await
+        self.spawn_internal::<A>(name, args, deps, Vec::new(), MailboxConfig::Unbounded).await
     }
 
-    /// Spawn an actor with spawn options (including inbound interceptors).
+    /// Spawn an actor with spawn options (including inbound interceptors and mailbox config).
     pub async fn spawn_with_options<A>(
         &self,
         name: &str,
@@ -921,10 +992,7 @@ impl RactorRuntime {
     where
         A: Actor<Deps = ()> + 'static,
     {
-        if !matches!(options.mailbox, MailboxConfig::Unbounded) {
-            tracing::warn!("ractor adapter: bounded mailbox not yet implemented, using unbounded");
-        }
-        self.spawn_internal::<A>(name, args, (), options.interceptors).await
+        self.spawn_internal::<A>(name, args, (), options.interceptors, options.mailbox).await
     }
 
     async fn spawn_internal<A>(
@@ -933,6 +1001,7 @@ impl RactorRuntime {
         args: A::Args,
         deps: A::Deps,
         interceptors: Vec<Box<dyn InboundInterceptor>>,
+        mailbox: MailboxConfig,
     ) -> Result<RactorActorRef<A>, dactor::errors::RuntimeError>
     where
         A: Actor + 'static,
@@ -964,6 +1033,23 @@ impl RactorRuntime {
             .await
             .map_err(|e| dactor::errors::RuntimeError::SpawnFailed(e.to_string()))?;
 
+        // Set up optional bounded mailbox channel
+        let bounded_tx = match mailbox {
+            MailboxConfig::Bounded { capacity, overflow } => {
+                let (btx, mut brx) = tokio::sync::mpsc::channel::<DactorMsg<A>>(capacity);
+                let fwd_ref = actor_ref.clone();
+                tokio::spawn(async move {
+                    while let Some(msg) = brx.recv().await {
+                        if fwd_ref.cast(msg).is_err() {
+                            break;
+                        }
+                    }
+                });
+                Some(BoundedMailboxSender { tx: btx, overflow })
+            }
+            MailboxConfig::Unbounded => None,
+        };
+
         // Store stop receiver for await_stop()
         self.stop_receivers.lock().unwrap().insert(actor_id.clone(), stop_rx);
 
@@ -971,6 +1057,7 @@ impl RactorRuntime {
             id: actor_id,
             name: actor_name,
             inner: actor_ref,
+            bounded_tx,
             outbound_interceptors: self.outbound_interceptors.clone(),
             drop_observer: self.drop_observer.clone(),
             dead_letter_handler: self.dead_letter_handler.clone(),

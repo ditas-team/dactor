@@ -362,13 +362,48 @@ impl<A: Actor + 'static> kameo::message::Message<DactorMsg<A>> for KameoDactorAc
 ///
 /// Messages are delivered through kameo's mailbox as type-erased dispatch
 /// envelopes, enabling multiple `Handler<M>` impls per actor.
+///
+/// When configured with [`MailboxConfig::Bounded`], a bounded `mpsc` channel
+/// sits in front of the kameo actor, providing backpressure control at the
+/// dactor level while kameo's internal mailbox remains unbounded.
 pub struct KameoActorRef<A: Actor> {
     id: ActorId,
     name: String,
     inner: kameo::actor::ActorRef<KameoDactorActor<A>>,
+    bounded_tx: Option<BoundedMailboxSender<A>>,
     outbound_interceptors: Arc<Vec<Box<dyn OutboundInterceptor>>>,
     drop_observer: Option<Arc<dyn DropObserver>>,
     dead_letter_handler: Arc<Option<Arc<dyn DeadLetterHandler>>>,
+}
+
+/// Bounded mailbox sender with overflow strategy for kameo adapter.
+struct BoundedMailboxSender<A: Actor> {
+    tx: tokio::sync::mpsc::Sender<DactorMsg<A>>,
+    overflow: dactor::mailbox::OverflowStrategy,
+}
+
+impl<A: Actor> Clone for BoundedMailboxSender<A> {
+    fn clone(&self) -> Self {
+        Self { tx: self.tx.clone(), overflow: self.overflow }
+    }
+}
+
+impl<A: Actor> BoundedMailboxSender<A> {
+    fn try_send(&self, msg: DactorMsg<A>) -> Result<(), ActorSendError> {
+        use dactor::mailbox::OverflowStrategy;
+        match self.tx.try_send(msg) {
+            Ok(()) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => match self.overflow {
+                OverflowStrategy::RejectWithError => Err(ActorSendError("mailbox full".into())),
+                OverflowStrategy::DropNewest => Ok(()),
+                OverflowStrategy::Block => Err(ActorSendError("mailbox full (Block not supported in sync tell)".into())),
+            },
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Err(ActorSendError("actor stopped".into())),
+        }
+    }
+
+    fn is_closed(&self) -> bool { self.tx.is_closed() }
+    fn pending(&self) -> usize { self.tx.max_capacity() - self.tx.capacity() }
 }
 
 impl<A: Actor> Clone for KameoActorRef<A> {
@@ -377,6 +412,7 @@ impl<A: Actor> Clone for KameoActorRef<A> {
             id: self.id.clone(),
             name: self.name.clone(),
             inner: self.inner.clone(),
+            bounded_tx: self.bounded_tx.clone(),
             outbound_interceptors: self.outbound_interceptors.clone(),
             drop_observer: self.drop_observer.clone(),
             dead_letter_handler: self.dead_letter_handler.clone(),
@@ -420,6 +456,19 @@ impl<A: Actor> KameoActorRef<A> {
             }));
         }
     }
+
+    /// Send a dispatch envelope through the bounded channel (if configured)
+    /// or directly to the kameo actor.
+    fn send_dispatch(&self, dispatch: Box<dyn Dispatch<A>>) -> Result<(), ActorSendError> {
+        if let Some(ref btx) = self.bounded_tx {
+            btx.try_send(DactorMsg(dispatch))
+        } else {
+            self.inner
+                .tell(DactorMsg(dispatch))
+                .try_send()
+                .map_err(|e| ActorSendError(e.to_string()))
+        }
+    }
 }
 
 impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
@@ -432,7 +481,19 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
     }
 
     fn is_alive(&self) -> bool {
-        self.inner.is_alive()
+        if let Some(ref btx) = self.bounded_tx {
+            !btx.is_closed() && self.inner.is_alive()
+        } else {
+            self.inner.is_alive()
+        }
+    }
+
+    fn pending_messages(&self) -> usize {
+        if let Some(ref btx) = self.bounded_tx {
+            btx.pending()
+        } else {
+            0
+        }
     }
 
     fn stop(&self) {
@@ -453,14 +514,16 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
         }
 
         let dispatch: Box<dyn Dispatch<A>> = Box::new(TypedDispatch { msg });
-        self.inner
-            .tell(DactorMsg(dispatch))
-            .try_send()
-            .map_err(|e| {
+        self.send_dispatch(dispatch).map_err(|e| {
+                let reason = if e.0.contains("full") {
+                    DeadLetterReason::MailboxFull
+                } else {
+                    DeadLetterReason::ActorStopped
+                };
                 self.notify_dead_letter(
                     std::any::type_name::<M>(),
                     SendMode::Tell,
-                    DeadLetterReason::ActorStopped,
+                    reason,
                 );
                 ActorSendError(e.to_string())
             })
@@ -511,14 +574,16 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
             reply_tx: tx,
             cancel,
         });
-        self.inner
-            .tell(DactorMsg(dispatch))
-            .try_send()
-            .map_err(|e| {
+        self.send_dispatch(dispatch).map_err(|e| {
+                let reason = if e.0.contains("full") {
+                    DeadLetterReason::MailboxFull
+                } else {
+                    DeadLetterReason::ActorStopped
+                };
                 self.notify_dead_letter(
                     std::any::type_name::<M>(),
                     SendMode::Ask,
-                    DeadLetterReason::ActorStopped,
+                    reason,
                 );
                 ActorSendError(e.to_string())
             })?;
@@ -565,10 +630,7 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
             sender,
             cancel,
         });
-        self.inner
-            .tell(DactorMsg(dispatch))
-            .try_send()
-            .map_err(|e| ActorSendError(e.to_string()))?;
+        self.send_dispatch(dispatch)?;
 
         match batch_config {
             Some(batch_config) => {
@@ -645,10 +707,7 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
             reply_tx,
             cancel: cancel.clone(),
         });
-        self.inner
-            .tell(DactorMsg(dispatch))
-            .try_send()
-            .map_err(|e| ActorSendError(e.to_string()))?;
+        self.send_dispatch(dispatch)?;
 
         let pipeline = self.outbound_pipeline();
         match batch_config {
@@ -699,10 +758,7 @@ impl<A: Actor + 'static> ActorRef<A> for KameoActorRef<A> {
             sender,
             cancel.clone(),
         ));
-        self.inner
-            .tell(DactorMsg(dispatch))
-            .try_send()
-            .map_err(|e| ActorSendError(e.to_string()))?;
+        self.send_dispatch(dispatch)?;
 
         let pipeline = self.outbound_pipeline();
         spawn_transform_drain(
@@ -734,8 +790,8 @@ pub struct SpawnOptions {
     pub interceptors: Vec<Box<dyn InboundInterceptor>>,
     /// Mailbox capacity configuration.
     ///
-    /// **Note:** The kameo adapter currently only supports unbounded mailboxes.
-    /// Setting `Bounded` will log a warning and fall back to unbounded.
+    /// When [`Bounded`](MailboxConfig::Bounded), a bounded `mpsc` channel is
+    /// placed in front of the kameo actor to enforce backpressure.
     pub mailbox: MailboxConfig,
 }
 
@@ -916,7 +972,7 @@ impl KameoRuntime {
     where
         A: Actor<Deps = ()> + 'static,
     {
-        Ok(self.spawn_internal::<A>(name, args, (), Vec::new()))
+        Ok(self.spawn_internal::<A>(name, args, (), Vec::new(), MailboxConfig::Unbounded))
     }
 
     /// Spawn an actor with explicit dependencies.
@@ -924,10 +980,10 @@ impl KameoRuntime {
     where
         A: Actor + 'static,
     {
-        Ok(self.spawn_internal::<A>(name, args, deps, Vec::new()))
+        Ok(self.spawn_internal::<A>(name, args, deps, Vec::new(), MailboxConfig::Unbounded))
     }
 
-    /// Spawn an actor with spawn options (including inbound interceptors).
+    /// Spawn an actor with spawn options (including inbound interceptors and mailbox config).
     pub async fn spawn_with_options<A>(
         &self,
         name: &str,
@@ -937,10 +993,7 @@ impl KameoRuntime {
     where
         A: Actor<Deps = ()> + 'static,
     {
-        if !matches!(options.mailbox, MailboxConfig::Unbounded) {
-            tracing::warn!("kameo adapter: bounded mailbox not yet implemented, using unbounded");
-        }
-        Ok(self.spawn_internal::<A>(name, args, (), options.interceptors))
+        Ok(self.spawn_internal::<A>(name, args, (), options.interceptors, options.mailbox))
     }
 
     fn spawn_internal<A>(
@@ -949,6 +1002,7 @@ impl KameoRuntime {
         args: A::Args,
         deps: A::Deps,
         interceptors: Vec<Box<dyn InboundInterceptor>>,
+        mailbox: MailboxConfig,
     ) -> KameoActorRef<A>
     where
         A: Actor + 'static,
@@ -979,6 +1033,23 @@ impl KameoRuntime {
         let actor_ref =
             KameoDactorActor::<A>::spawn_with_mailbox(spawn_args, kameo::mailbox::unbounded());
 
+        // Set up optional bounded mailbox channel
+        let bounded_tx = match mailbox {
+            MailboxConfig::Bounded { capacity, overflow } => {
+                let (btx, mut brx) = tokio::sync::mpsc::channel::<DactorMsg<A>>(capacity);
+                let fwd_ref = actor_ref.clone();
+                tokio::spawn(async move {
+                    while let Some(msg) = brx.recv().await {
+                        if fwd_ref.tell(msg).try_send().is_err() {
+                            break;
+                        }
+                    }
+                });
+                Some(BoundedMailboxSender { tx: btx, overflow })
+            }
+            MailboxConfig::Unbounded => None,
+        };
+
         // Store stop receiver for await_stop()
         self.stop_receivers.lock().unwrap().insert(actor_id.clone(), stop_rx);
 
@@ -986,6 +1057,7 @@ impl KameoRuntime {
             id: actor_id,
             name: actor_name,
             inner: actor_ref,
+            bounded_tx,
             outbound_interceptors: self.outbound_interceptors.clone(),
             drop_observer: self.drop_observer.clone(),
             dead_letter_handler: self.dead_letter_handler.clone(),

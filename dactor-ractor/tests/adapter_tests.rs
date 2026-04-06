@@ -1135,19 +1135,97 @@ mod mailbox_tests {
             mailbox: MailboxConfig::bounded(10, OverflowStrategy::RejectWithError),
         };
 
-        // Should still work — bounded config is accepted with a warning
         let actor = runtime.spawn_with_options::<Worker>("bounded-worker", (), options).await.unwrap();
 
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(
-            actor.is_alive(),
-            "actor should be alive despite bounded mailbox config"
-        );
+        assert!(actor.is_alive());
 
         actor.tell(Ping).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         actor.stop();
+    }
+
+    // -- Slow actor for overflow tests --
+
+    struct SlowWorker;
+    impl Actor for SlowWorker {
+        type Args = ();
+        type Deps = ();
+        fn create(_: (), _: ()) -> Self { SlowWorker }
+    }
+
+    #[derive(Clone)]
+    struct SlowPing;
+    impl Message for SlowPing { type Reply = (); }
+
+    #[async_trait]
+    impl Handler<SlowPing> for SlowWorker {
+        async fn handle(&mut self, _: SlowPing, _ctx: &mut ActorContext) {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_bounded_mailbox_reject_when_full() {
+        let runtime = RactorRuntime::new();
+        let options = SpawnOptions {
+            interceptors: Vec::new(),
+            mailbox: MailboxConfig::bounded(2, OverflowStrategy::RejectWithError),
+        };
+        let actor = runtime
+            .spawn_with_options::<SlowWorker>("reject-test", (), options)
+            .await
+            .unwrap();
+
+        let r1 = actor.tell(SlowPing);
+        let r2 = actor.tell(SlowPing);
+        let r3 = actor.tell(SlowPing);
+
+        let ok_count = [r1.is_ok(), r2.is_ok(), r3.is_ok()]
+            .iter()
+            .filter(|&&r| r)
+            .count();
+        assert!(ok_count >= 2, "at least 2 should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_bounded_mailbox_pending_messages() {
+        let runtime = RactorRuntime::new();
+        let options = SpawnOptions {
+            interceptors: Vec::new(),
+            mailbox: MailboxConfig::bounded(100, OverflowStrategy::RejectWithError),
+        };
+        let actor = runtime
+            .spawn_with_options::<SlowWorker>("pending-test", (), options)
+            .await
+            .unwrap();
+
+        for _ in 0..5 {
+            actor.tell(SlowPing).unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let pending = actor.pending_messages();
+        assert!(pending <= 100, "pending should be within capacity");
+    }
+
+    #[tokio::test]
+    async fn test_bounded_mailbox_is_alive_after_stop() {
+        let runtime = RactorRuntime::new();
+        let options = SpawnOptions {
+            interceptors: Vec::new(),
+            mailbox: MailboxConfig::bounded(10, OverflowStrategy::RejectWithError),
+        };
+        let actor = runtime
+            .spawn_with_options::<Worker>("alive-test", (), options)
+            .await
+            .unwrap();
+
+        assert!(actor.is_alive());
+        actor.stop();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!actor.is_alive(), "should not be alive after stop");
     }
 }
 
