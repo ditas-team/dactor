@@ -4,41 +4,52 @@ An abstract framework for distributed actors in Rust.
 
 dactor provides a **provider-agnostic** actor API that works across multiple
 actor runtimes ([ractor](https://crates.io/crates/ractor),
-[kameo](https://crates.io/crates/kameo), with a
-[coerce](https://crates.io/crates/coerce) adapter in progress).
+[kameo](https://crates.io/crates/kameo),
+[coerce](https://crates.io/crates/coerce)).
 Write your actor logic once, swap the runtime underneath.
 
 ## Key Features
 
-- **4 communication patterns** — `tell` (fire-and-forget), `ask`
-  (request-reply), `expand` (server-streaming), `reduce` (client-streaming)
-- **Transparent batching** — `BatchConfig` on `expand()` / `reduce()` groups
-  items into batches (max_items + max_delay) to reduce per-item overhead
-- **Actor pools** — `PoolRef` with `RoundRobin`, `Random`, and `KeyBased`
-  routing strategies for distributing work across workers
+- **5 communication patterns** — `tell` (fire-and-forget), `ask`
+  (request-reply), `expand` (1→N server-streaming), `reduce` (N→1
+  client-streaming), `transform` (N→M bidirectional streaming)
+- **Broadcast messaging** — `BroadcastRef` fans out `tell` / `ask` to all
+  group members concurrently with per-actor timeouts and
+  `BroadcastReceipt` (Ok / Timeout / SendError / ReplyError)
+- **Processing groups** — `ProcessingGroup` for named actor pub/sub with
+  O(1) join/leave, `to_broadcast()` snapshot, and `prune_dead()` cleanup
+- **Transparent batching** — `BatchConfig` on `expand()` / `reduce()` /
+  `transform()` groups items into batches (max_items + max_delay) to
+  reduce per-item overhead
+- **Actor pools** — `PoolRef` with `RoundRobin`, `Random`, `KeyBased`,
+  and `LeastLoaded` routing strategies for distributing work across
+  workers
 - **Interceptor pipelines** — inbound and outbound hooks for logging, auth,
   header stamping, rate limiting, and more; per-item `on_expand_item`
   interception returning `Disposition`; `on_reply` for outbound ask replies
 - **DropObserver** — global observer for interceptor-driven message drops
   (metrics, alerting, dead-letter routing)
 - **Lifecycle management** — `on_start`, `on_stop`,
-  `on_error` → `ErrorAction` (Resume / Restart / Stop / Escalate)
+  `on_error` → `ErrorAction` (Resume / Restart / Stop / Escalate);
+  `await_stop()` for lifecycle handles with panic propagation
 - **Supervision strategies** — `OneForOne`, `AllForOne`, `RestForOne` with
   configurable restart limits and time windows
 - **DeathWatch** — `ChildTerminated` notifications for watched actors
 - **Timers** — `send_after()` and `send_interval()` with cancellation via
   `CancellationToken`
 - **Bounded & unbounded mailboxes** — configurable `OverflowStrategy`
-  (Block, RejectWithError, DropNewest)
-- **Cooperative cancellation** — `CancellationToken` on ask / expand / reduce,
-  `ctx.cancelled()` for select!-based cancellation
+  (Block, RejectWithError, DropNewest); all adapters support bounded
+  mailboxes
+- **Cooperative cancellation** — `CancellationToken` on ask / expand /
+  reduce / transform, `ctx.cancelled()` for select!-based cancellation
 - **Persistence** — `PersistentActor`, `EventSourced`, `DurableState` traits
   with recovery pipeline (`recover_event_sourced`, `recover_durable_state`),
   `JournalStorage`, `SnapshotStorage`, `StateStorage` with in-memory default
 - **Observability** — `MetricsInterceptor` tracking message counts, latency
   percentiles (p99, avg, max) per actor
 - **Dead letter handling** — `DeadLetterHandler` trait with logging and
-  collecting implementations
+  collecting implementations; `BroadcastRef` routes failed sends to handler
+- **Circuit breaker** — `CircuitBreakerInterceptor` for fault isolation
 - **Rate limiting** — `ActorRateLimiter` outbound interceptor with
   tumbling-window throttle
 - **Mock cluster for testing** — `MockCluster` with multi-node simulation
@@ -112,6 +123,8 @@ async fn main() {
 | **Ask** | `actor.ask(msg, cancel)` | Request-reply — returns `AskReply<T>` future |
 | **Expand** | `actor.expand(msg, buf, batch, cancel)` | Server-streaming — handler sends multiple items via `StreamSender`. Pass `Some(BatchConfig)` or `None`. |
 | **Reduce** | `actor.reduce::<Item, Reply>(input, buf, batch, cancel)` | Client-streaming — sends a `BoxStream` of items, gets one reply. Pass `Some(BatchConfig)` or `None`. |
+| **Transform** | `actor.transform::<In, Out>(input, buf, batch, cancel)` | Bidirectional streaming — N input items → M output items via `StreamSender`. Pass `Some(BatchConfig)` or `None`. |
+| **Broadcast** | `group.tell(msg)` / `group.ask(msg, timeout)` | Fan-out — clone and send to all group members, collect per-actor results. |
 
 ## Architecture
 
