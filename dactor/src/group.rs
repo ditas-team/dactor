@@ -40,7 +40,11 @@ use crate::node::ActorId;
 /// A named, typed group of actor references.
 ///
 /// Members are keyed by [`ActorId`] for O(1) join/leave/lookup.
-/// Duplicate joins (same `ActorId`) are silently ignored.
+/// Iteration order is **not guaranteed** — if deterministic ordering
+/// matters, sort the results or use [`BroadcastRef`] directly.
+///
+/// Duplicate joins replace the existing member and return the old
+/// reference (see [`join`](Self::join)).
 pub struct ProcessingGroup<A: Actor, R: ActorRef<A>> {
     name: String,
     members: HashMap<ActorId, R>,
@@ -84,6 +88,7 @@ impl<A: Actor, R: ActorRef<A>> ProcessingGroup<A, R> {
     /// Remove an actor from the group by its [`ActorId`].
     ///
     /// Returns `Some(actor_ref)` if the actor was found, `None` otherwise.
+    /// Removing an actor does **not** stop it.
     pub fn leave(&mut self, actor_id: &ActorId) -> Option<R> {
         self.members.remove(actor_id)
     }
@@ -110,13 +115,24 @@ impl<A: Actor, R: ActorRef<A>> ProcessingGroup<A, R> {
 
     /// Create a [`BroadcastRef`] snapshot of the current group members.
     ///
-    /// Later membership changes are **not** reflected in the returned
-    /// `BroadcastRef`.
+    /// Clones all member refs. Later membership changes are **not**
+    /// reflected in the returned `BroadcastRef`.
     pub fn to_broadcast(&self) -> BroadcastRef<A, R> {
         BroadcastRef::new(self.members.values().cloned().collect())
     }
 
+    /// Remove all members from the group.
+    pub fn clear(&mut self) {
+        self.members.clear();
+    }
+
     /// Remove all actors that are no longer alive.
+    ///
+    /// **Note:** This is a best-effort snapshot — an actor may stop
+    /// immediately after being checked.  Callers should still handle
+    /// `ActorSendError` when messaging group members.
+    ///
+    /// Removing an actor from the group does **not** stop it.
     ///
     /// Returns the number of members removed.
     pub fn prune_dead(&mut self) -> usize {
@@ -136,17 +152,11 @@ impl<A: Actor, R: ActorRef<A>> Clone for ProcessingGroup<A, R> {
     }
 }
 
-impl<A: Actor, R: ActorRef<A>> Default for ProcessingGroup<A, R> {
-    fn default() -> Self {
-        Self::new("")
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, feature = "test-support"))]
 mod tests {
     use super::*;
     use std::sync::Arc;
@@ -335,5 +345,93 @@ mod tests {
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&a_id));
         assert!(ids.contains(&b_id));
+    }
+
+    #[tokio::test]
+    async fn test_group_empty_broadcast() {
+        let group: ProcessingGroup<
+            Worker,
+            crate::test_support::test_runtime::TestActorRef<Worker>,
+        > = ProcessingGroup::new("empty");
+
+        let broadcast = group.to_broadcast();
+        let result = broadcast.tell(Ping);
+        assert_eq!(result.succeeded(), 0);
+        assert!(result.outcomes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_group_leave_nonexistent() {
+        let mut group: ProcessingGroup<
+            Worker,
+            crate::test_support::test_runtime::TestActorRef<Worker>,
+        > = ProcessingGroup::new("g");
+
+        let fake_id = crate::node::ActorId {
+            node: crate::node::NodeId("none".into()),
+            local: 999,
+        };
+        assert!(group.leave(&fake_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_group_get() {
+        let rt = TestRuntime::new();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let mut group = ProcessingGroup::new("g");
+
+        let a = rt.spawn::<Worker>("w-0", received.clone()).await.unwrap();
+        let a_id = a.id();
+        group.join(a);
+
+        assert!(group.get(&a_id).is_some());
+
+        let fake_id = crate::node::ActorId {
+            node: crate::node::NodeId("none".into()),
+            local: 999,
+        };
+        assert!(group.get(&fake_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_group_clear() {
+        let rt = TestRuntime::new();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let mut group = ProcessingGroup::new("g");
+
+        for i in 0..3 {
+            let w = rt
+                .spawn::<Worker>(&format!("w-{i}"), received.clone())
+                .await
+                .unwrap();
+            group.join(w);
+        }
+        assert_eq!(group.len(), 3);
+
+        group.clear();
+        assert!(group.is_empty());
+        assert_eq!(group.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_group_snapshot_independence() {
+        let rt = TestRuntime::new();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let mut group = ProcessingGroup::new("g");
+
+        let a = rt.spawn::<Worker>("w-0", received.clone()).await.unwrap();
+        group.join(a);
+
+        // Snapshot with 1 member
+        let snap1 = group.to_broadcast();
+        assert_eq!(snap1.len(), 1);
+
+        // Add another member — snapshot should be unaffected
+        let b = rt.spawn::<Worker>("w-1", received.clone()).await.unwrap();
+        group.join(b);
+        let snap2 = group.to_broadcast();
+
+        assert_eq!(snap1.len(), 1, "old snapshot should still have 1 member");
+        assert_eq!(snap2.len(), 2, "new snapshot should have 2 members");
     }
 }
