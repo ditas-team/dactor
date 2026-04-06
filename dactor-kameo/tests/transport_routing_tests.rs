@@ -62,7 +62,7 @@ async fn na10_kameo_route_spawn_request_success() {
         name: "widget-1".into(),
         request_id: "req-1".into(),
     };
-    let body = dactor::proto::encode_spawn_request(&request);
+    let body = dactor::proto::encode_spawn_request(request);
     let envelope = make_envelope(SYSTEM_MSG_TYPE_SPAWN, body);
 
     let outcome = runtime
@@ -89,7 +89,7 @@ async fn na10_kameo_route_spawn_request_unknown_type() {
         name: "fail".into(),
         request_id: "req-fail".into(),
     };
-    let body = dactor::proto::encode_spawn_request(&request);
+    let body = dactor::proto::encode_spawn_request(request);
     let envelope = make_envelope(SYSTEM_MSG_TYPE_SPAWN, body);
 
     let outcome = runtime
@@ -118,7 +118,7 @@ async fn na10_kameo_route_watch_request() {
             local: 10,
         },
     };
-    let body = dactor::proto::encode_watch_request(&request);
+    let body = dactor::proto::encode_watch_request(request);
     let envelope = make_envelope(SYSTEM_MSG_TYPE_WATCH, body);
 
     let outcome = runtime
@@ -156,7 +156,7 @@ async fn na10_kameo_route_unwatch_request() {
     };
 
     // Watch first
-    let watch_body = dactor::proto::encode_watch_request(&WatchRequest {
+    let watch_body = dactor::proto::encode_watch_request(WatchRequest {
         target: target.clone(),
         watcher: watcher.clone(),
     });
@@ -168,7 +168,7 @@ async fn na10_kameo_route_unwatch_request() {
         .unwrap();
 
     // Then unwatch
-    let unwatch_body = dactor::proto::encode_unwatch_request(&UnwatchRequest {
+    let unwatch_body = dactor::proto::encode_unwatch_request(UnwatchRequest {
         target: target.clone(),
         watcher: watcher.clone(),
     });
@@ -205,7 +205,7 @@ async fn na10_kameo_route_cancel_not_found() {
         },
         request_id: Some("nonexistent".into()),
     };
-    let body = dactor::proto::encode_cancel_request(&request);
+    let body = dactor::proto::encode_cancel_request(request);
     let envelope = make_envelope(SYSTEM_MSG_TYPE_CANCEL, body);
 
     let outcome = runtime
@@ -291,7 +291,7 @@ async fn na10_kameo_route_cancel_missing_request_id() {
         },
         request_id: None,
     };
-    let body = dactor::proto::encode_cancel_request(&request);
+    let body = dactor::proto::encode_cancel_request(request);
     let envelope = make_envelope(SYSTEM_MSG_TYPE_CANCEL, body);
 
     let result = runtime.route_system_envelope(envelope).await;
@@ -319,7 +319,7 @@ async fn na10_kameo_route_without_system_actors_fails() {
         name: "foo".into(),
         request_id: "req-1".into(),
     };
-    let body = dactor::proto::encode_spawn_request(&request);
+    let body = dactor::proto::encode_spawn_request(request);
     let envelope = make_envelope(SYSTEM_MSG_TYPE_SPAWN, body);
 
     let result = runtime.route_system_envelope(envelope).await;

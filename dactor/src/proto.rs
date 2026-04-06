@@ -30,11 +30,42 @@ use crate::system_actors::{
 };
 
 // Include prost-generated types from build.rs.
-mod generated {
+// These are internal wire-format types — only the typed encode/decode
+// helpers are part of the public API.
+#[allow(clippy::enum_variant_names)]
+pub(crate) mod generated {
     include!(concat!(env!("OUT_DIR"), "/dactor.system.rs"));
 }
 
-pub use generated::*;
+use generated::*;
+
+// ---------------------------------------------------------------------------
+// Size limit
+// ---------------------------------------------------------------------------
+
+/// Maximum allowed size for a system message protobuf payload (1 MB).
+///
+/// Enforced before decoding to prevent allocation-based DoS from untrusted
+/// peers. Application messages are not affected — they use separate
+/// [`MessageSerializer`](crate::remote::MessageSerializer) implementations.
+pub const MAX_SYSTEM_MSG_SIZE: usize = 1024 * 1024;
+
+/// Maximum allowed size for a WireEnvelope protobuf frame (4 MB).
+///
+/// Larger than system message limit because the body may contain a serialized
+/// application message of arbitrary size.
+pub const MAX_WIRE_ENVELOPE_SIZE: usize = 4 * 1024 * 1024;
+
+fn check_size(bytes: &[u8], limit: usize, what: &str) -> Result<(), SerializationError> {
+    if bytes.len() > limit {
+        Err(SerializationError::new(format!(
+            "{what}: payload too large ({} bytes, max {limit})",
+            bytes.len()
+        )))
+    } else {
+        Ok(())
+    }
+}
 
 // ---------------------------------------------------------------------------
 // ActorId conversions
@@ -47,21 +78,24 @@ fn actor_id_to_proto(id: &ActorId) -> ActorIdProto {
     }
 }
 
-fn actor_id_from_proto(proto: &ActorIdProto) -> ActorId {
-    ActorId {
+fn actor_id_from_proto(proto: &ActorIdProto) -> Result<ActorId, SerializationError> {
+    if proto.node_id.is_empty() {
+        return Err(SerializationError::new("ActorId: node_id must not be empty"));
+    }
+    Ok(ActorId {
         node: NodeId(proto.node_id.clone()),
         local: proto.local,
-    }
+    })
 }
 
 fn require_actor_id(
     field: &Option<ActorIdProto>,
     name: &str,
 ) -> Result<ActorId, SerializationError> {
-    field
+    let proto = field
         .as_ref()
-        .map(actor_id_from_proto)
-        .ok_or_else(|| SerializationError::new(format!("missing required field: {name}")))
+        .ok_or_else(|| SerializationError::new(format!("missing required field: {name}")))?;
+    actor_id_from_proto(proto)
 }
 
 // ---------------------------------------------------------------------------
@@ -69,20 +103,27 @@ fn require_actor_id(
 // ---------------------------------------------------------------------------
 
 /// Encode a [`SpawnRequest`] to protobuf bytes.
-pub fn encode_spawn_request(req: &SpawnRequest) -> Vec<u8> {
+pub fn encode_spawn_request(req: SpawnRequest) -> Vec<u8> {
     let proto = SpawnRequestProto {
-        type_name: req.type_name.clone(),
-        args_bytes: req.args_bytes.clone(),
-        name: req.name.clone(),
-        request_id: req.request_id.clone(),
+        type_name: req.type_name,
+        args_bytes: req.args_bytes,
+        name: req.name,
+        request_id: req.request_id,
     };
     proto.encode_to_vec()
 }
 
 /// Decode a [`SpawnRequest`] from protobuf bytes.
 pub fn decode_spawn_request(bytes: &[u8]) -> Result<SpawnRequest, SerializationError> {
+    check_size(bytes, MAX_SYSTEM_MSG_SIZE, "SpawnRequest")?;
     let proto = SpawnRequestProto::decode(bytes)
         .map_err(|e| SerializationError::new(format!("decode SpawnRequest: {e}")))?;
+    if proto.type_name.is_empty() {
+        return Err(SerializationError::new("SpawnRequest: type_name must not be empty"));
+    }
+    if proto.request_id.is_empty() {
+        return Err(SerializationError::new("SpawnRequest: request_id must not be empty"));
+    }
     Ok(SpawnRequest {
         type_name: proto.type_name,
         args_bytes: proto.args_bytes,
@@ -96,21 +137,21 @@ pub fn decode_spawn_request(bytes: &[u8]) -> Result<SpawnRequest, SerializationE
 // ---------------------------------------------------------------------------
 
 /// Encode a [`SpawnResponse`] to protobuf bytes.
-pub fn encode_spawn_response(resp: &SpawnResponse) -> Vec<u8> {
+pub fn encode_spawn_response(resp: SpawnResponse) -> Vec<u8> {
     let proto = match resp {
         SpawnResponse::Success {
             request_id,
             actor_id,
         } => SpawnResponseProto {
             result: Some(spawn_response_proto::Result::Success(SpawnSuccessProto {
-                request_id: request_id.clone(),
-                actor_id: Some(actor_id_to_proto(actor_id)),
+                request_id,
+                actor_id: Some(actor_id_to_proto(&actor_id)),
             })),
         },
         SpawnResponse::Failure { request_id, error } => SpawnResponseProto {
             result: Some(spawn_response_proto::Result::Failure(SpawnFailureProto {
-                request_id: request_id.clone(),
-                error: error.clone(),
+                request_id,
+                error,
             })),
         },
     };
@@ -119,6 +160,7 @@ pub fn encode_spawn_response(resp: &SpawnResponse) -> Vec<u8> {
 
 /// Decode a [`SpawnResponse`] from protobuf bytes.
 pub fn decode_spawn_response(bytes: &[u8]) -> Result<SpawnResponse, SerializationError> {
+    check_size(bytes, MAX_SYSTEM_MSG_SIZE, "SpawnResponse")?;
     let proto = SpawnResponseProto::decode(bytes)
         .map_err(|e| SerializationError::new(format!("decode SpawnResponse: {e}")))?;
     match proto.result {
@@ -141,7 +183,7 @@ pub fn decode_spawn_response(bytes: &[u8]) -> Result<SpawnResponse, Serializatio
 // ---------------------------------------------------------------------------
 
 /// Encode a [`WatchRequest`] to protobuf bytes.
-pub fn encode_watch_request(req: &WatchRequest) -> Vec<u8> {
+pub fn encode_watch_request(req: WatchRequest) -> Vec<u8> {
     let proto = WatchRequestProto {
         target: Some(actor_id_to_proto(&req.target)),
         watcher: Some(actor_id_to_proto(&req.watcher)),
@@ -151,6 +193,7 @@ pub fn encode_watch_request(req: &WatchRequest) -> Vec<u8> {
 
 /// Decode a [`WatchRequest`] from protobuf bytes.
 pub fn decode_watch_request(bytes: &[u8]) -> Result<WatchRequest, SerializationError> {
+    check_size(bytes, MAX_SYSTEM_MSG_SIZE, "WatchRequest")?;
     let proto = WatchRequestProto::decode(bytes)
         .map_err(|e| SerializationError::new(format!("decode WatchRequest: {e}")))?;
     Ok(WatchRequest {
@@ -164,7 +207,7 @@ pub fn decode_watch_request(bytes: &[u8]) -> Result<WatchRequest, SerializationE
 // ---------------------------------------------------------------------------
 
 /// Encode an [`UnwatchRequest`] to protobuf bytes.
-pub fn encode_unwatch_request(req: &UnwatchRequest) -> Vec<u8> {
+pub fn encode_unwatch_request(req: UnwatchRequest) -> Vec<u8> {
     let proto = UnwatchRequestProto {
         target: Some(actor_id_to_proto(&req.target)),
         watcher: Some(actor_id_to_proto(&req.watcher)),
@@ -174,6 +217,7 @@ pub fn encode_unwatch_request(req: &UnwatchRequest) -> Vec<u8> {
 
 /// Decode an [`UnwatchRequest`] from protobuf bytes.
 pub fn decode_unwatch_request(bytes: &[u8]) -> Result<UnwatchRequest, SerializationError> {
+    check_size(bytes, MAX_SYSTEM_MSG_SIZE, "UnwatchRequest")?;
     let proto = UnwatchRequestProto::decode(bytes)
         .map_err(|e| SerializationError::new(format!("decode UnwatchRequest: {e}")))?;
     Ok(UnwatchRequest {
@@ -187,7 +231,7 @@ pub fn decode_unwatch_request(bytes: &[u8]) -> Result<UnwatchRequest, Serializat
 // ---------------------------------------------------------------------------
 
 /// Encode a [`WatchNotification`] to protobuf bytes.
-pub fn encode_watch_notification(notif: &WatchNotification) -> Vec<u8> {
+pub fn encode_watch_notification(notif: WatchNotification) -> Vec<u8> {
     let proto = WatchNotificationProto {
         terminated: Some(actor_id_to_proto(&notif.terminated)),
         watcher: Some(actor_id_to_proto(&notif.watcher)),
@@ -199,6 +243,7 @@ pub fn encode_watch_notification(notif: &WatchNotification) -> Vec<u8> {
 pub fn decode_watch_notification(
     bytes: &[u8],
 ) -> Result<WatchNotification, SerializationError> {
+    check_size(bytes, MAX_SYSTEM_MSG_SIZE, "WatchNotification")?;
     let proto = WatchNotificationProto::decode(bytes)
         .map_err(|e| SerializationError::new(format!("decode WatchNotification: {e}")))?;
     Ok(WatchNotification {
@@ -212,16 +257,17 @@ pub fn decode_watch_notification(
 // ---------------------------------------------------------------------------
 
 /// Encode a [`CancelRequest`] to protobuf bytes.
-pub fn encode_cancel_request(req: &CancelRequest) -> Vec<u8> {
+pub fn encode_cancel_request(req: CancelRequest) -> Vec<u8> {
     let proto = CancelRequestProto {
         target: Some(actor_id_to_proto(&req.target)),
-        request_id: req.request_id.clone(),
+        request_id: req.request_id,
     };
     proto.encode_to_vec()
 }
 
 /// Decode a [`CancelRequest`] from protobuf bytes.
 pub fn decode_cancel_request(bytes: &[u8]) -> Result<CancelRequest, SerializationError> {
+    check_size(bytes, MAX_SYSTEM_MSG_SIZE, "CancelRequest")?;
     let proto = CancelRequestProto::decode(bytes)
         .map_err(|e| SerializationError::new(format!("decode CancelRequest: {e}")))?;
     Ok(CancelRequest {
@@ -235,7 +281,7 @@ pub fn decode_cancel_request(bytes: &[u8]) -> Result<CancelRequest, Serializatio
 // ---------------------------------------------------------------------------
 
 /// Encode a [`CancelResponse`] to protobuf bytes.
-pub fn encode_cancel_response(resp: &CancelResponse) -> Vec<u8> {
+pub fn encode_cancel_response(resp: CancelResponse) -> Vec<u8> {
     let proto = match resp {
         CancelResponse::Acknowledged => CancelResponseProto {
             result: Some(cancel_response_proto::Result::Acknowledged(
@@ -245,7 +291,7 @@ pub fn encode_cancel_response(resp: &CancelResponse) -> Vec<u8> {
         CancelResponse::NotFound { reason } => CancelResponseProto {
             result: Some(cancel_response_proto::Result::NotFound(
                 CancelNotFoundProto {
-                    reason: reason.clone(),
+                    reason,
                 },
             )),
         },
@@ -255,6 +301,7 @@ pub fn encode_cancel_response(resp: &CancelResponse) -> Vec<u8> {
 
 /// Decode a [`CancelResponse`] from protobuf bytes.
 pub fn decode_cancel_response(bytes: &[u8]) -> Result<CancelResponse, SerializationError> {
+    check_size(bytes, MAX_SYSTEM_MSG_SIZE, "CancelResponse")?;
     let proto = CancelResponseProto::decode(bytes)
         .map_err(|e| SerializationError::new(format!("decode CancelResponse: {e}")))?;
     match proto.result {
@@ -289,8 +336,12 @@ pub fn encode_connect_peer(node_id: &NodeId, address: Option<&str>) -> Vec<u8> {
 pub fn decode_connect_peer(
     bytes: &[u8],
 ) -> Result<(NodeId, Option<String>), SerializationError> {
+    check_size(bytes, MAX_SYSTEM_MSG_SIZE, "ConnectPeer")?;
     let proto = ConnectPeerProto::decode(bytes)
         .map_err(|e| SerializationError::new(format!("decode ConnectPeer: {e}")))?;
+    if proto.node_id.is_empty() {
+        return Err(SerializationError::new("ConnectPeer: node_id must not be empty"));
+    }
     Ok((NodeId(proto.node_id), proto.address))
 }
 
@@ -304,8 +355,12 @@ pub fn encode_disconnect_peer(node_id: &NodeId) -> Vec<u8> {
 
 /// Decode a disconnect-peer message from protobuf bytes.
 pub fn decode_disconnect_peer(bytes: &[u8]) -> Result<NodeId, SerializationError> {
+    check_size(bytes, MAX_SYSTEM_MSG_SIZE, "DisconnectPeer")?;
     let proto = DisconnectPeerProto::decode(bytes)
         .map_err(|e| SerializationError::new(format!("decode DisconnectPeer: {e}")))?;
+    if proto.node_id.is_empty() {
+        return Err(SerializationError::new("DisconnectPeer: node_id must not be empty"));
+    }
     Ok(NodeId(proto.node_id))
 }
 
@@ -357,6 +412,7 @@ pub fn encode_wire_envelope(env: &WireEnvelope) -> Vec<u8> {
 
 /// Decode a [`WireEnvelope`] from protobuf bytes.
 pub fn decode_wire_envelope(bytes: &[u8]) -> Result<WireEnvelope, SerializationError> {
+    check_size(bytes, MAX_WIRE_ENVELOPE_SIZE, "WireEnvelope")?;
     let proto = WireEnvelopeProto::decode(bytes)
         .map_err(|e| SerializationError::new(format!("decode WireEnvelope: {e}")))?;
     let target = require_actor_id(&proto.target, "WireEnvelope.target")?;
@@ -407,27 +463,25 @@ mod tests {
 
     #[test]
     fn spawn_request_roundtrip() {
-        let original = SpawnRequest {
+        let bytes = encode_spawn_request(SpawnRequest {
             type_name: "myapp::Counter".into(),
             args_bytes: vec![1, 2, 3],
             name: "counter-1".into(),
             request_id: "req-001".into(),
-        };
-        let bytes = encode_spawn_request(&original);
+        });
         let decoded = decode_spawn_request(&bytes).unwrap();
-        assert_eq!(decoded.type_name, original.type_name);
-        assert_eq!(decoded.args_bytes, original.args_bytes);
-        assert_eq!(decoded.name, original.name);
-        assert_eq!(decoded.request_id, original.request_id);
+        assert_eq!(decoded.type_name, "myapp::Counter");
+        assert_eq!(decoded.args_bytes, vec![1, 2, 3]);
+        assert_eq!(decoded.name, "counter-1");
+        assert_eq!(decoded.request_id, "req-001");
     }
 
     #[test]
     fn spawn_response_success_roundtrip() {
-        let original = SpawnResponse::Success {
+        let bytes = encode_spawn_response(SpawnResponse::Success {
             request_id: "req-001".into(),
             actor_id: test_actor_id(),
-        };
-        let bytes = encode_spawn_response(&original);
+        });
         let decoded = decode_spawn_response(&bytes).unwrap();
         match decoded {
             SpawnResponse::Success {
@@ -443,11 +497,10 @@ mod tests {
 
     #[test]
     fn spawn_response_failure_roundtrip() {
-        let original = SpawnResponse::Failure {
+        let bytes = encode_spawn_response(SpawnResponse::Failure {
             request_id: "req-002".into(),
             error: "type not found".into(),
-        };
-        let bytes = encode_spawn_response(&original);
+        });
         let decoded = decode_spawn_response(&bytes).unwrap();
         match decoded {
             SpawnResponse::Failure { request_id, error } => {
@@ -460,11 +513,10 @@ mod tests {
 
     #[test]
     fn watch_request_roundtrip() {
-        let original = WatchRequest {
+        let bytes = encode_watch_request(WatchRequest {
             target: test_actor_id(),
             watcher: test_actor_id2(),
-        };
-        let bytes = encode_watch_request(&original);
+        });
         let decoded = decode_watch_request(&bytes).unwrap();
         assert_eq!(decoded.target.local, 42);
         assert_eq!(decoded.watcher.local, 7);
@@ -472,11 +524,10 @@ mod tests {
 
     #[test]
     fn unwatch_request_roundtrip() {
-        let original = UnwatchRequest {
+        let bytes = encode_unwatch_request(UnwatchRequest {
             target: test_actor_id(),
             watcher: test_actor_id2(),
-        };
-        let bytes = encode_unwatch_request(&original);
+        });
         let decoded = decode_unwatch_request(&bytes).unwrap();
         assert_eq!(decoded.target.local, 42);
         assert_eq!(decoded.watcher.local, 7);
@@ -484,11 +535,10 @@ mod tests {
 
     #[test]
     fn watch_notification_roundtrip() {
-        let original = WatchNotification {
+        let bytes = encode_watch_notification(WatchNotification {
             terminated: test_actor_id(),
             watcher: test_actor_id2(),
-        };
-        let bytes = encode_watch_notification(&original);
+        });
         let decoded = decode_watch_notification(&bytes).unwrap();
         assert_eq!(decoded.terminated.local, 42);
         assert_eq!(decoded.watcher.local, 7);
@@ -496,11 +546,10 @@ mod tests {
 
     #[test]
     fn cancel_request_with_id_roundtrip() {
-        let original = CancelRequest {
+        let bytes = encode_cancel_request(CancelRequest {
             target: test_actor_id(),
             request_id: Some("req-cancel".into()),
-        };
-        let bytes = encode_cancel_request(&original);
+        });
         let decoded = decode_cancel_request(&bytes).unwrap();
         assert_eq!(decoded.target.local, 42);
         assert_eq!(decoded.request_id.as_deref(), Some("req-cancel"));
@@ -508,28 +557,26 @@ mod tests {
 
     #[test]
     fn cancel_request_without_id_roundtrip() {
-        let original = CancelRequest {
+        let bytes = encode_cancel_request(CancelRequest {
             target: test_actor_id(),
             request_id: None,
-        };
-        let bytes = encode_cancel_request(&original);
+        });
         let decoded = decode_cancel_request(&bytes).unwrap();
         assert!(decoded.request_id.is_none());
     }
 
     #[test]
     fn cancel_response_acknowledged_roundtrip() {
-        let bytes = encode_cancel_response(&CancelResponse::Acknowledged);
+        let bytes = encode_cancel_response(CancelResponse::Acknowledged);
         let decoded = decode_cancel_response(&bytes).unwrap();
         assert!(matches!(decoded, CancelResponse::Acknowledged));
     }
 
     #[test]
     fn cancel_response_not_found_roundtrip() {
-        let original = CancelResponse::NotFound {
+        let bytes = encode_cancel_response(CancelResponse::NotFound {
             reason: "no such request".into(),
-        };
-        let bytes = encode_cancel_response(&original);
+        });
         let decoded = decode_cancel_response(&bytes).unwrap();
         match decoded {
             CancelResponse::NotFound { reason } => assert_eq!(reason, "no such request"),
@@ -646,18 +693,115 @@ mod tests {
 
     #[test]
     fn protobuf_is_compact() {
-        let request = SpawnRequest {
+        let proto_bytes = encode_spawn_request(SpawnRequest {
             type_name: "myapp::Counter".into(),
             args_bytes: vec![1, 2, 3],
             name: "counter-1".into(),
             request_id: "req-001".into(),
-        };
-        let proto_bytes = encode_spawn_request(&request);
+        });
         // Protobuf should be significantly smaller than JSON
         assert!(
             proto_bytes.len() < 60,
             "protobuf should be compact, got {} bytes",
             proto_bytes.len()
         );
+    }
+
+    // --- Review-driven tests: empty field validation ---
+
+    #[test]
+    fn spawn_request_rejects_empty_type_name() {
+        let bytes = encode_spawn_request(SpawnRequest {
+            type_name: String::new(),
+            args_bytes: vec![],
+            name: "x".into(),
+            request_id: "r1".into(),
+        });
+        let err = decode_spawn_request(&bytes).unwrap_err();
+        assert!(err.message.contains("type_name"), "error: {}", err.message);
+    }
+
+    #[test]
+    fn spawn_request_rejects_empty_request_id() {
+        let bytes = encode_spawn_request(SpawnRequest {
+            type_name: "myapp::T".into(),
+            args_bytes: vec![],
+            name: "x".into(),
+            request_id: String::new(),
+        });
+        let err = decode_spawn_request(&bytes).unwrap_err();
+        assert!(err.message.contains("request_id"), "error: {}", err.message);
+    }
+
+    #[test]
+    fn connect_peer_rejects_empty_node_id() {
+        let bytes = encode_connect_peer(&NodeId(String::new()), None);
+        let err = decode_connect_peer(&bytes).unwrap_err();
+        assert!(err.message.contains("node_id"), "error: {}", err.message);
+    }
+
+    #[test]
+    fn disconnect_peer_rejects_empty_node_id() {
+        let bytes = encode_disconnect_peer(&NodeId(String::new()));
+        let err = decode_disconnect_peer(&bytes).unwrap_err();
+        assert!(err.message.contains("node_id"), "error: {}", err.message);
+    }
+
+    #[test]
+    fn actor_id_rejects_empty_node_id() {
+        // A WatchRequest with an empty node_id in the target should fail.
+        use prost::Message;
+        let proto = WatchRequestProto {
+            target: Some(ActorIdProto {
+                node_id: String::new(),
+                local: 1,
+            }),
+            watcher: Some(ActorIdProto {
+                node_id: "ok".into(),
+                local: 2,
+            }),
+        };
+        let bytes = proto.encode_to_vec();
+        let err = decode_watch_request(&bytes).unwrap_err();
+        assert!(err.message.contains("node_id"), "error: {}", err.message);
+    }
+
+    // --- Review-driven tests: size limits ---
+
+    #[test]
+    fn decode_rejects_oversized_payload() {
+        let huge = vec![0u8; MAX_SYSTEM_MSG_SIZE + 1];
+        let err = decode_spawn_request(&huge).unwrap_err();
+        assert!(err.message.contains("too large"), "error: {}", err.message);
+    }
+
+    #[test]
+    fn decode_wire_envelope_rejects_oversized_payload() {
+        let huge = vec![0u8; MAX_WIRE_ENVELOPE_SIZE + 1];
+        let err = decode_wire_envelope(&huge).unwrap_err();
+        assert!(err.message.contains("too large"), "error: {}", err.message);
+    }
+
+    // --- Review-driven tests: malformed UUID ---
+
+    #[test]
+    fn wire_envelope_rejects_malformed_uuid() {
+        use prost::Message;
+        let proto = WireEnvelopeProto {
+            target: Some(ActorIdProto {
+                node_id: "n1".into(),
+                local: 1,
+            }),
+            target_name: String::new(),
+            message_type: "test".into(),
+            send_mode: 0,
+            headers: Default::default(),
+            body: vec![],
+            request_id: Some("not-a-uuid".into()),
+            version: None,
+        };
+        let bytes = proto.encode_to_vec();
+        let err = decode_wire_envelope(&bytes).unwrap_err();
+        assert!(err.message.contains("UUID"), "error: {}", err.message);
     }
 }

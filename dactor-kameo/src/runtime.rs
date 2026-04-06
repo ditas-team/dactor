@@ -1470,7 +1470,6 @@ impl dactor::system_router::SystemMessageRouter for KameoRuntime {
 
                 let request_id = request
                     .request_id
-                    .clone()
                     .ok_or_else(|| RoutingError::new("CancelRequest missing request_id"))?;
 
                 let outcome = refs

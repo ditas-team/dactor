@@ -1479,7 +1479,6 @@ impl dactor::system_router::SystemMessageRouter for RactorRuntime {
 
                 let request_id = request
                     .request_id
-                    .clone()
                     .ok_or_else(|| RoutingError::new("CancelRequest missing request_id"))?;
 
                 let (tx, rx) = tokio::sync::oneshot::channel();

@@ -73,6 +73,8 @@ message WatchNotificationProto {
 
 message CancelRequestProto {
     ActorIdProto target = 1;
+    // Optional: only present when cancelling a specific request.
+    // Omitted when cancelling all operations for the target actor.
     optional string request_id = 2;
 }
 
@@ -121,6 +123,7 @@ message WireEnvelopeProto {
     SendModeProto send_mode = 4;
     map<string, bytes> headers = 5;
     bytes body = 6;
+    // Must be RFC 4122 UUID format if present (e.g. "550e8400-e29b-41d4-a716-446655440000").
     optional string request_id = 7;
     optional uint32 version = 8;
 }
