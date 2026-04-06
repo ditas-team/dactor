@@ -11,11 +11,52 @@
 //! - [`WatchManager`] — handles remote watch/unwatch subscriptions
 //! - [`CancelManager`] — handles remote cancellation requests
 //! - [`NodeDirectory`] — maps NodeId → connection metadata
+//!
+//! ## System Message Type Constants
+//!
+//! Well-known [`WireEnvelope::message_type`](crate::remote::WireEnvelope::message_type)
+//! values used by the transport router to dispatch incoming envelopes to the
+//! correct system actor mailbox. See [`system_router`](crate::system_router).
 
 use std::collections::{HashMap, HashSet};
 
 use crate::node::{ActorId, NodeId};
 use crate::remote::SerializationError;
+
+// ---------------------------------------------------------------------------
+// System message type constants (for WireEnvelope.message_type matching)
+// ---------------------------------------------------------------------------
+
+/// `WireEnvelope.message_type` for [`SpawnRequest`].
+pub const SYSTEM_MSG_TYPE_SPAWN: &str = "dactor::system_actors::SpawnRequest";
+
+/// `WireEnvelope.message_type` for [`WatchRequest`].
+pub const SYSTEM_MSG_TYPE_WATCH: &str = "dactor::system_actors::WatchRequest";
+
+/// `WireEnvelope.message_type` for [`UnwatchRequest`].
+pub const SYSTEM_MSG_TYPE_UNWATCH: &str = "dactor::system_actors::UnwatchRequest";
+
+/// `WireEnvelope.message_type` for [`CancelRequest`].
+pub const SYSTEM_MSG_TYPE_CANCEL: &str = "dactor::system_actors::CancelRequest";
+
+/// `WireEnvelope.message_type` for peer connect messages routed to [`NodeDirectory`].
+pub const SYSTEM_MSG_TYPE_CONNECT_PEER: &str = "dactor::system_actors::ConnectPeer";
+
+/// `WireEnvelope.message_type` for peer disconnect messages routed to [`NodeDirectory`].
+pub const SYSTEM_MSG_TYPE_DISCONNECT_PEER: &str = "dactor::system_actors::DisconnectPeer";
+
+/// Returns `true` if `message_type` is a well-known system message type.
+pub fn is_system_message_type(message_type: &str) -> bool {
+    matches!(
+        message_type,
+        SYSTEM_MSG_TYPE_SPAWN
+            | SYSTEM_MSG_TYPE_WATCH
+            | SYSTEM_MSG_TYPE_UNWATCH
+            | SYSTEM_MSG_TYPE_CANCEL
+            | SYSTEM_MSG_TYPE_CONNECT_PEER
+            | SYSTEM_MSG_TYPE_DISCONNECT_PEER
+    )
+}
 
 // ---------------------------------------------------------------------------
 // SpawnManager

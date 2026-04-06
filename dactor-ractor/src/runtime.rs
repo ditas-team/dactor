@@ -1427,3 +1427,169 @@ impl Default for RactorRuntime {
     }
 }
 
+// ---------------------------------------------------------------------------
+// NA10: SystemMessageRouter for ractor
+// ---------------------------------------------------------------------------
+
+#[async_trait::async_trait]
+impl dactor::system_router::SystemMessageRouter for RactorRuntime {
+    async fn route_system_envelope(
+        &self,
+        envelope: dactor::remote::WireEnvelope,
+        serializer: &dyn dactor::remote::MessageSerializer,
+    ) -> Result<dactor::system_router::RoutingOutcome, dactor::system_router::RoutingError> {
+        use dactor::system_actors::*;
+        use dactor::system_router::{RoutingError, RoutingOutcome};
+
+        dactor::system_router::validate_system_message_type(&envelope.message_type)?;
+
+        let refs = self
+            .system_actors
+            .as_ref()
+            .ok_or_else(|| RoutingError::new("system actors not started"))?;
+
+        match envelope.message_type.as_str() {
+            SYSTEM_MSG_TYPE_SPAWN => {
+                let request = serializer
+                    .deserialize(&envelope.body, &envelope.message_type)
+                    .map_err(|e| RoutingError::new(format!("deserialize SpawnRequest: {e}")))?;
+                let request = request
+                    .downcast::<SpawnRequest>()
+                    .map_err(|_| RoutingError::new("body is not a SpawnRequest"))?;
+
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                refs.spawn_manager
+                    .cast(crate::system_actors::SpawnManagerMsg::HandleRequest {
+                        request: *request,
+                        reply: tx,
+                    })
+                    .map_err(|e| RoutingError::new(format!("SpawnManager mailbox: {e}")))?;
+
+                let result = rx
+                    .await
+                    .map_err(|_| RoutingError::new("SpawnManager reply dropped"))?;
+
+                match result {
+                    Ok((actor_id, _actor)) => Ok(RoutingOutcome::SpawnCompleted { actor_id }),
+                    Err(SpawnResponse::Failure { request_id, error }) => {
+                        Ok(RoutingOutcome::SpawnFailed { request_id, error })
+                    }
+                    Err(SpawnResponse::Success { .. }) => {
+                        // SpawnResult Err variant is always Failure
+                        unreachable!("SpawnResult::Err always wraps SpawnResponse::Failure")
+                    }
+                }
+            }
+
+            SYSTEM_MSG_TYPE_WATCH => {
+                let request = serializer
+                    .deserialize(&envelope.body, &envelope.message_type)
+                    .map_err(|e| RoutingError::new(format!("deserialize WatchRequest: {e}")))?;
+                let request = request
+                    .downcast::<WatchRequest>()
+                    .map_err(|_| RoutingError::new("body is not a WatchRequest"))?;
+
+                refs.watch_manager
+                    .cast(crate::system_actors::WatchManagerMsg::Watch {
+                        target: request.target,
+                        watcher: request.watcher,
+                    })
+                    .map_err(|e| RoutingError::new(format!("WatchManager mailbox: {e}")))?;
+
+                Ok(RoutingOutcome::Acknowledged)
+            }
+
+            SYSTEM_MSG_TYPE_UNWATCH => {
+                let request = serializer
+                    .deserialize(&envelope.body, &envelope.message_type)
+                    .map_err(|e| RoutingError::new(format!("deserialize UnwatchRequest: {e}")))?;
+                let request = request
+                    .downcast::<UnwatchRequest>()
+                    .map_err(|_| RoutingError::new("body is not an UnwatchRequest"))?;
+
+                refs.watch_manager
+                    .cast(crate::system_actors::WatchManagerMsg::Unwatch {
+                        target: request.target,
+                        watcher: request.watcher,
+                    })
+                    .map_err(|e| RoutingError::new(format!("WatchManager mailbox: {e}")))?;
+
+                Ok(RoutingOutcome::Acknowledged)
+            }
+
+            SYSTEM_MSG_TYPE_CANCEL => {
+                let request = serializer
+                    .deserialize(&envelope.body, &envelope.message_type)
+                    .map_err(|e| RoutingError::new(format!("deserialize CancelRequest: {e}")))?;
+                let request = request
+                    .downcast::<CancelRequest>()
+                    .map_err(|_| RoutingError::new("body is not a CancelRequest"))?;
+
+                let request_id = request
+                    .request_id
+                    .clone()
+                    .unwrap_or_default();
+
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                refs.cancel_manager
+                    .cast(crate::system_actors::CancelManagerMsg::Cancel {
+                        request_id,
+                        reply: tx,
+                    })
+                    .map_err(|e| RoutingError::new(format!("CancelManager mailbox: {e}")))?;
+
+                let response = rx
+                    .await
+                    .map_err(|_| RoutingError::new("CancelManager reply dropped"))?;
+
+                match response {
+                    CancelResponse::Acknowledged => Ok(RoutingOutcome::CancelAcknowledged),
+                    CancelResponse::NotFound { reason } => {
+                        Ok(RoutingOutcome::CancelNotFound { reason })
+                    }
+                }
+            }
+
+            SYSTEM_MSG_TYPE_CONNECT_PEER => {
+                let peer_id = NodeId(
+                    String::from_utf8(envelope.body.clone())
+                        .map_err(|e| RoutingError::new(format!("invalid ConnectPeer body: {e}")))?,
+                );
+                let address = envelope
+                    .headers
+                    .get("address")
+                    .and_then(|b| String::from_utf8(b.to_vec()).ok());
+
+                refs.node_directory
+                    .cast(crate::system_actors::NodeDirectoryMsg::ConnectPeer {
+                        peer_id,
+                        address,
+                    })
+                    .map_err(|e| RoutingError::new(format!("NodeDirectory mailbox: {e}")))?;
+
+                Ok(RoutingOutcome::Acknowledged)
+            }
+
+            SYSTEM_MSG_TYPE_DISCONNECT_PEER => {
+                let peer_id = NodeId(
+                    String::from_utf8(envelope.body.clone())
+                        .map_err(|e| {
+                            RoutingError::new(format!("invalid DisconnectPeer body: {e}"))
+                        })?,
+                );
+
+                refs.node_directory
+                    .cast(crate::system_actors::NodeDirectoryMsg::DisconnectPeer { peer_id })
+                    .map_err(|e| RoutingError::new(format!("NodeDirectory mailbox: {e}")))?;
+
+                Ok(RoutingOutcome::Acknowledged)
+            }
+
+            _ => Err(RoutingError::new(format!(
+                "unhandled system message type: {}",
+                envelope.message_type
+            ))),
+        }
+    }
+}
+

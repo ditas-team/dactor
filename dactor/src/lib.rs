@@ -74,6 +74,8 @@ pub mod stream;
 pub mod supervision;
 /// System actors for remote operations (spawn, watch, cancel, directory).
 pub mod system_actors;
+/// Transport routing for incoming system messages to native actor mailboxes.
+pub mod system_router;
 /// Rate limiting for actors.
 pub mod throttle;
 /// Timer scheduling (send_after, send_interval).
@@ -169,6 +171,12 @@ pub use system_actors::{
     SpawnManager, SpawnRequest, SpawnResponse, UnwatchRequest, WatchManager, WatchNotification,
     WatchRequest,
 };
+pub use system_actors::{
+    is_system_message_type, SYSTEM_MSG_TYPE_CANCEL, SYSTEM_MSG_TYPE_CONNECT_PEER,
+    SYSTEM_MSG_TYPE_DISCONNECT_PEER, SYSTEM_MSG_TYPE_SPAWN, SYSTEM_MSG_TYPE_UNWATCH,
+    SYSTEM_MSG_TYPE_WATCH,
+};
+pub use system_router::{RoutingError, RoutingOutcome, SystemMessageRouter};
 pub use throttle::ActorRateLimiter;
 pub use timer::TimerHandle;
 pub use timer::{send_after, send_interval};
