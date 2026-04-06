@@ -134,7 +134,8 @@ async fn na10_route_spawn_request_success() {
         .expect("routing should succeed");
 
     match outcome {
-        RoutingOutcome::SpawnCompleted { actor_id } => {
+        RoutingOutcome::SpawnCompleted { request_id, actor_id } => {
+            assert_eq!(request_id, "req-1");
             assert_eq!(actor_id.node, NodeId("test-node".into()));
         }
         other => panic!("expected SpawnCompleted, got {other:?}"),
@@ -304,8 +305,12 @@ async fn na10_route_cancel_acknowledged() {
         })
         .unwrap();
 
-    // Small delay to let the registration be processed
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    // Confirm registration via request-response (no sleep needed)
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    refs.cancel_manager
+        .cast(dactor_ractor::system_actors::CancelManagerMsg::GetActiveCount { reply: tx })
+        .unwrap();
+    assert_eq!(rx.await.unwrap(), 1);
 
     let request = CancelRequest {
         target: ActorId {
@@ -347,7 +352,7 @@ async fn na10_route_connect_disconnect_peer() {
         .expect("routing should succeed");
     assert!(matches!(outcome, RoutingOutcome::Acknowledged));
 
-    // Verify peer was registered
+    // Verify peer was registered (no sleep needed — cast ordering is FIFO)
     let refs = runtime.system_actor_refs().unwrap();
     let (tx, rx) = tokio::sync::oneshot::channel();
     refs.node_directory
@@ -356,9 +361,6 @@ async fn na10_route_connect_disconnect_peer() {
             reply: tx,
         })
         .unwrap();
-
-    // Small delay to let ConnectPeer be processed before IsConnected query
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     let connected = rx.await.unwrap();
     assert!(connected);
 
@@ -371,7 +373,6 @@ async fn na10_route_connect_disconnect_peer() {
     assert!(matches!(outcome, RoutingOutcome::Acknowledged));
 
     // Verify peer was disconnected
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     let (tx, rx) = tokio::sync::oneshot::channel();
     refs.node_directory
         .cast(dactor_ractor::system_actors::NodeDirectoryMsg::IsConnected {
@@ -397,6 +398,38 @@ async fn na10_route_unknown_message_type_rejected() {
     let result = runtime.route_system_envelope(envelope, &serializer).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().message.contains("unknown system message type"));
+}
+
+#[tokio::test]
+async fn na10_route_cancel_missing_request_id() {
+    let runtime = setup_runtime().await;
+    let serializer = TestSerializer;
+
+    let request = CancelRequest {
+        target: ActorId {
+            node: NodeId("test-node".into()),
+            local: 1,
+        },
+        request_id: None,
+    };
+    let body = serializer.serialize(&request as &dyn std::any::Any).unwrap();
+    let envelope = make_envelope(SYSTEM_MSG_TYPE_CANCEL, body);
+
+    let result = runtime.route_system_envelope(envelope, &serializer).await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().message.contains("missing request_id"));
+}
+
+#[tokio::test]
+async fn na10_route_connect_invalid_utf8() {
+    let runtime = setup_runtime().await;
+    let serializer = TestSerializer;
+
+    let envelope = make_envelope(SYSTEM_MSG_TYPE_CONNECT_PEER, vec![0xFF, 0xFE]);
+
+    let result = runtime.route_system_envelope(envelope, &serializer).await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().message.contains("invalid ConnectPeer body"));
 }
 
 #[tokio::test]

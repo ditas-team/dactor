@@ -1431,6 +1431,12 @@ impl Default for RactorRuntime {
 // NA10: SystemMessageRouter for ractor
 // ---------------------------------------------------------------------------
 
+// NOTE: System messages routed here update the **native system actors** (the
+// mailbox-based ractor actors spawned by `start_system_actors()`). The runtime
+// also keeps plain struct system actors (`self.watch_manager`, etc.) for the
+// backward-compatible sync API. This dual-state pattern is intentional — see
+// progress.md "Dual struct+actor pattern" design decision.
+
 #[async_trait::async_trait]
 impl dactor::system_router::SystemMessageRouter for RactorRuntime {
     async fn route_system_envelope(
@@ -1457,6 +1463,7 @@ impl dactor::system_router::SystemMessageRouter for RactorRuntime {
                     .downcast::<SpawnRequest>()
                     .map_err(|_| RoutingError::new("body is not a SpawnRequest"))?;
 
+                let req_id = request.request_id.clone();
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 refs.spawn_manager
                     .cast(crate::system_actors::SpawnManagerMsg::HandleRequest {
@@ -1470,12 +1477,14 @@ impl dactor::system_router::SystemMessageRouter for RactorRuntime {
                     .map_err(|_| RoutingError::new("SpawnManager reply dropped"))?;
 
                 match result {
-                    Ok((actor_id, _actor)) => Ok(RoutingOutcome::SpawnCompleted { actor_id }),
+                    Ok((actor_id, _actor)) => Ok(RoutingOutcome::SpawnCompleted {
+                        request_id: req_id,
+                        actor_id,
+                    }),
                     Err(SpawnResponse::Failure { request_id, error }) => {
                         Ok(RoutingOutcome::SpawnFailed { request_id, error })
                     }
                     Err(SpawnResponse::Success { .. }) => {
-                        // SpawnResult Err variant is always Failure
                         unreachable!("SpawnResult::Err always wraps SpawnResponse::Failure")
                     }
                 }
@@ -1528,7 +1537,7 @@ impl dactor::system_router::SystemMessageRouter for RactorRuntime {
                 let request_id = request
                     .request_id
                     .clone()
-                    .unwrap_or_default();
+                    .ok_or_else(|| RoutingError::new("CancelRequest missing request_id"))?;
 
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 refs.cancel_manager
@@ -1552,13 +1561,17 @@ impl dactor::system_router::SystemMessageRouter for RactorRuntime {
 
             SYSTEM_MSG_TYPE_CONNECT_PEER => {
                 let peer_id = NodeId(
-                    String::from_utf8(envelope.body.clone())
+                    String::from_utf8(envelope.body)
                         .map_err(|e| RoutingError::new(format!("invalid ConnectPeer body: {e}")))?,
                 );
                 let address = envelope
                     .headers
                     .get("address")
-                    .and_then(|b| String::from_utf8(b.to_vec()).ok());
+                    .map(|b| {
+                        String::from_utf8(b.to_vec())
+                            .map_err(|e| RoutingError::new(format!("invalid address header: {e}")))
+                    })
+                    .transpose()?;
 
                 refs.node_directory
                     .cast(crate::system_actors::NodeDirectoryMsg::ConnectPeer {
@@ -1572,7 +1585,7 @@ impl dactor::system_router::SystemMessageRouter for RactorRuntime {
 
             SYSTEM_MSG_TYPE_DISCONNECT_PEER => {
                 let peer_id = NodeId(
-                    String::from_utf8(envelope.body.clone())
+                    String::from_utf8(envelope.body)
                         .map_err(|e| {
                             RoutingError::new(format!("invalid DisconnectPeer body: {e}"))
                         })?,
@@ -1585,9 +1598,11 @@ impl dactor::system_router::SystemMessageRouter for RactorRuntime {
                 Ok(RoutingOutcome::Acknowledged)
             }
 
-            _ => Err(RoutingError::new(format!(
-                "unhandled system message type: {}",
-                envelope.message_type
+            // validate_system_message_type() already rejected unknown types above,
+            // so this branch only triggers if a new constant is added without a
+            // handler — a compile-time-detectable oversight.
+            other => Err(RoutingError::new(format!(
+                "unhandled system message type: {other}"
             ))),
         }
     }

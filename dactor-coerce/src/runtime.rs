@@ -1475,6 +1475,12 @@ impl Default for CoerceRuntime {
 // NA10: SystemMessageRouter for coerce
 // ---------------------------------------------------------------------------
 
+// NOTE: System messages routed here update the **native system actors** (the
+// mailbox-based coerce actors spawned by `start_system_actors()`). The runtime
+// also keeps plain struct system actors (`self.watch_manager`, etc.) for the
+// backward-compatible sync API. This dual-state pattern is intentional — see
+// progress.md "Dual struct+actor pattern" design decision.
+
 #[async_trait::async_trait]
 impl dactor::system_router::SystemMessageRouter for CoerceRuntime {
     async fn route_system_envelope(
@@ -1501,6 +1507,7 @@ impl dactor::system_router::SystemMessageRouter for CoerceRuntime {
                     .downcast::<SpawnRequest>()
                     .map_err(|_| RoutingError::new("body is not a SpawnRequest"))?;
 
+                let req_id = request.request_id.clone();
                 let outcome = refs
                     .spawn_manager
                     .send(crate::system_actors::HandleSpawnRequest(*request))
@@ -1509,7 +1516,10 @@ impl dactor::system_router::SystemMessageRouter for CoerceRuntime {
 
                 match outcome {
                     crate::system_actors::SpawnOutcome::Success { actor_id, .. } => {
-                        Ok(RoutingOutcome::SpawnCompleted { actor_id })
+                        Ok(RoutingOutcome::SpawnCompleted {
+                            request_id: req_id,
+                            actor_id,
+                        })
                     }
                     crate::system_actors::SpawnOutcome::Failure(SpawnResponse::Failure {
                         request_id,
@@ -1567,7 +1577,10 @@ impl dactor::system_router::SystemMessageRouter for CoerceRuntime {
                     .downcast::<CancelRequest>()
                     .map_err(|_| RoutingError::new("body is not a CancelRequest"))?;
 
-                let request_id = request.request_id.clone().unwrap_or_default();
+                let request_id = request
+                    .request_id
+                    .clone()
+                    .ok_or_else(|| RoutingError::new("CancelRequest missing request_id"))?;
 
                 let outcome = refs
                     .cancel_manager
@@ -1585,13 +1598,17 @@ impl dactor::system_router::SystemMessageRouter for CoerceRuntime {
 
             SYSTEM_MSG_TYPE_CONNECT_PEER => {
                 let peer_id = NodeId(
-                    String::from_utf8(envelope.body.clone())
+                    String::from_utf8(envelope.body)
                         .map_err(|e| RoutingError::new(format!("invalid ConnectPeer body: {e}")))?,
                 );
                 let address = envelope
                     .headers
                     .get("address")
-                    .and_then(|b| String::from_utf8(b.to_vec()).ok());
+                    .map(|b| {
+                        String::from_utf8(b.to_vec())
+                            .map_err(|e| RoutingError::new(format!("invalid address header: {e}")))
+                    })
+                    .transpose()?;
 
                 refs.node_directory
                     .notify(crate::system_actors::ConnectPeer {
@@ -1605,7 +1622,7 @@ impl dactor::system_router::SystemMessageRouter for CoerceRuntime {
 
             SYSTEM_MSG_TYPE_DISCONNECT_PEER => {
                 let peer_id = NodeId(
-                    String::from_utf8(envelope.body.clone())
+                    String::from_utf8(envelope.body)
                         .map_err(|e| {
                             RoutingError::new(format!("invalid DisconnectPeer body: {e}"))
                         })?,
@@ -1618,9 +1635,8 @@ impl dactor::system_router::SystemMessageRouter for CoerceRuntime {
                 Ok(RoutingOutcome::Acknowledged)
             }
 
-            _ => Err(RoutingError::new(format!(
-                "unhandled system message type: {}",
-                envelope.message_type
+            other => Err(RoutingError::new(format!(
+                "unhandled system message type: {other}"
             ))),
         }
     }

@@ -63,6 +63,8 @@ impl std::error::Error for RoutingError {}
 pub enum RoutingOutcome {
     /// A spawn request was processed and an actor was created.
     SpawnCompleted {
+        /// Request ID for correlating the reply back to the sender.
+        request_id: String,
         /// The ID of the newly spawned actor.
         actor_id: ActorId,
     },
@@ -173,6 +175,7 @@ mod tests {
     #[test]
     fn routing_outcome_variants() {
         let spawn_ok = RoutingOutcome::SpawnCompleted {
+            request_id: "r1".into(),
             actor_id: crate::node::ActorId {
                 node: crate::node::NodeId("n1".into()),
                 local: 42,

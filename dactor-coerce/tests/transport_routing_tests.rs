@@ -130,7 +130,8 @@ async fn na10_coerce_route_spawn_request_success() {
         .expect("routing should succeed");
 
     match outcome {
-        RoutingOutcome::SpawnCompleted { actor_id } => {
+        RoutingOutcome::SpawnCompleted { request_id, actor_id } => {
+            assert_eq!(request_id, "req-1");
             assert_eq!(actor_id.node.0, "coerce-node");
         }
         other => panic!("expected SpawnCompleted, got {other:?}"),
@@ -196,6 +197,68 @@ async fn na10_coerce_route_watch_request() {
         .await
         .expect("send");
     assert_eq!(count, 1);
+}
+
+// ---------------------------------------------------------------------------
+// UnwatchRequest routing
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn na10_coerce_route_unwatch_request() {
+    let runtime = setup_runtime().await;
+    let serializer = TestSerializer;
+
+    let target = ActorId {
+        node: NodeId("test-node".into()),
+        local: 1,
+    };
+    let watcher = ActorId {
+        node: NodeId("remote-node".into()),
+        local: 10,
+    };
+
+    // Watch first
+    let watch_body = serializer
+        .serialize(&WatchRequest {
+            target: target.clone(),
+            watcher: watcher.clone(),
+        } as &dyn std::any::Any)
+        .unwrap();
+    runtime
+        .route_system_envelope(
+            make_envelope(SYSTEM_MSG_TYPE_WATCH, watch_body),
+            &serializer,
+        )
+        .await
+        .unwrap();
+
+    // Then unwatch
+    let unwatch_body = serializer
+        .serialize(&UnwatchRequest {
+            target: target.clone(),
+            watcher: watcher.clone(),
+        } as &dyn std::any::Any)
+        .unwrap();
+    let outcome = runtime
+        .route_system_envelope(
+            make_envelope(SYSTEM_MSG_TYPE_UNWATCH, unwatch_body),
+            &serializer,
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(outcome, RoutingOutcome::Acknowledged));
+
+    // Small delay for coerce notify to be processed
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let refs = runtime.system_actor_refs().unwrap();
+    let count = refs
+        .watch_manager
+        .send(dactor_coerce::system_actors::GetWatchedCount)
+        .await
+        .expect("send");
+    assert_eq!(count, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -295,6 +358,38 @@ async fn na10_coerce_route_unknown_message_type_rejected() {
     let result = runtime.route_system_envelope(envelope, &serializer).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().message.contains("unknown system message type"));
+}
+
+#[tokio::test]
+async fn na10_coerce_route_cancel_missing_request_id() {
+    let runtime = setup_runtime().await;
+    let serializer = TestSerializer;
+
+    let request = CancelRequest {
+        target: ActorId {
+            node: NodeId("test-node".into()),
+            local: 1,
+        },
+        request_id: None,
+    };
+    let body = serializer.serialize(&request as &dyn std::any::Any).unwrap();
+    let envelope = make_envelope(SYSTEM_MSG_TYPE_CANCEL, body);
+
+    let result = runtime.route_system_envelope(envelope, &serializer).await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().message.contains("missing request_id"));
+}
+
+#[tokio::test]
+async fn na10_coerce_route_connect_invalid_utf8() {
+    let runtime = setup_runtime().await;
+    let serializer = TestSerializer;
+
+    let envelope = make_envelope(SYSTEM_MSG_TYPE_CONNECT_PEER, vec![0xFF, 0xFE]);
+
+    let result = runtime.route_system_envelope(envelope, &serializer).await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().message.contains("invalid ConnectPeer body"));
 }
 
 #[tokio::test]
