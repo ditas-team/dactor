@@ -384,16 +384,20 @@ pub trait ActorRef<A: Actor>: Clone + Send + Sync + 'static {
     ///
     /// `buffer` controls the internal channel capacity (backpressure).
     ///
+    /// Pass `batch_config` to enable batching on the output stream (reduces
+    /// per-item overhead for remote actors). `None` means unbatched delivery.
+    ///
     /// Pass a [`CancellationToken`] to cooperatively cancel the transform.
     ///
     /// Usage:
     /// ```ignore
-    /// let output: BoxStream<String> = actor.transform::<i32, String>(input, 8, None)?;
+    /// let output: BoxStream<String> = actor.transform::<i32, String>(input, 8, None, None)?;
     /// ```
     fn transform<InputItem, OutputItem>(
         &self,
         input: BoxStream<InputItem>,
         buffer: usize,
+        batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
     ) -> Result<BoxStream<OutputItem>, ActorSendError>
     where

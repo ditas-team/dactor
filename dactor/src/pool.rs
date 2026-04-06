@@ -368,6 +368,7 @@ impl<A: Actor, R: ActorRef<A>> ActorRef<A> for PoolRef<A, R> {
         &self,
         input: BoxStream<InputItem>,
         buffer: usize,
+        batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
     ) -> Result<BoxStream<OutputItem>, ActorSendError>
     where
@@ -375,7 +376,7 @@ impl<A: Actor, R: ActorRef<A>> ActorRef<A> for PoolRef<A, R> {
         InputItem: Send + 'static,
         OutputItem: Send + 'static,
     {
-        self.select_worker().transform(input, buffer, cancel)
+        self.select_worker().transform(input, buffer, batch_config, cancel)
     }
 }
 

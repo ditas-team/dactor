@@ -642,6 +642,7 @@ impl<A: Actor + Send + Sync + 'static> ActorRef<A> for CoerceActorRef<A> {
         &self,
         input: BoxStream<InputItem>,
         buffer: usize,
+        _batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
     ) -> Result<BoxStream<OutputItem>, ActorSendError>
     where

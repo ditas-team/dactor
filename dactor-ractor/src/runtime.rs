@@ -670,6 +670,7 @@ impl<A: Actor + 'static> ActorRef<A> for RactorActorRef<A> {
         &self,
         input: BoxStream<InputItem>,
         buffer: usize,
+        _batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
     ) -> Result<BoxStream<OutputItem>, ActorSendError>
     where

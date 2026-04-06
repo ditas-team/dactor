@@ -520,6 +520,7 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
         &self,
         input: BoxStream<InputItem>,
         buffer: usize,
+        batch_config: Option<BatchConfig>,
         cancel: Option<CancellationToken>,
     ) -> Result<BoxStream<OutputItem>, ActorSendError>
     where
@@ -531,7 +532,7 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
         let pipeline = self.outbound_pipeline();
 
         let (item_tx, item_rx) = tokio::sync::mpsc::channel(buffer);
-        let (output_tx, output_rx) = tokio::sync::mpsc::channel(buffer);
+        let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(buffer);
         let receiver = StreamReceiver::new(item_rx);
         let sender = StreamSender::new(output_tx);
         let dispatch: BoxedDispatch<A> = Box::new(TransformDispatch::new(
@@ -549,13 +550,60 @@ impl<A: Actor> ActorRef<A> for TestActorRef<A> {
             std::any::type_name::<InputItem>(),
         );
 
-        Ok(crate::runtime_support::wrap_stream_with_interception(
-            output_rx,
-            buffer,
-            pipeline,
-            std::any::type_name::<OutputItem>(),
-            SendMode::Transform,
-        ))
+        match batch_config {
+            Some(batch_config) => {
+                // Batched: handler → batch writer → batch reader → interception → caller
+                let (batch_tx, batch_rx) =
+                    tokio::sync::mpsc::channel::<Vec<OutputItem>>(buffer);
+                let reader = BatchReader::new(batch_rx);
+                tokio::spawn(async move {
+                    let mut writer = BatchWriter::new(batch_tx, batch_config);
+                    loop {
+                        if writer.buffered_count() > 0 {
+                            let delay = writer.max_delay();
+                            tokio::select! {
+                                biased;
+                                item = output_rx.recv() => match item {
+                                    Some(item) => {
+                                        if writer.push(item).await.is_err() { break; }
+                                    }
+                                    None => break,
+                                },
+                                _ = tokio::time::sleep(delay) => {
+                                    if writer.check_deadline().await.is_err() { break; }
+                                }
+                            }
+                        } else {
+                            match output_rx.recv().await {
+                                Some(item) => {
+                                    if writer.push(item).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                None => break,
+                            }
+                        }
+                    }
+                    let _ = writer.flush().await;
+                });
+                Ok(
+                    crate::runtime_support::wrap_batched_stream_with_interception(
+                        reader,
+                        buffer,
+                        pipeline,
+                        std::any::type_name::<OutputItem>(),
+                        SendMode::Transform,
+                    ),
+                )
+            }
+            None => Ok(crate::runtime_support::wrap_stream_with_interception(
+                output_rx,
+                buffer,
+                pipeline,
+                std::any::type_name::<OutputItem>(),
+                SendMode::Transform,
+            )),
+        }
     }
 }
 
@@ -3344,7 +3392,7 @@ mod tests {
 
         let input = Box::pin(futures::stream::iter(vec![1, 2, 3, 4, 5]));
         let output: Vec<i32> = actor
-            .transform::<i32, i32>(input, 8, None)
+            .transform::<i32, i32>(input, 8, None, None)
             .unwrap()
             .collect()
             .await;
@@ -3386,7 +3434,7 @@ mod tests {
             "foo bar baz".to_string(),
         ]));
         let output: Vec<String> = actor
-            .transform::<String, String>(input, 8, None)
+            .transform::<String, String>(input, 8, None, None)
             .unwrap()
             .collect()
             .await;
@@ -3423,7 +3471,7 @@ mod tests {
 
         let input = Box::pin(futures::stream::iter(1..=10));
         let output: Vec<i32> = actor
-            .transform::<i32, i32>(input, 8, None)
+            .transform::<i32, i32>(input, 8, None, None)
             .unwrap()
             .collect()
             .await;
@@ -3458,7 +3506,7 @@ mod tests {
 
         let input = Box::pin(futures::stream::iter(Vec::<i32>::new()));
         let output: Vec<i32> = actor
-            .transform::<i32, i32>(input, 8, None)
+            .transform::<i32, i32>(input, 8, None, None)
             .unwrap()
             .collect()
             .await;
@@ -3503,7 +3551,7 @@ mod tests {
 
         let input = Box::pin(futures::stream::iter(vec![10, 20, 30]));
         let output: Vec<i32> = actor
-            .transform::<i32, i32>(input, 8, None)
+            .transform::<i32, i32>(input, 8, None, None)
             .unwrap()
             .collect()
             .await;

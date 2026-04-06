@@ -477,6 +477,7 @@ impl<A: Actor + Sync> ActorRef<A> for RemoteActorRef<A> {
         &self,
         _input: BoxStream<InputItem>,
         _buffer: usize,
+        _batch_config: Option<BatchConfig>,
         _cancel: Option<CancellationToken>,
     ) -> Result<BoxStream<OutputItem>, ActorSendError>
     where

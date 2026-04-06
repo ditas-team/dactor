@@ -838,7 +838,7 @@ where
     let actor = spawn("conf-doubler", ()).await.unwrap();
     let input: BoxStream<i32> = Box::pin(futures::stream::iter(vec![1, 2, 3, 4, 5]));
     let output: Vec<i32> = actor
-        .transform::<i32, i32>(input, 8, None)
+        .transform::<i32, i32>(input, 8, None, None)
         .unwrap()
         .collect()
         .await;
@@ -861,7 +861,7 @@ where
     let actor = spawn("conf-doubler-empty", ()).await.unwrap();
     let input: BoxStream<i32> = Box::pin(futures::stream::iter(Vec::<i32>::new()));
     let output: Vec<i32> = actor
-        .transform::<i32, i32>(input, 8, None)
+        .transform::<i32, i32>(input, 8, None, None)
         .unwrap()
         .collect()
         .await;
