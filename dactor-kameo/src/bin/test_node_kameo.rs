@@ -80,6 +80,7 @@ impl Handler<ChildTerminated> for CounterActor {
 struct KameoCommandHandler {
     runtime: KameoRuntime,
     actors: Mutex<HashMap<String, KameoActorRef<CounterActor>>>,
+    watches: Mutex<Vec<(String, String)>>,
     live_count: AtomicU32,
 }
 
@@ -88,6 +89,7 @@ impl KameoCommandHandler {
         Self {
             runtime,
             actors: Mutex::new(HashMap::new()),
+            watches: Mutex::new(Vec::new()),
             live_count: AtomicU32::new(0),
         }
     }
@@ -197,6 +199,25 @@ impl CommandHandler for KameoCommandHandler {
         for _ in 0..100 {
             if !actor_ref.is_alive() {
                 self.live_count.fetch_sub(1, Ordering::Relaxed);
+
+                // Notify watchers
+                let watches = self.watches.lock().await;
+                let actors = self.actors.lock().await;
+                for (watcher, target) in watches.iter() {
+                    if target == actor_name {
+                        if let Some(watcher_ref) = actors.get(watcher) {
+                            let _ = watcher_ref.tell(ChildTerminated {
+                                child_id: dactor::node::ActorId {
+                                    node: dactor::node::NodeId("local".into()),
+                                    local: 0,
+                                },
+                                child_name: actor_name.to_string(),
+                                reason: None,
+                            });
+                        }
+                    }
+                }
+
                 return Ok(());
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -204,6 +225,20 @@ impl CommandHandler for KameoCommandHandler {
         // Actor didn't terminate in time — still decrement since we removed from map
         self.live_count.fetch_sub(1, Ordering::Relaxed);
         Err(format!("actor '{}' did not terminate within 1s", actor_name))
+    }
+
+    async fn watch_actor(&self, watcher_name: &str, target_name: &str) -> Result<(), String> {
+        let actors = self.actors.lock().await;
+        if !actors.contains_key(watcher_name) {
+            return Err(format!("watcher '{}' not found", watcher_name));
+        }
+        if !actors.contains_key(target_name) {
+            return Err(format!("target '{}' not found", target_name));
+        }
+        drop(actors);
+        let mut watches = self.watches.lock().await;
+        watches.push((watcher_name.to_string(), target_name.to_string()));
+        Ok(())
     }
 
     fn actor_count(&self) -> u32 {

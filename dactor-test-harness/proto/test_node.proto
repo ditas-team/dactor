@@ -26,6 +26,9 @@ service TestNodeService {
     rpc TellActor(TellActorRequest) returns (TellActorResponse);
     rpc AskActor(AskActorRequest) returns (AskActorResponse);
     rpc StopActor(StopActorRequest) returns (StopActorResponse);
+
+    // Watch another actor — receive event when target stops
+    rpc WatchActor(WatchActorRequest) returns (WatchActorResponse);
 }
 
 message Empty {}
@@ -119,6 +122,16 @@ message StopActorRequest {
 }
 
 message StopActorResponse {
+    bool success = 1;
+    string error = 2;
+}
+
+message WatchActorRequest {
+    string watcher_name = 1;   // the actor that will be notified
+    string target_name = 2;    // the actor to watch
+}
+
+message WatchActorResponse {
     bool success = 1;
     string error = 2;
 }

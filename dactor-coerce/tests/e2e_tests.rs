@@ -531,3 +531,128 @@ async fn e2e_graceful_shutdown() {
 
     cluster.shutdown().await;
 }
+
+// =========================================================================
+// E2E — Watch actor termination notification
+// =========================================================================
+
+#[tokio::test]
+async fn e2e_watch_actor_termination() {
+    let binary = require_binary();
+    if !std::path::Path::new(&binary).exists() {
+        return;
+    }
+
+    let mut cluster = TestCluster::builder()
+        .node("watch-term", &binary, &[], 50107)
+        .build()
+        .await;
+
+    // Spawn watcher and target actors
+    let resp = cluster
+        .spawn_actor("watch-term", "counter", "watcher", b"0")
+        .await
+        .unwrap();
+    assert!(resp.success, "spawn watcher failed: {}", resp.error);
+
+    let resp = cluster
+        .spawn_actor("watch-term", "counter", "target", b"0")
+        .await
+        .unwrap();
+    assert!(resp.success, "spawn target failed: {}", resp.error);
+
+    // Register watch: watcher watches target
+    let watch_resp = cluster
+        .watch_actor("watch-term", "watcher", "target")
+        .await
+        .unwrap();
+    assert!(watch_resp.success, "watch failed: {}", watch_resp.error);
+
+    // Verify watcher count is 0 before target dies
+    let ask_resp = cluster
+        .ask_actor("watch-term", "watcher", "get_count", b"")
+        .await
+        .unwrap();
+    assert!(ask_resp.success);
+    let count: i64 = serde_json::from_slice(&ask_resp.payload).unwrap();
+    assert_eq!(count, 0, "watcher count should be 0 initially");
+
+    // Stop the target actor
+    let stop_resp = cluster.stop_actor("watch-term", "target").await.unwrap();
+    assert!(stop_resp.success, "stop failed: {}", stop_resp.error);
+
+    // Give the ChildTerminated message time to be delivered
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Watcher should have received ChildTerminated → count = -999
+    let ask_resp = cluster
+        .ask_actor("watch-term", "watcher", "get_count", b"")
+        .await
+        .unwrap();
+    assert!(ask_resp.success, "ask watcher failed: {}", ask_resp.error);
+    let count: i64 = serde_json::from_slice(&ask_resp.payload).unwrap();
+    assert_eq!(
+        count, -999,
+        "watcher should have received ChildTerminated (count = -999)"
+    );
+
+    cluster.shutdown().await;
+}
+
+// =========================================================================
+// E2E — Node crash detection
+// =========================================================================
+
+#[tokio::test]
+async fn e2e_node_crash_detection() {
+    let binary = require_binary();
+    if !std::path::Path::new(&binary).exists() {
+        return;
+    }
+
+    // Launch 2 nodes
+    let mut cluster = TestCluster::builder()
+        .node("alive", &binary, &[], 50108)
+        .node("doomed", &binary, &[], 50109)
+        .build()
+        .await;
+
+    // Both nodes should be alive
+    let ping_resp = cluster.ping("alive", "ok").await;
+    assert!(ping_resp.is_ok(), "alive node should respond to ping");
+
+    let ping_resp = cluster.ping("doomed", "ok").await;
+    assert!(ping_resp.is_ok(), "doomed node should respond to ping");
+
+    // Kill the doomed node (simulates crash)
+    cluster.shutdown_node("doomed").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Doomed node should be unreachable
+    let ping_resp = cluster.ping("doomed", "test").await;
+    assert!(
+        ping_resp.is_err(),
+        "doomed node should be unreachable after crash"
+    );
+
+    // Alive node should still be fine
+    let resp = cluster.ping("alive", "still-ok").await.unwrap();
+    assert_eq!(resp.echo, "still-ok", "alive node should still respond");
+
+    // Spawn an actor on the alive node to prove it's fully functional
+    let spawn_resp = cluster
+        .spawn_actor("alive", "counter", "survivor", b"42")
+        .await
+        .unwrap();
+    assert!(spawn_resp.success, "should be able to spawn on alive node");
+
+    let ask_resp = cluster
+        .ask_actor("alive", "survivor", "get_count", b"")
+        .await
+        .unwrap();
+    assert!(ask_resp.success);
+    let count: i64 = serde_json::from_slice(&ask_resp.payload).unwrap();
+    assert_eq!(count, 42, "alive node actor should work normally");
+
+    cluster.shutdown().await;
+}
