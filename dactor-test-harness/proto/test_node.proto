@@ -109,6 +109,7 @@ message AskActorRequest {
     string actor_name = 1;
     string message_type = 2;
     bytes payload = 3;
+    uint64 timeout_ms = 4;  // 0 = no timeout
 }
 
 message AskActorResponse {

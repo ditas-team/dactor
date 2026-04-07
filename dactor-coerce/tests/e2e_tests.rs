@@ -969,3 +969,86 @@ async fn e2e_slow_handler_doesnt_block_others() {
 
     cluster.shutdown().await;
 }
+
+// =========================================================================
+// E2E — Ask with timeout succeeds when handler is fast
+// =========================================================================
+
+#[tokio::test]
+async fn e2e_ask_with_timeout_succeeds() {
+    let binary = require_binary();
+    if !std::path::Path::new(&binary).exists() {
+        return;
+    }
+
+    let mut cluster = TestCluster::builder()
+        .node("timeout-ok", &binary, &[], 50138)
+        .build()
+        .await;
+
+    // Spawn a counter actor
+    let resp = cluster
+        .spawn_actor("timeout-ok", "counter", "c1", b"42")
+        .await
+        .unwrap();
+    assert!(resp.success, "spawn failed: {}", resp.error);
+
+    // Ask with a generous 5s timeout — should succeed quickly
+    let ask = cluster
+        .ask_actor_with_timeout("timeout-ok", "c1", "get_count", b"", 5000)
+        .await
+        .unwrap();
+    assert!(ask.success, "ask with timeout failed: {}", ask.error);
+    let count: i64 = serde_json::from_slice(&ask.payload).unwrap();
+    assert_eq!(count, 42, "counter should be 42");
+
+    cluster.shutdown().await;
+}
+
+// =========================================================================
+// E2E — Ask timeout cancels slow handler
+// =========================================================================
+
+#[tokio::test]
+async fn e2e_ask_timeout_cancels_slow_handler() {
+    let binary = require_binary();
+    if !std::path::Path::new(&binary).exists() {
+        return;
+    }
+
+    let mut cluster = TestCluster::builder()
+        .node("timeout-cancel", &binary, &[], 50139)
+        .build()
+        .await;
+
+    // Spawn a counter actor
+    let resp = cluster
+        .spawn_actor("timeout-cancel", "counter", "slow1", b"0")
+        .await
+        .unwrap();
+    assert!(resp.success, "spawn failed: {}", resp.error);
+
+    // Ask slow_echo (2s delay) with only 200ms timeout — should time out
+    let start = std::time::Instant::now();
+    let ask = cluster
+        .ask_actor_with_timeout("timeout-cancel", "slow1", "slow_echo", b"hello", 200)
+        .await
+        .unwrap();
+    let elapsed = start.elapsed();
+
+    assert!(!ask.success, "slow ask should have timed out");
+    assert!(
+        ask.error.contains("timed out"),
+        "error should contain 'timed out', got: {}",
+        ask.error
+    );
+    // Client-side timeout: returns quickly, but the actor handler continues
+    // running to completion (fire-and-forget semantics on timeout).
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "should have timed out quickly (took {:?}), not waited for full 2s handler",
+        elapsed
+    );
+
+    cluster.shutdown().await;
+}

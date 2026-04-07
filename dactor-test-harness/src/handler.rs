@@ -31,11 +31,13 @@ pub trait CommandHandler: Send + Sync + 'static {
     ) -> Result<(), String>;
 
     /// Request-reply message to an actor. Returns the serialized reply.
+    /// If `timeout_ms > 0`, the ask should be cancelled after that many milliseconds.
     async fn ask_actor(
         &self,
         actor_name: &str,
         message_type: &str,
         payload: &[u8],
+        timeout_ms: u64,
     ) -> Result<Vec<u8>, String>;
 
     /// Stop an actor by name.

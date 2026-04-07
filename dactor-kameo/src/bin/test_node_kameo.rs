@@ -104,6 +104,20 @@ impl Handler<Echo> for CounterActor {
     }
 }
 
+// Ask message: echo back payload bytes after a 2s delay (for timeout testing)
+struct SlowEcho(Vec<u8>);
+impl Message for SlowEcho {
+    type Reply = Vec<u8>;
+}
+
+#[async_trait]
+impl Handler<SlowEcho> for CounterActor {
+    async fn handle(&mut self, msg: SlowEcho, _ctx: &mut ActorContext) -> Vec<u8> {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        msg.0
+    }
+}
+
 // Watch handler: receive notification when a watched actor stops
 #[async_trait]
 impl Handler<ChildTerminated> for CounterActor {
@@ -225,6 +239,7 @@ impl CommandHandler for KameoCommandHandler {
         actor_name: &str,
         message_type: &str,
         payload: &[u8],
+        timeout_ms: u64,
     ) -> Result<Vec<u8>, String> {
         let actor_ref = {
             let actors = self.actors.lock().await;
@@ -234,21 +249,43 @@ impl CommandHandler for KameoCommandHandler {
                 .clone()
         };
 
-        match message_type {
-            "get_count" => {
-                let reply = actor_ref
-                    .ask(GetCount, None)
-                    .map_err(|e| format!("ask failed: {}", e))?;
-                let count = reply.await.map_err(|e| format!("reply failed: {}", e))?;
-                serde_json::to_vec(&count).map_err(|e| format!("serialize failed: {}", e))
+        let ask_fut = async {
+            match message_type {
+                "get_count" => {
+                    let reply = actor_ref
+                        .ask(GetCount, None)
+                        .map_err(|e| format!("ask failed: {}", e))?;
+                    let count = reply.await.map_err(|e| format!("reply failed: {}", e))?;
+                    serde_json::to_vec(&count).map_err(|e| format!("serialize failed: {}", e))
+                }
+                "echo" => {
+                    let reply = actor_ref
+                        .ask(Echo(payload.to_vec()), None)
+                        .map_err(|e| format!("ask failed: {}", e))?;
+                    reply.await.map_err(|e| format!("reply failed: {}", e))
+                }
+                "slow_echo" => {
+                    let reply = actor_ref
+                        .ask(SlowEcho(payload.to_vec()), None)
+                        .map_err(|e| format!("ask failed: {}", e))?;
+                    reply.await.map_err(|e| format!("reply failed: {}", e))
+                }
+                _ => Err(format!("unknown message type: {}", message_type)),
             }
-            "echo" => {
-                let reply = actor_ref
-                    .ask(Echo(payload.to_vec()), None)
-                    .map_err(|e| format!("ask failed: {}", e))?;
-                reply.await.map_err(|e| format!("reply failed: {}", e))
+        };
+
+        if timeout_ms > 0 {
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(timeout_ms),
+                ask_fut,
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err("ask timed out".into()),
             }
-            _ => Err(format!("unknown message type: {}", message_type)),
+        } else {
+            ask_fut.await
         }
     }
 

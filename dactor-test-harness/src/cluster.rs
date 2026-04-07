@@ -173,6 +173,30 @@ impl TestCluster {
                 actor_name: actor_name.to_string(),
                 message_type: message_type.to_string(),
                 payload: payload.to_vec(),
+                timeout_ms: 0,
+            })
+            .await?;
+        Ok(response.into_inner())
+    }
+
+    /// Send a request-reply message to an actor on a node with a timeout.
+    /// If `timeout_ms > 0`, the ask is cancelled after that many milliseconds.
+    pub async fn ask_actor_with_timeout(
+        &mut self,
+        node_id: &str,
+        actor_name: &str,
+        message_type: &str,
+        payload: &[u8],
+        timeout_ms: u64,
+    ) -> Result<AskActorResponse, Box<dyn std::error::Error>> {
+        let handle = self.nodes.get_mut(node_id).ok_or("node not found")?;
+        let client = handle.client.as_mut().ok_or("not connected")?;
+        let response = client
+            .ask_actor(AskActorRequest {
+                actor_name: actor_name.to_string(),
+                message_type: message_type.to_string(),
+                payload: payload.to_vec(),
+                timeout_ms,
             })
             .await?;
         Ok(response.into_inner())

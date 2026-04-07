@@ -290,7 +290,7 @@ impl TestNodeService for TestNode {
         }
 
         match handler
-            .ask_actor(&req.actor_name, &req.message_type, &req.payload)
+            .ask_actor(&req.actor_name, &req.message_type, &req.payload, req.timeout_ms)
             .await
         {
             Ok(payload) => Ok(Response::new(AskActorResponse {
