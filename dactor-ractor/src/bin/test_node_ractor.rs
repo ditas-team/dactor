@@ -200,22 +200,25 @@ impl CommandHandler for RactorCommandHandler {
             if !actor_ref.is_alive() {
                 self.live_count.fetch_sub(1, Ordering::Relaxed);
 
-                // Notify watchers
-                let watches = self.watches.lock().await;
-                let actors = self.actors.lock().await;
-                for (watcher, target) in watches.iter() {
-                    if target == actor_name {
-                        if let Some(watcher_ref) = actors.get(watcher) {
-                            let _ = watcher_ref.tell(ChildTerminated {
-                                child_id: dactor::node::ActorId {
-                                    node: dactor::node::NodeId("local".into()),
-                                    local: 0,
-                                },
-                                child_name: actor_name.to_string(),
-                                reason: None,
-                            });
-                        }
-                    }
+                // Collect watcher refs, then drop lock before notifying
+                let watcher_refs: Vec<_> = {
+                    let watches = self.watches.lock().await;
+                    let actors = self.actors.lock().await;
+                    watches
+                        .iter()
+                        .filter(|(_, target)| target == actor_name)
+                        .filter_map(|(watcher, _)| actors.get(watcher).cloned())
+                        .collect()
+                };
+                for watcher_ref in watcher_refs {
+                    let _ = watcher_ref.tell(ChildTerminated {
+                        child_id: dactor::node::ActorId {
+                            node: dactor::node::NodeId("local".into()),
+                            local: 0,
+                        },
+                        child_name: actor_name.to_string(),
+                        reason: None,
+                    });
                 }
 
                 return Ok(());
@@ -236,6 +239,9 @@ impl CommandHandler for RactorCommandHandler {
         }
         drop(actors);
         let mut watches = self.watches.lock().await;
+        if watches.iter().any(|(w, t)| w == watcher_name && t == target_name) {
+            return Ok(());
+        }
         watches.push((watcher_name.to_string(), target_name.to_string()));
         Ok(())
     }

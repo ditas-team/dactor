@@ -607,19 +607,25 @@ async fn e2e_watch_actor_termination() {
     let stop_resp = cluster.stop_actor("watch-term", "target").await.unwrap();
     assert!(stop_resp.success, "stop failed: {}", stop_resp.error);
 
-    // Give the ChildTerminated message time to be delivered
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Watcher should have received ChildTerminated → count = -999
-    let ask_resp = cluster
-        .ask_actor("watch-term", "watcher", "get_count", b"")
-        .await
-        .unwrap();
-    assert!(ask_resp.success, "ask watcher failed: {}", ask_resp.error);
-    let count: i64 = serde_json::from_slice(&ask_resp.payload).unwrap();
-    assert_eq!(
-        count, -999,
-        "watcher should have received ChildTerminated (count = -999)"
+    // Poll until watcher count changes (up to 2s)
+    let mut watcher_notified = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let ask_resp = cluster
+            .ask_actor("watch-term", "watcher", "get_count", b"")
+            .await
+            .unwrap();
+        if ask_resp.success {
+            let count: i64 = serde_json::from_slice(&ask_resp.payload).unwrap();
+            if count == -999 {
+                watcher_notified = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        watcher_notified,
+        "watcher should have received ChildTerminated within 2s"
     );
 
     cluster.shutdown().await;
