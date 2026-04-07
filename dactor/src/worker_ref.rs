@@ -39,6 +39,16 @@ use tokio_util::sync::CancellationToken;
 /// Implements [`ActorRef<A>`] by delegating to the inner reference,
 /// allowing [`PoolRef`](crate::pool::PoolRef) to mix local and remote
 /// workers in a single pool.
+///
+/// # Limitations
+///
+/// - **Streaming**: `expand()`, `reduce()`, and `transform()` are not yet
+///   supported on [`RemoteActorRef`]. Mixed pools should only use `tell()`
+///   and `ask()` until streaming transport is implemented.
+/// - **LeastLoaded routing**: [`RemoteActorRef`] returns `0` for
+///   `pending_messages()`, so `LeastLoaded` routing will prefer remote
+///   workers over busy local workers. Use `RoundRobin` or `Random` for
+///   mixed pools until remote mailbox depth queries are available.
 pub enum WorkerRef<A: Actor, L: ActorRef<A>> {
     /// A local actor reference (adapter-specific).
     Local(L),
@@ -46,6 +56,8 @@ pub enum WorkerRef<A: Actor, L: ActorRef<A>> {
     Remote(RemoteActorRef<A>),
 }
 
+// Manual Clone: derive(Clone) would add an `A: Clone` bound, but
+// RemoteActorRef<A> implements Clone without requiring A: Clone.
 impl<A: Actor, L: ActorRef<A>> Clone for WorkerRef<A, L> {
     fn clone(&self) -> Self {
         match self {
@@ -174,11 +186,13 @@ impl<A: Actor + Sync, L: ActorRef<A>> ActorRef<A> for WorkerRef<A, L> {
 
 impl<A: Actor, L: ActorRef<A>> WorkerRef<A, L> {
     /// Returns `true` if this is a local worker.
+    #[must_use]
     pub fn is_local(&self) -> bool {
         matches!(self, WorkerRef::Local(_))
     }
 
     /// Returns `true` if this is a remote worker.
+    #[must_use]
     pub fn is_remote(&self) -> bool {
         matches!(self, WorkerRef::Remote(_))
     }
@@ -273,6 +287,10 @@ mod tests {
         let w1 = rt.spawn::<Counter>("c1", 0).await.unwrap();
         let w2 = rt.spawn::<Counter>("c2", 0).await.unwrap();
 
+        // Keep refs to verify individual worker state
+        let w1_check = w1.clone();
+        let w2_check = w2.clone();
+
         let workers = vec![
             WorkerRef::Local(w1),
             WorkerRef::Local(w2),
@@ -286,8 +304,11 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        // Both workers should have been incremented
-        assert!(pool.name().starts_with("pool"));
+        // Verify messages were distributed to the correct workers
+        let c1 = w1_check.ask(GetCount, None).unwrap().await.unwrap();
+        let c2 = w2_check.ask(GetCount, None).unwrap().await.unwrap();
+        assert_eq!(c1, 10, "w1 should have received Increment(10)");
+        assert_eq!(c2, 20, "w2 should have received Increment(20)");
     }
 
     #[tokio::test]
@@ -315,6 +336,7 @@ mod tests {
     async fn distributed_pool_mixed_local_remote_creation() {
         let rt = TestRuntime::new();
         let local = rt.spawn::<Counter>("local-w", 0).await.unwrap();
+        let local_check = local.clone();
         let remote = make_remote_ref();
 
         let workers = vec![
@@ -323,9 +345,14 @@ mod tests {
         ];
         let pool = PoolRef::new(workers, PoolRouting::RoundRobin);
 
-        // Pool should have 2 workers
         assert!(pool.is_alive());
-        // First worker is local, second is remote
+
+        // First tell goes to local worker (index 0) — should succeed
+        pool.tell(Increment(42)).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let count = local_check.ask(GetCount, None).unwrap().await.unwrap();
+        assert_eq!(count, 42, "local worker should have received the tell");
     }
 
     #[tokio::test]
