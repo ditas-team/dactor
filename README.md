@@ -54,6 +54,17 @@ Write your actor logic once, swap the runtime underneath.
   tumbling-window throttle
 - **Mock cluster for testing** — `MockCluster` with multi-node simulation
   and fault injection
+- **Remote actor support** — `WireEnvelope` wire format, `MessageSerializer`
+  trait, `TypeRegistry` for remote dispatch, `MessageVersionHandler` for
+  schema evolution with versioned migration
+- **Protobuf system serialization** — system messages (spawn, watch, cancel,
+  peer management) use fixed protobuf format via `prost` with size limits and
+  field validation; application messages remain pluggable
+- **Transport routing** — `SystemMessageRouter` routes incoming `WireEnvelope`
+  system messages to native actor mailboxes across all adapters
+- **System actors** — `SpawnManager`, `WatchManager`, `CancelManager`,
+  `NodeDirectory` for distributed operations with native actor implementations
+  per adapter
 
 ## Quick Start
 
@@ -166,7 +177,7 @@ async fn main() {
 |-------|----------|--------|
 | [`dactor-ractor`](dactor-ractor/) | [ractor](https://crates.io/crates/ractor) | ✅ Full v0.2 |
 | [`dactor-kameo`](dactor-kameo/) | [kameo](https://crates.io/crates/kameo) | ✅ Full v0.2 |
-| [`dactor-coerce`](dactor-coerce/) | [coerce](https://crates.io/crates/coerce) | 🔲 Stub |
+| [`dactor-coerce`](dactor-coerce/) | [coerce](https://crates.io/crates/coerce) | ✅ Full v0.2 |
 | [`dactor-mock`](dactor-mock/) | Mock cluster | ✅ Testing |
 | [`dactor-test-harness`](dactor-test-harness/) | gRPC harness | ✅ E2E testing |
 
@@ -202,6 +213,9 @@ examples:
 | [`metrics`](dactor/examples/metrics.rs) | MetricsInterceptor and MetricsStore for observability | `cargo run --example metrics -p dactor --features test-support` |
 | [`rate_limiting`](dactor/examples/rate_limiting.rs) | ActorRateLimiter outbound throttling | `cargo run --example rate_limiting -p dactor --features test-support` |
 | [`error_handling`](dactor/examples/error_handling.rs) | ActorError with ErrorCode and error chains | `cargo run --example error_handling -p dactor --features test-support` |
+| [`event_sourcing`](dactor/examples/event_sourcing.rs) | Event sourcing with CQRS patterns | `cargo run --example event_sourcing -p dactor --features test-support` |
+| [`actor_pool`](dactor/examples/actor_pool.rs) | Actor pools with routing strategies | `cargo run --example actor_pool -p dactor --features test-support` |
+| [`showcase`](dactor/examples/showcase.rs) | Comprehensive feature showcase | `cargo run --example showcase -p dactor --features test-support` |
 
 ## Project Structure
 
@@ -225,13 +239,16 @@ dactor/                  Workspace root
 │   │   ├── errors.rs        ErrorCode, ErrorAction, ActorError
 │   │   ├── stream.rs        BoxStream, StreamSender, StreamReceiver, BatchConfig
 │   │   ├── remote.rs        WireEnvelope, MessageSerializer, ClusterDiscovery
+│   │   ├── proto.rs         Protobuf encode/decode for system messages
+│   │   ├── system_actors.rs SpawnManager, WatchManager, CancelManager, NodeDirectory
+│   │   ├── system_router.rs SystemMessageRouter for transport routing
 │   │   ├── dispatch.rs      Type-erased message dispatch
 │   │   └── test_support/    TestRuntime, TestClock, conformance suite
-│   ├── examples/            13 runnable examples
+│   ├── examples/            16 runnable examples
 │   └── tests/               Core integration tests
 ├── dactor-ractor/       Ractor adapter (full v0.2 API)
 ├── dactor-kameo/        Kameo adapter (full v0.2 API)
-├── dactor-coerce/       Coerce adapter (stub)
+├── dactor-coerce/       Coerce adapter (full v0.2 API)
 ├── dactor-mock/         Mock cluster for testing (multi-node, fault injection)
 ├── dactor-test-harness/ gRPC integration test harness
 └── docs/                Design docs, adapter plan, progress tracking
@@ -239,17 +256,35 @@ dactor/                  Workspace root
 
 ## Testing
 
-Run the full workspace test suite:
+**Prerequisite:** The `protoc` compiler is required for building (protobuf
+system messages). Install via `brew install protobuf` (macOS),
+`apt install protobuf-compiler` (Linux), or `choco install protoc` (Windows).
+
+Run the workspace test suite (excludes test harness which requires test-node binaries):
 
 ```bash
-cargo test --workspace
+cargo test --workspace --exclude dactor-test-harness --features test-support
+```
+
+Run E2E integration tests (requires building test-node binaries first):
+
+```bash
+cargo build -p dactor-ractor --features test-harness --bin test-node-ractor
+cargo test -p dactor-ractor --test e2e_tests --features test-harness
 ```
 
 The core crate includes `test_support` with mock implementations:
 
 - **`TestRuntime`** — in-memory actor runtime with channel-based mailboxes
 - **`TestClock`** — deterministic clock with manual `advance()`
-- **Conformance suite** — 6 standardized tests verifying runtime correctness
+- **Conformance suite** — 25+ standardized tests verifying runtime correctness
+  (tell/ask, lifecycle, streaming, batching, cancellation, concurrent asks,
+  message ordering, slow consumers, transform, multiple handlers)
+
+The project includes 805+ tests across 3 tiers:
+- **Unit tests** — per-module in the core crate
+- **Conformance tests** — cross-adapter correctness verification
+- **E2E tests** — multi-process integration via gRPC test harness
 
 ## Documentation
 
