@@ -4,7 +4,7 @@
 
 ---
 
-## Current Status (PR #121)
+## Current Status (PR #124)
 - Phase 3: ✅ Complete (features, examples, conformance, batching, E2E tests)
 - Phase 4: ✅ Complete — R1-R6, R3b, R6b-c, S1-S4, SA1-SA10, SE1-SE6, C1-C5, P1-P3 all done
 - Phase 6: ✅ Complete (supervision, pools, timers, on_reply, AM1-AM7, AP7-AP8 all done)
@@ -21,14 +21,15 @@
 - AP8: ✅ Done (virtual actor pool with single-threaded router)
 - Bounded mailbox: ✅ All 3 adapters + TestRuntime; shared BoundedMailboxSender in runtime_support
 - T1-T11: ✅ Complete (E2E integration tests + corner cases + version migration)
+- E2E: ✅ 33 tests (11 per adapter) — spawn/tell/ask, stop, partition/heal, errors, watch, crash, concurrent
 - SE6: ✅ Complete (protobuf system serialization)
 - NA10: ✅ Complete (transport routing)
-- Zero clippy warnings, 805+ tests, all workspace tests pass
+- Zero clippy warnings, 850+ tests, all workspace tests pass
 - Build: `cargo clippy --workspace --exclude dactor-test-harness --all-targets --all-features -- -D warnings`
 - Test: `cargo test --workspace --exclude dactor-test-harness --features test-support`
 - E2E: `cargo test -p dactor-ractor --test e2e_tests --features test-harness` (+ kameo, coerce)
 
-### Session 2026-04-06/07 Summary (PRs #111-#121)
+### Session 2026-04-06/07 Summary (PRs #111-#124)
 - **NA10** (#111): Transport routing — SystemMessageRouter trait, route_system_envelope for all 3 adapters, wire protocol stability tests (31 new tests)
 - **SE6** (#112): Protobuf system serialization — proto/system.proto schemas, prost encode/decode, removed serializer param from trait, size limits + validation (26 proto unit tests)
 - **T1-T3** (#113): Ractor E2E integration tests — extended test harness with SpawnActor/TellActor/AskActor/StopActor RPCs, CommandHandler trait, test-node-ractor binary (3 E2E tests)
@@ -40,6 +41,9 @@
 - **Docs** (#119): Mark ExpandHandler refactor done + update pending section
 - **AP7** (#120): Distributed pool — WorkerRef enum wrapping local/remote refs for mixed pools
 - **AP8** (#121): Virtual actor pool — VirtualPoolRef with single-threaded router task, bounded channel, backpressure
+- **Progress** (#122): Final progress update — AP7/AP8 complete
+- **E2E suite** (#123): Comprehensive E2E tests — 20 new tests (error handling, concurrent ops, partition parity, graceful shutdown) across all 3 adapters
+- **Watch+Crash** (#124): WatchActor RPC + node crash detection — 6 new tests, watch termination notification, duplicate watch prevention
 
 ### Key Design Decisions Made This Session
 - Wire protocol constants are frozen strings with regression test (not Rust paths)
@@ -59,6 +63,12 @@
 - VirtualPoolRef uses bounded mpsc channel (default 1024) with try_send backpressure
 - VirtualPoolRef routes via boxed closures erasing generic message types
 - VirtualPoolRef::stop() sets alive=false immediately before queuing Stop command
+- WatchActor test harness uses application-level watch (not native runtime watch)
+- Watch notifications release actors lock before notifying (no lock contention)
+- Duplicate watch entries prevented at registration time
+- Watch test uses polling loop (100ms × 20 = 2s) instead of fixed sleep
+- E2E tests use 500ms timeouts for partition heal and concurrent ops robustness
+- Node crash detection tests use graceful shutdown + kill (validates reachability)
 
 ### Multi-Model Review Process
 Every PR was reviewed by 4 AI models (GPT-5.4, Gemini/Goldeneye, Claude Haiku 4.5, Claude Sonnet 4.5). Key bugs caught:
