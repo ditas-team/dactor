@@ -332,4 +332,38 @@ impl TestNodeService for TestNode {
             })),
         }
     }
+
+    async fn watch_actor(
+        &self,
+        request: Request<WatchActorRequest>,
+    ) -> Result<Response<WatchActorResponse>, Status> {
+        let handler = self
+            .handler
+            .as_ref()
+            .ok_or_else(|| Status::unimplemented("no command handler registered"))?;
+        let req = request.into_inner();
+        match handler
+            .watch_actor(&req.watcher_name, &req.target_name)
+            .await
+        {
+            Ok(()) => {
+                self.emit_event(
+                    "actor_watch_registered",
+                    &serde_json::json!({
+                        "watcher": req.watcher_name,
+                        "target": req.target_name,
+                    })
+                    .to_string(),
+                );
+                Ok(Response::new(WatchActorResponse {
+                    success: true,
+                    error: String::new(),
+                }))
+            }
+            Err(e) => Ok(Response::new(WatchActorResponse {
+                success: false,
+                error: e,
+            })),
+        }
+    }
 }

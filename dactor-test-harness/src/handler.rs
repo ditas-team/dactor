@@ -41,6 +41,12 @@ pub trait CommandHandler: Send + Sync + 'static {
     /// Stop an actor by name.
     async fn stop_actor(&self, actor_name: &str) -> Result<(), String>;
 
+    /// Register a watch: when `target_name` stops, notify `watcher_name`.
+    async fn watch_actor(&self, watcher_name: &str, target_name: &str) -> Result<(), String> {
+        let _ = (watcher_name, target_name);
+        Err("watch not supported".into())
+    }
+
     /// Return the number of live actors managed by this handler.
     fn actor_count(&self) -> u32 {
         0

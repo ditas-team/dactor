@@ -194,6 +194,24 @@ impl TestCluster {
         Ok(response.into_inner())
     }
 
+    /// Register a watch: when `target_name` stops, `watcher_name` is notified.
+    pub async fn watch_actor(
+        &mut self,
+        node_id: &str,
+        watcher_name: &str,
+        target_name: &str,
+    ) -> Result<WatchActorResponse, Box<dyn std::error::Error>> {
+        let handle = self.nodes.get_mut(node_id).ok_or("node not found")?;
+        let client = handle.client.as_mut().ok_or("not connected")?;
+        let response = client
+            .watch_actor(WatchActorRequest {
+                watcher_name: watcher_name.to_string(),
+                target_name: target_name.to_string(),
+            })
+            .await?;
+        Ok(response.into_inner())
+    }
+
     /// Graceful shutdown of a specific node.
     pub async fn shutdown_node(&mut self, node_id: &str) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(handle) = self.nodes.get_mut(node_id) {

@@ -80,6 +80,7 @@ impl Handler<ChildTerminated> for CounterActor {
 struct RactorCommandHandler {
     runtime: RactorRuntime,
     actors: Mutex<HashMap<String, RactorActorRef<CounterActor>>>,
+    watches: Mutex<Vec<(String, String)>>,
     live_count: AtomicU32,
 }
 
@@ -88,6 +89,7 @@ impl RactorCommandHandler {
         Self {
             runtime,
             actors: Mutex::new(HashMap::new()),
+            watches: Mutex::new(Vec::new()),
             live_count: AtomicU32::new(0),
         }
     }
@@ -197,12 +199,51 @@ impl CommandHandler for RactorCommandHandler {
         for _ in 0..100 {
             if !actor_ref.is_alive() {
                 self.live_count.fetch_sub(1, Ordering::Relaxed);
+
+                // Collect watcher refs, then drop lock before notifying
+                let watcher_refs: Vec<_> = {
+                    let watches = self.watches.lock().await;
+                    let actors = self.actors.lock().await;
+                    watches
+                        .iter()
+                        .filter(|(_, target)| target == actor_name)
+                        .filter_map(|(watcher, _)| actors.get(watcher).cloned())
+                        .collect()
+                };
+                for watcher_ref in watcher_refs {
+                    let _ = watcher_ref.tell(ChildTerminated {
+                        child_id: dactor::node::ActorId {
+                            node: dactor::node::NodeId("local".into()),
+                            local: 0,
+                        },
+                        child_name: actor_name.to_string(),
+                        reason: None,
+                    });
+                }
+
                 return Ok(());
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         self.live_count.fetch_sub(1, Ordering::Relaxed);
         Err(format!("actor '{}' did not terminate within 1s", actor_name))
+    }
+
+    async fn watch_actor(&self, watcher_name: &str, target_name: &str) -> Result<(), String> {
+        let actors = self.actors.lock().await;
+        if !actors.contains_key(watcher_name) {
+            return Err(format!("watcher '{}' not found", watcher_name));
+        }
+        if !actors.contains_key(target_name) {
+            return Err(format!("target '{}' not found", target_name));
+        }
+        drop(actors);
+        let mut watches = self.watches.lock().await;
+        if watches.iter().any(|(w, t)| w == watcher_name && t == target_name) {
+            return Ok(());
+        }
+        watches.push((watcher_name.to_string(), target_name.to_string()));
+        Ok(())
     }
 
     fn actor_count(&self) -> u32 {
