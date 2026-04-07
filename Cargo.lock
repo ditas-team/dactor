@@ -179,11 +179,13 @@ dependencies = [
  "async-trait",
  "coerce",
  "dactor",
+ "dactor-test-harness",
  "futures",
  "serde_json",
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -192,6 +194,7 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "dactor",
+ "dactor-test-harness",
  "futures",
  "kameo",
  "serde_json",
@@ -199,6 +202,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
