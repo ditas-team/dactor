@@ -672,11 +672,25 @@ mod tests {
 
     #[test]
     fn test_version_match_skips_migration() {
+        // When versions match, no migration is attempted — even if a handler exists.
         let mut registry = crate::type_registry::TypeRegistry::new();
         registry.register("test::Same", |bytes: &[u8]| Ok(Box::new(bytes.to_vec())));
 
-        let version_handlers: std::collections::HashMap<String, Box<dyn MessageVersionHandler>> =
-            std::collections::HashMap::new();
+        struct PanicMigrator;
+        impl MessageVersionHandler for PanicMigrator {
+            fn message_type(&self) -> &'static str {
+                "test::Same"
+            }
+            fn migrate(&self, _payload: &[u8], _from: u32, _to: u32) -> Option<Vec<u8>> {
+                panic!("migrate should not be called when versions match");
+            }
+        }
+
+        let mut version_handlers: std::collections::HashMap<
+            String,
+            Box<dyn MessageVersionHandler>,
+        > = std::collections::HashMap::new();
+        version_handlers.insert("test::Same".into(), Box::new(PanicMigrator));
 
         let envelope = WireEnvelope {
             target: ActorId {
@@ -696,11 +710,291 @@ mod tests {
             &envelope,
             &registry,
             &version_handlers,
-            Some(2), // same version
+            Some(2), // same version — handler must NOT be called
         )
         .unwrap();
         let val = any.downcast::<Vec<u8>>().unwrap();
         assert_eq!(*val, vec![1, 2, 3]);
+    }
+
+    // --- T11: Version breaking change — migration rejection scenarios ---
+
+    #[test]
+    fn test_version_mismatch_no_handler_falls_through() {
+        // When no MessageVersionHandler is registered, version mismatch
+        // falls through to deserialize the body as-is (relies on serde defaults).
+        let mut registry = crate::type_registry::TypeRegistry::new();
+        registry.register("test::NoHandler", |bytes: &[u8]| Ok(Box::new(bytes.to_vec())));
+
+        let version_handlers: std::collections::HashMap<String, Box<dyn MessageVersionHandler>> =
+            std::collections::HashMap::new();
+
+        let envelope = WireEnvelope {
+            target: ActorId {
+                node: NodeId("n".into()),
+                local: 1,
+            },
+            target_name: "test".into(),
+            message_type: "test::NoHandler".into(),
+            send_mode: SendMode::Tell,
+            headers: WireHeaders::new(),
+            body: vec![10, 20],
+            request_id: None,
+            version: Some(1), // sender v1
+        };
+
+        // Receiver expects v2 but has no handler — body passes through
+        let any = receive_envelope_body_versioned(
+            &envelope,
+            &registry,
+            &version_handlers,
+            Some(2),
+        )
+        .unwrap();
+        let val = any.downcast::<Vec<u8>>().unwrap();
+        assert_eq!(*val, vec![10, 20]);
+    }
+
+    #[test]
+    fn test_version_mismatch_handler_returns_none_rejects() {
+        // When the MessageVersionHandler cannot migrate (returns None),
+        // the call should fail with a clear error.
+        let mut registry = crate::type_registry::TypeRegistry::new();
+        registry.register("test::FailMigrate", |bytes: &[u8]| Ok(Box::new(bytes.to_vec())));
+
+        struct RejectingMigrator;
+        impl MessageVersionHandler for RejectingMigrator {
+            fn message_type(&self) -> &'static str {
+                "test::FailMigrate"
+            }
+            fn migrate(&self, _payload: &[u8], _from: u32, _to: u32) -> Option<Vec<u8>> {
+                None // migration not possible
+            }
+        }
+
+        let mut version_handlers: std::collections::HashMap<
+            String,
+            Box<dyn MessageVersionHandler>,
+        > = std::collections::HashMap::new();
+        version_handlers.insert("test::FailMigrate".into(), Box::new(RejectingMigrator));
+
+        let envelope = WireEnvelope {
+            target: ActorId {
+                node: NodeId("n".into()),
+                local: 1,
+            },
+            target_name: "test".into(),
+            message_type: "test::FailMigrate".into(),
+            send_mode: SendMode::Tell,
+            headers: WireHeaders::new(),
+            body: vec![1, 2, 3],
+            request_id: None,
+            version: Some(1), // sender v1
+        };
+
+        let result = receive_envelope_body_versioned(
+            &envelope,
+            &registry,
+            &version_handlers,
+            Some(2), // receiver expects v2
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.message.contains("cannot migrate from v1 to v2"),
+            "expected migration rejection, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_version_none_on_sender_skips_migration() {
+        // When the sender doesn't set a version (None), no migration is attempted
+        // regardless of the receiver's expected version — even if a handler exists.
+        let mut registry = crate::type_registry::TypeRegistry::new();
+        registry.register("test::OptionalVersion", |bytes: &[u8]| Ok(Box::new(bytes.to_vec())));
+
+        // Register a panicking handler to prove it's never called
+        struct PanicMigrator;
+        impl MessageVersionHandler for PanicMigrator {
+            fn message_type(&self) -> &'static str {
+                "test::OptionalVersion"
+            }
+            fn migrate(&self, _payload: &[u8], _from: u32, _to: u32) -> Option<Vec<u8>> {
+                panic!("migrate should not be called when sender has no version");
+            }
+        }
+
+        let mut version_handlers: std::collections::HashMap<
+            String,
+            Box<dyn MessageVersionHandler>,
+        > = std::collections::HashMap::new();
+        version_handlers.insert("test::OptionalVersion".into(), Box::new(PanicMigrator));
+
+        let envelope = WireEnvelope {
+            target: ActorId {
+                node: NodeId("n".into()),
+                local: 1,
+            },
+            target_name: "test".into(),
+            message_type: "test::OptionalVersion".into(),
+            send_mode: SendMode::Tell,
+            headers: WireHeaders::new(),
+            body: vec![7, 8, 9],
+            request_id: None,
+            version: None, // sender has no version
+        };
+
+        let any = receive_envelope_body_versioned(
+            &envelope,
+            &registry,
+            &version_handlers,
+            Some(2), // receiver expects v2
+        )
+        .unwrap();
+        let val = any.downcast::<Vec<u8>>().unwrap();
+        assert_eq!(*val, vec![7, 8, 9]);
+    }
+
+    #[test]
+    fn test_version_none_on_both_sides_skips_migration() {
+        // When neither side specifies a version, no migration is attempted.
+        let mut registry = crate::type_registry::TypeRegistry::new();
+        registry.register("test::NoVersion", |bytes: &[u8]| Ok(Box::new(bytes.to_vec())));
+
+        let version_handlers: std::collections::HashMap<String, Box<dyn MessageVersionHandler>> =
+            std::collections::HashMap::new();
+
+        let envelope = WireEnvelope {
+            target: ActorId {
+                node: NodeId("n".into()),
+                local: 1,
+            },
+            target_name: "test".into(),
+            message_type: "test::NoVersion".into(),
+            send_mode: SendMode::Tell,
+            headers: WireHeaders::new(),
+            body: vec![4, 5, 6],
+            request_id: None,
+            version: None,
+        };
+
+        let any = receive_envelope_body_versioned(
+            &envelope,
+            &registry,
+            &version_handlers,
+            None, // receiver also has no version expectation
+        )
+        .unwrap();
+        let val = any.downcast::<Vec<u8>>().unwrap();
+        assert_eq!(*val, vec![4, 5, 6]);
+    }
+
+    #[test]
+    fn test_version_none_on_receiver_skips_migration() {
+        // When receiver has no version expectation (None) but sender has a
+        // version, no migration is attempted — even if a handler exists.
+        let mut registry = crate::type_registry::TypeRegistry::new();
+        registry.register("test::ReceiverNone", |bytes: &[u8]| Ok(Box::new(bytes.to_vec())));
+
+        struct PanicMigrator;
+        impl MessageVersionHandler for PanicMigrator {
+            fn message_type(&self) -> &'static str {
+                "test::ReceiverNone"
+            }
+            fn migrate(&self, _payload: &[u8], _from: u32, _to: u32) -> Option<Vec<u8>> {
+                panic!("migrate should not be called when receiver has no version expectation");
+            }
+        }
+
+        let mut version_handlers: std::collections::HashMap<
+            String,
+            Box<dyn MessageVersionHandler>,
+        > = std::collections::HashMap::new();
+        version_handlers.insert("test::ReceiverNone".into(), Box::new(PanicMigrator));
+
+        let envelope = WireEnvelope {
+            target: ActorId {
+                node: NodeId("n".into()),
+                local: 1,
+            },
+            target_name: "test".into(),
+            message_type: "test::ReceiverNone".into(),
+            send_mode: SendMode::Tell,
+            headers: WireHeaders::new(),
+            body: vec![11, 22, 33],
+            request_id: None,
+            version: Some(3), // sender has v3
+        };
+
+        let any = receive_envelope_body_versioned(
+            &envelope,
+            &registry,
+            &version_handlers,
+            None, // receiver has no version expectation
+        )
+        .unwrap();
+        let val = any.downcast::<Vec<u8>>().unwrap();
+        assert_eq!(*val, vec![11, 22, 33]);
+    }
+
+    #[test]
+    fn test_version_backward_migration_v2_to_v1() {
+        // Verify migration works in reverse direction (newer sender, older receiver).
+        let mut registry = crate::type_registry::TypeRegistry::new();
+        registry.register("test::Backward", |bytes: &[u8]| {
+            if bytes.len() != 8 {
+                return Err(SerializationError::new("expected 8 bytes"));
+            }
+            let val = u64::from_be_bytes(bytes.try_into().unwrap());
+            Ok(Box::new(val))
+        });
+
+        struct HalveMigrator;
+        impl MessageVersionHandler for HalveMigrator {
+            fn message_type(&self) -> &'static str {
+                "test::Backward"
+            }
+            fn migrate(&self, payload: &[u8], from: u32, to: u32) -> Option<Vec<u8>> {
+                if from > to {
+                    // Downgrade: halve the value
+                    let val = u64::from_be_bytes(payload.try_into().ok()?);
+                    Some((val / 2).to_be_bytes().to_vec())
+                } else {
+                    None
+                }
+            }
+        }
+
+        let mut version_handlers: std::collections::HashMap<
+            String,
+            Box<dyn MessageVersionHandler>,
+        > = std::collections::HashMap::new();
+        version_handlers.insert("test::Backward".into(), Box::new(HalveMigrator));
+
+        let envelope = WireEnvelope {
+            target: ActorId {
+                node: NodeId("n".into()),
+                local: 1,
+            },
+            target_name: "test".into(),
+            message_type: "test::Backward".into(),
+            send_mode: SendMode::Tell,
+            headers: WireHeaders::new(),
+            body: 100u64.to_be_bytes().to_vec(),
+            request_id: None,
+            version: Some(2), // sender is v2
+        };
+
+        let any = receive_envelope_body_versioned(
+            &envelope,
+            &registry,
+            &version_handlers,
+            Some(1), // receiver expects v1
+        )
+        .unwrap();
+        let val = any.downcast::<u64>().unwrap();
+        assert_eq!(*val, 50); // 100 / 2 = 50 (downgraded)
     }
 
     #[cfg(feature = "serde")]
