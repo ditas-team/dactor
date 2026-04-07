@@ -281,12 +281,13 @@ The core crate includes `test_support` with mock implementations:
   (tell/ask, lifecycle, streaming, batching, cancellation, concurrent asks,
   message ordering, slow consumers, transform, multiple handlers)
 
-The project includes 850+ tests across 3 tiers:
+The project includes 860+ tests across 3 tiers:
 - **Unit tests** — per-module in the core crate
 - **Conformance tests** — cross-adapter correctness verification
-- **E2E tests** — 33 multi-process integration tests via gRPC test harness
+- **E2E tests** — 45 multi-process integration tests via gRPC test harness
   (spawn/tell/ask, stop notification, partition/heal, error handling,
-  watch termination, node crash detection, concurrent ops)
+  watch termination, node crash detection, concurrent ops, large payloads,
+  multi-actor interaction, rapid lifecycle, slow handler isolation)
 
 ## Documentation
 
