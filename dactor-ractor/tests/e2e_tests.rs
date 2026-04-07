@@ -1068,8 +1068,10 @@ async fn e2e_ask_timeout_cancels_slow_handler() {
         "error should contain 'timed out', got: {}",
         ask.error
     );
+    // Client-side timeout: returns quickly, but the actor handler continues
+    // running to completion (fire-and-forget semantics on timeout).
     assert!(
-        elapsed < Duration::from_secs(2),
+        elapsed < Duration::from_secs(1),
         "should have timed out quickly (took {:?}), not waited for full 2s handler",
         elapsed
     );
