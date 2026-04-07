@@ -122,10 +122,11 @@ impl CommandHandler for RactorCommandHandler {
             .map_err(|e| format!("spawn failed: {}", e))?;
 
         let id = actor_ref.id().to_string();
-        self.actors
-            .lock()
-            .await
-            .insert(actor_name.to_string(), actor_ref);
+        let mut actors = self.actors.lock().await;
+        if actors.contains_key(actor_name) {
+            return Err(format!("actor '{}' already exists", actor_name));
+        }
+        actors.insert(actor_name.to_string(), actor_ref);
         self.live_count.fetch_add(1, Ordering::Relaxed);
         Ok(id)
     }
@@ -193,15 +194,15 @@ impl CommandHandler for RactorCommandHandler {
                 .ok_or_else(|| format!("actor '{}' not found", actor_name))?
         };
         actor_ref.stop();
-        // Wait for actor to actually terminate (up to 1s)
         for _ in 0..100 {
             if !actor_ref.is_alive() {
-                break;
+                self.live_count.fetch_sub(1, Ordering::Relaxed);
+                return Ok(());
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         self.live_count.fetch_sub(1, Ordering::Relaxed);
-        Ok(())
+        Err(format!("actor '{}' did not terminate within 1s", actor_name))
     }
 
     fn actor_count(&self) -> u32 {

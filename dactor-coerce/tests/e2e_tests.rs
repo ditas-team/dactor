@@ -119,3 +119,54 @@ async fn t6_coerce_two_node_spawn_tell_ask() {
 
     cluster.shutdown().await;
 }
+
+// =========================================================================
+// T6b — stop actor notification (coerce)
+// =========================================================================
+
+#[tokio::test]
+async fn t6b_coerce_stop_notification() {
+    let binary = require_binary();
+    if !std::path::Path::new(&binary).exists() {
+        return;
+    }
+
+    let mut cluster = TestCluster::builder()
+        .node("stop-node", &binary, &[], 50093)
+        .build()
+        .await;
+
+    // Subscribe to events before spawning
+    let mut events = cluster
+        .subscribe_events("stop-node", &["actor_stopped"])
+        .await
+        .unwrap();
+
+    // Spawn a counter actor
+    let resp = cluster
+        .spawn_actor("stop-node", "counter", "doomed", b"0")
+        .await
+        .unwrap();
+    assert!(resp.success);
+
+    // Verify actor is alive
+    let info = cluster.get_node_info("stop-node").await.unwrap();
+    assert_eq!(info.actor_count, 1);
+
+    // Stop the actor
+    let stop_resp = cluster.stop_actor("stop-node", "doomed").await.unwrap();
+    assert!(stop_resp.success, "stop failed: {}", stop_resp.error);
+
+    // Verify actor_stopped event
+    let event = events
+        .next_event(std::time::Duration::from_secs(5))
+        .await;
+    assert!(event.is_some(), "expected actor_stopped event");
+    assert_eq!(event.unwrap().event_type, "actor_stopped");
+
+    // Verify actor count dropped
+    let info = cluster.get_node_info("stop-node").await.unwrap();
+    assert_eq!(info.actor_count, 0);
+
+    cluster.shutdown().await;
+}
