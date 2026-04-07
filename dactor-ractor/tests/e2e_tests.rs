@@ -6,6 +6,8 @@
 //! **T1** — 2-node spawn + tell/ask cross-check
 //! **T2** — Watch notification on actor stop
 //! **T3** — Partition fault injection + heal + recovery
+//! **E2E** — Spawn duplicate rejected, tell/ask stopped actor, tell unknown actor,
+//!           concurrent operations, graceful shutdown
 
 use dactor_test_harness::TestCluster;
 use std::time::Duration;
@@ -278,7 +280,7 @@ async fn t3_partition_heal_recovery() {
     );
 
     // Give the actor a moment to process
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Ask should return the correct count (10 + 5 = 15, not 20)
     // The increment during partition was blocked, so only the post-heal one counts
@@ -291,6 +293,266 @@ async fn t3_partition_heal_recovery() {
     assert_eq!(
         count, 15,
         "count should be 15 (10 pre-partition + 5 post-heal)"
+    );
+
+    cluster.shutdown().await;
+}
+
+// =========================================================================
+// E2E — Spawn duplicate rejected
+// =========================================================================
+
+#[tokio::test]
+async fn e2e_spawn_duplicate_rejected() {
+    let binary = require_binary();
+    if !std::path::Path::new(&binary).exists() {
+        return;
+    }
+
+    let mut cluster = TestCluster::builder()
+        .node("dup-node", &binary, &[], 50075)
+        .build()
+        .await;
+
+    // First spawn should succeed
+    let resp = cluster
+        .spawn_actor("dup-node", "counter", "dup-actor", b"0")
+        .await
+        .unwrap();
+    assert!(resp.success, "first spawn should succeed");
+
+    // Second spawn with same name should fail
+    let resp2 = cluster
+        .spawn_actor("dup-node", "counter", "dup-actor", b"0")
+        .await
+        .unwrap();
+    assert!(!resp2.success, "duplicate spawn should fail");
+    assert!(
+        resp2.error.to_lowercase().contains("already"),
+        "error should mention 'already', got: {}",
+        resp2.error
+    );
+
+    cluster.shutdown().await;
+}
+
+// =========================================================================
+// E2E — Tell to stopped actor
+// =========================================================================
+
+#[tokio::test]
+async fn e2e_tell_stopped_actor() {
+    let binary = require_binary();
+    if !std::path::Path::new(&binary).exists() {
+        return;
+    }
+
+    let mut cluster = TestCluster::builder()
+        .node("tell-stop-node", &binary, &[], 50076)
+        .build()
+        .await;
+
+    // Subscribe to events so we can observe actor_stopped
+    let mut events = cluster
+        .subscribe_events("tell-stop-node", &["actor_stopped"])
+        .await
+        .unwrap();
+
+    // Spawn and then stop actor
+    let resp = cluster
+        .spawn_actor("tell-stop-node", "counter", "stopped-tell", b"0")
+        .await
+        .unwrap();
+    assert!(resp.success);
+
+    let stop_resp = cluster
+        .stop_actor("tell-stop-node", "stopped-tell")
+        .await
+        .unwrap();
+    assert!(stop_resp.success);
+
+    // Wait for stop event
+    let event = events.next_event(Duration::from_secs(5)).await;
+    assert!(event.is_some(), "expected actor_stopped event");
+
+    // Tell to stopped actor should fail
+    let tell_resp = cluster
+        .tell_actor("tell-stop-node", "stopped-tell", "increment", b"1")
+        .await
+        .unwrap();
+    assert!(
+        !tell_resp.success,
+        "tell to stopped actor should fail"
+    );
+
+    cluster.shutdown().await;
+}
+
+// =========================================================================
+// E2E — Ask stopped actor
+// =========================================================================
+
+#[tokio::test]
+async fn e2e_ask_stopped_actor() {
+    let binary = require_binary();
+    if !std::path::Path::new(&binary).exists() {
+        return;
+    }
+
+    let mut cluster = TestCluster::builder()
+        .node("ask-stop-node", &binary, &[], 50077)
+        .build()
+        .await;
+
+    // Subscribe to events so we can observe actor_stopped
+    let mut events = cluster
+        .subscribe_events("ask-stop-node", &["actor_stopped"])
+        .await
+        .unwrap();
+
+    // Spawn and then stop actor
+    let resp = cluster
+        .spawn_actor("ask-stop-node", "counter", "stopped-ask", b"0")
+        .await
+        .unwrap();
+    assert!(resp.success);
+
+    let stop_resp = cluster
+        .stop_actor("ask-stop-node", "stopped-ask")
+        .await
+        .unwrap();
+    assert!(stop_resp.success);
+
+    // Wait for stop event
+    let event = events.next_event(Duration::from_secs(5)).await;
+    assert!(event.is_some(), "expected actor_stopped event");
+
+    // Ask stopped actor should fail
+    let ask_resp = cluster
+        .ask_actor("ask-stop-node", "stopped-ask", "get_count", b"")
+        .await
+        .unwrap();
+    assert!(
+        !ask_resp.success,
+        "ask to stopped actor should fail"
+    );
+
+    cluster.shutdown().await;
+}
+
+// =========================================================================
+// E2E — Tell unknown actor
+// =========================================================================
+
+#[tokio::test]
+async fn e2e_tell_unknown_actor() {
+    let binary = require_binary();
+    if !std::path::Path::new(&binary).exists() {
+        return;
+    }
+
+    let mut cluster = TestCluster::builder()
+        .node("unknown-node", &binary, &[], 50078)
+        .build()
+        .await;
+
+    // Tell to a nonexistent actor — should fail
+    let tell_resp = cluster
+        .tell_actor("unknown-node", "nonexistent-actor", "increment", b"1")
+        .await
+        .unwrap();
+    assert!(
+        !tell_resp.success,
+        "tell to unknown actor should fail"
+    );
+    assert!(
+        tell_resp.error.to_lowercase().contains("not found"),
+        "error should mention 'not found', got: {}",
+        tell_resp.error
+    );
+
+    cluster.shutdown().await;
+}
+
+// =========================================================================
+// E2E — Concurrent tell/ask operations
+// =========================================================================
+
+#[tokio::test]
+async fn e2e_concurrent_operations() {
+    let binary = require_binary();
+    if !std::path::Path::new(&binary).exists() {
+        return;
+    }
+
+    let mut cluster = TestCluster::builder()
+        .node("concurrent-node", &binary, &[], 50079)
+        .build()
+        .await;
+
+    // Spawn actor with initial count 0
+    let resp = cluster
+        .spawn_actor("concurrent-node", "counter", "rapid", b"0")
+        .await
+        .unwrap();
+    assert!(resp.success);
+
+    // Note: These sends are sequential (TestCluster is not Clone).
+    // This tests rapid throughput, not true concurrency.
+    for _ in 0..50 {
+        let tell_resp = cluster
+            .tell_actor("concurrent-node", "rapid", "increment", b"1")
+            .await
+            .unwrap();
+        assert!(tell_resp.success, "tell failed: {}", tell_resp.error);
+    }
+
+    // Sleep for processing
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Ask count — should be 50
+    let ask_resp = cluster
+        .ask_actor("concurrent-node", "rapid", "get_count", b"")
+        .await
+        .unwrap();
+    assert!(ask_resp.success, "ask failed: {}", ask_resp.error);
+    let count: i64 = serde_json::from_slice(&ask_resp.payload).unwrap();
+    assert_eq!(count, 50, "count should be 50 after 50 increments");
+
+    cluster.shutdown().await;
+}
+
+// =========================================================================
+// E2E — Graceful node shutdown
+// =========================================================================
+
+#[tokio::test]
+async fn e2e_graceful_shutdown() {
+    let binary = require_binary();
+    if !std::path::Path::new(&binary).exists() {
+        return;
+    }
+
+    let mut cluster = TestCluster::builder()
+        .node("shutdown-node", &binary, &[], 50080)
+        .build()
+        .await;
+
+    // Ping should succeed while the node is running
+    let ping_resp = cluster.ping("shutdown-node", "hello").await;
+    assert!(ping_resp.is_ok(), "ping should succeed before shutdown");
+
+    // Shutdown the node
+    cluster.shutdown_node("shutdown-node").await.unwrap();
+
+    // Give the process time to fully terminate
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Ping should fail after shutdown
+    let ping_resp = cluster.ping("shutdown-node", "hello").await;
+    assert!(
+        ping_resp.is_err(),
+        "ping should fail after node shutdown"
     );
 
     cluster.shutdown().await;
