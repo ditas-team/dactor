@@ -4,7 +4,7 @@
 
 ---
 
-## Current Status (PR #127)
+## Current Status (PR #130)
 - Phase 3: ✅ Complete (features, examples, conformance, batching, E2E tests)
 - Phase 4: ✅ Complete — R1-R6, R3b, R6b-c, S1-S4, SA1-SA10, SE1-SE6, C1-C5, P1-P3 all done
 - Phase 6: ✅ Complete (supervision, pools, timers, on_reply, AM1-AM7, AP7-AP8 all done)
@@ -21,15 +21,15 @@
 - AP8: ✅ Done (virtual actor pool with single-threaded router)
 - Bounded mailbox: ✅ All 3 adapters + TestRuntime; shared BoundedMailboxSender in runtime_support
 - T1-T11: ✅ Complete (E2E integration tests + corner cases + version migration)
-- E2E: ✅ 45 tests (15 per adapter) — spawn/tell/ask, stop, partition/heal, errors, watch, crash, concurrent, large payloads, multi-actor, rapid lifecycle, slow handlers
+- E2E: ✅ 60 tests (20 per adapter) — spawn/tell/ask, stop, partition/heal, errors, watch, crash, concurrent, large payloads, multi-actor, rapid lifecycle, slow handlers, cancellation/timeout, inter-actor forwarding, state snapshots
 - SE6: ✅ Complete (protobuf system serialization)
 - NA10: ✅ Complete (transport routing)
-- Zero clippy warnings, 860+ tests, all workspace tests pass
+- Zero clippy warnings, 875+ tests, all workspace tests pass
 - Build: `cargo clippy --workspace --exclude dactor-test-harness --all-targets --all-features -- -D warnings`
 - Test: `cargo test --workspace --exclude dactor-test-harness --features test-support`
 - E2E: `cargo test -p dactor-ractor --test e2e_tests --features test-harness` (+ kameo, coerce)
 
-### Session 2026-04-06/07 Summary (PRs #111-#127)
+### Session 2026-04-06/07 Summary (PRs #111-#129)
 - **NA10** (#111): Transport routing — SystemMessageRouter trait, route_system_envelope for all 3 adapters, wire protocol stability tests (31 new tests)
 - **SE6** (#112): Protobuf system serialization — proto/system.proto schemas, prost encode/decode, removed serializer param from trait, size limits + validation (26 proto unit tests)
 - **T1-T3** (#113): Ractor E2E integration tests — extended test harness with SpawnActor/TellActor/AskActor/StopActor RPCs, CommandHandler trait, test-node-ractor binary (3 E2E tests)
@@ -45,6 +45,9 @@
 - **E2E suite** (#123): Comprehensive E2E tests — 20 new tests (error handling, concurrent ops, partition parity, graceful shutdown) across all 3 adapters
 - **Watch+Crash** (#124): WatchActor RPC + node crash detection — 6 new tests, watch termination notification, duplicate watch prevention
 - **Advanced E2E** (#126): Large payloads (100KB echo), multi-actor interaction, rapid spawn/stop lifecycle, slow handler isolation — 12 new tests, timing-sensitive assertions use polling
+- **Docs** (#127): Update test counts for session
+- **Cancellation** (#128): Ask timeout support — timeout_ms on AskActorRequest, SlowEcho message, 6 new timeout E2E tests
+- **Inter-actor** (#129): Forward increment + state snapshots — inter-actor forwarding, chained forwarding, state snapshot E2E tests (9 new)
 
 ### Key Design Decisions Made This Session
 - Wire protocol constants are frozen strings with regression test (not Rust paths)
