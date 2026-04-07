@@ -1078,3 +1078,212 @@ async fn e2e_ask_timeout_cancels_slow_handler() {
 
     cluster.shutdown().await;
 }
+
+// =========================================================================
+// E2E — Inter-actor forwarding
+// =========================================================================
+
+#[tokio::test]
+async fn e2e_inter_actor_forwarding() {
+    let binary = require_binary();
+    if !std::path::Path::new(&binary).exists() {
+        return;
+    }
+
+    let mut cluster = TestCluster::builder()
+        .node("fwd-node", &binary, &[], 50140)
+        .build()
+        .await;
+
+    // Spawn "source" and "target" actors (both start at 0)
+    let resp = cluster
+        .spawn_actor("fwd-node", "counter", "source", b"0")
+        .await
+        .unwrap();
+    assert!(resp.success, "spawn source failed: {}", resp.error);
+
+    let resp = cluster
+        .spawn_actor("fwd-node", "counter", "target", b"0")
+        .await
+        .unwrap();
+    assert!(resp.success, "spawn target failed: {}", resp.error);
+
+    // Tell "source" to forward_increment {target: "target", amount: 7}
+    let payload = serde_json::json!({"target": "target", "amount": 7}).to_string();
+    let tell = cluster
+        .tell_actor("fwd-node", "source", "forward_increment", payload.as_bytes())
+        .await
+        .unwrap();
+    assert!(tell.success, "forward_increment failed: {}", tell.error);
+
+    // Sleep briefly for message propagation
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Ask "target" for get_count — should be 7
+    let ask = cluster
+        .ask_actor("fwd-node", "target", "get_count", b"")
+        .await
+        .unwrap();
+    assert!(ask.success, "ask target failed: {}", ask.error);
+    let count: i64 = serde_json::from_slice(&ask.payload).unwrap();
+    assert_eq!(count, 7, "target should have been incremented to 7");
+
+    // Ask "source" for get_count — should still be 0
+    let ask = cluster
+        .ask_actor("fwd-node", "source", "get_count", b"")
+        .await
+        .unwrap();
+    assert!(ask.success, "ask source failed: {}", ask.error);
+    let count: i64 = serde_json::from_slice(&ask.payload).unwrap();
+    assert_eq!(count, 0, "source should not have incremented itself");
+
+    cluster.shutdown().await;
+}
+
+// =========================================================================
+// E2E — Chained forwarding across multiple actors
+// =========================================================================
+
+#[tokio::test]
+async fn e2e_chained_forwarding() {
+    let binary = require_binary();
+    if !std::path::Path::new(&binary).exists() {
+        return;
+    }
+
+    let mut cluster = TestCluster::builder()
+        .node("chain-node", &binary, &[], 50141)
+        .build()
+        .await;
+
+    // Spawn "a", "b", "c" actors (all start at 0)
+    for name in &["a", "b", "c"] {
+        let resp = cluster
+            .spawn_actor("chain-node", "counter", name, b"0")
+            .await
+            .unwrap();
+        assert!(resp.success, "spawn {} failed: {}", name, resp.error);
+    }
+
+    // Tell "a" to forward_increment {target: "b", amount: 3}
+    let payload = serde_json::json!({"target": "b", "amount": 3}).to_string();
+    let tell = cluster
+        .tell_actor("chain-node", "a", "forward_increment", payload.as_bytes())
+        .await
+        .unwrap();
+    assert!(tell.success, "forward a->b failed: {}", tell.error);
+
+    // Tell "b" to forward_increment {target: "c", amount: 5}
+    let payload = serde_json::json!({"target": "c", "amount": 5}).to_string();
+    let tell = cluster
+        .tell_actor("chain-node", "b", "forward_increment", payload.as_bytes())
+        .await
+        .unwrap();
+    assert!(tell.success, "forward b->c failed: {}", tell.error);
+
+    // Poll until c.count == 5 (up to 2s)
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let ask = cluster
+            .ask_actor("chain-node", "c", "get_count", b"")
+            .await
+            .unwrap();
+        assert!(ask.success);
+        let count: i64 = serde_json::from_slice(&ask.payload).unwrap();
+        if count == 5 {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("c.count did not reach 5 within 2s, got {}", count);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Verify all counts: a=0, b=3, c=5
+    let ask = cluster.ask_actor("chain-node", "a", "get_count", b"").await.unwrap();
+    assert!(ask.success);
+    let count: i64 = serde_json::from_slice(&ask.payload).unwrap();
+    assert_eq!(count, 0, "a should be 0");
+
+    let ask = cluster.ask_actor("chain-node", "b", "get_count", b"").await.unwrap();
+    assert!(ask.success);
+    let count: i64 = serde_json::from_slice(&ask.payload).unwrap();
+    assert_eq!(count, 3, "b should be 3");
+
+    let ask = cluster.ask_actor("chain-node", "c", "get_count", b"").await.unwrap();
+    assert!(ask.success);
+    let count: i64 = serde_json::from_slice(&ask.payload).unwrap();
+    assert_eq!(count, 5, "c should be 5");
+
+    cluster.shutdown().await;
+}
+
+// =========================================================================
+// E2E — Actor state snapshot via get_state
+// =========================================================================
+
+#[tokio::test]
+async fn e2e_actor_state_snapshot() {
+    let binary = require_binary();
+    if !std::path::Path::new(&binary).exists() {
+        return;
+    }
+
+    let mut cluster = TestCluster::builder()
+        .node("state-node", &binary, &[], 50142)
+        .build()
+        .await;
+
+    // Spawn actor
+    let resp = cluster
+        .spawn_actor("state-node", "counter", "snap1", b"0")
+        .await
+        .unwrap();
+    assert!(resp.success, "spawn failed: {}", resp.error);
+
+    // Increment 3 times
+    for _ in 0..3 {
+        let tell = cluster
+            .tell_actor("state-node", "snap1", "increment", b"1")
+            .await
+            .unwrap();
+        assert!(tell.success);
+    }
+
+    // Brief sleep for message propagation
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Ask get_state — verify JSON has count=3 and correct name
+    let ask = cluster
+        .ask_actor("state-node", "snap1", "get_state", b"")
+        .await
+        .unwrap();
+    assert!(ask.success, "get_state failed: {}", ask.error);
+    let state: serde_json::Value = serde_json::from_slice(&ask.payload).unwrap();
+    assert_eq!(state["count"], 3, "count should be 3");
+    assert_eq!(state["name"], "snap1", "name should be snap1");
+
+    // Increment 2 more times
+    for _ in 0..2 {
+        let tell = cluster
+            .tell_actor("state-node", "snap1", "increment", b"1")
+            .await
+            .unwrap();
+        assert!(tell.success);
+    }
+
+    // Brief sleep for message propagation
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Ask get_state again — verify count=5
+    let ask = cluster
+        .ask_actor("state-node", "snap1", "get_state", b"")
+        .await
+        .unwrap();
+    assert!(ask.success, "get_state failed: {}", ask.error);
+    let state: serde_json::Value = serde_json::from_slice(&ask.payload).unwrap();
+    assert_eq!(state["count"], 5, "count should be 5 after 2 more increments");
+    assert_eq!(state["name"], "snap1", "name should still be snap1");
+
+    cluster.shutdown().await;
+}

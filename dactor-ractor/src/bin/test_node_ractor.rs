@@ -230,6 +230,26 @@ impl CommandHandler for RactorCommandHandler {
                     .tell(SlowIncrement { amount })
                     .map_err(|e| format!("tell failed: {}", e))
             }
+            "forward_increment" => {
+                let fwd: serde_json::Value =
+                    serde_json::from_slice(payload).map_err(|e| format!("bad payload: {}", e))?;
+                let target = fwd["target"]
+                    .as_str()
+                    .ok_or_else(|| "missing target".to_string())?;
+                let amount = fwd["amount"]
+                    .as_i64()
+                    .ok_or_else(|| "missing amount".to_string())?;
+                let target_ref = {
+                    let actors = self.actors.lock().await;
+                    actors
+                        .get(target)
+                        .ok_or_else(|| format!("forward target '{}' not found", target))?
+                        .clone()
+                };
+                target_ref
+                    .tell(Increment { amount })
+                    .map_err(|e| format!("forward failed: {}", e))
+            }
             _ => Err(format!("unknown message type: {}", message_type)),
         }
     }
@@ -249,6 +269,7 @@ impl CommandHandler for RactorCommandHandler {
                 .clone()
         };
 
+        let actor_name_owned = actor_name.to_string();
         let ask_fut = async {
             match message_type {
                 "get_count" => {
@@ -257,6 +278,17 @@ impl CommandHandler for RactorCommandHandler {
                         .map_err(|e| format!("ask failed: {}", e))?;
                     let count = reply.await.map_err(|e| format!("reply failed: {}", e))?;
                     serde_json::to_vec(&count).map_err(|e| format!("serialize failed: {}", e))
+                }
+                "get_state" => {
+                    let reply = actor_ref
+                        .ask(GetCount, None)
+                        .map_err(|e| format!("ask failed: {}", e))?;
+                    let count = reply.await.map_err(|e| format!("reply failed: {}", e))?;
+                    let state = serde_json::json!({
+                        "count": count,
+                        "name": actor_name_owned,
+                    });
+                    serde_json::to_vec(&state).map_err(|e| format!("serialize failed: {}", e))
                 }
                 "echo" => {
                     let reply = actor_ref
