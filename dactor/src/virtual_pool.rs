@@ -11,9 +11,10 @@
 //! Caller → [mpsc channel] → RouterTask → Worker-N → reply direct to caller
 //! ```
 //!
-//! The router task receives type-erased closures ("ops") through an unbounded
-//! mpsc channel, selects a worker using the configured [`PoolRouting`] strategy,
-//! and invokes the closure with the chosen worker reference.
+//! The router task receives type-erased closures ("ops") through a bounded
+//! mpsc channel (default capacity [`DEFAULT_ROUTER_CAPACITY`]), selects a
+//! worker using the configured [`PoolRouting`] strategy, and invokes the
+//! closure with the chosen worker reference.
 //!
 //! For `tell`, the closure is fire-and-forget.
 //! For `ask`, a oneshot channel carries the `AskReply` back to the caller.
@@ -33,6 +34,11 @@ use crate::message::Message;
 use crate::node::{ActorId, NodeId};
 use crate::pool::PoolRouting;
 use crate::stream::{BatchConfig, BoxStream};
+
+/// Default capacity of the bounded mpsc channel between callers and the router
+/// task. This limits how many operations can be queued before back-pressure is
+/// applied.
+pub const DEFAULT_ROUTER_CAPACITY: usize = 1024;
 
 // ---------------------------------------------------------------------------
 // Type-erased operation
@@ -67,7 +73,7 @@ enum RouterCommand<R: Send + 'static> {
 /// `VirtualPoolRef` implements [`ActorRef<A>`] and can be used as a drop-in
 /// replacement for `PoolRef` or a direct actor reference.
 pub struct VirtualPoolRef<A: Actor, R: ActorRef<A>> {
-    ops_tx: mpsc::UnboundedSender<RouterCommand<R>>,
+    ops_tx: mpsc::Sender<RouterCommand<R>>,
     pool_id: ActorId,
     name: String,
     alive: Arc<AtomicBool>,
@@ -94,12 +100,27 @@ impl<A: Actor, R: ActorRef<A>> VirtualPoolRef<A, R> {
     ///
     /// Spawns a background tokio task that receives operations and routes
     /// them to workers according to the given [`PoolRouting`] strategy.
+    /// The internal router channel is bounded to [`DEFAULT_ROUTER_CAPACITY`];
+    /// use [`Self::with_capacity`] to override.
     ///
     /// # Panics
     ///
     /// Panics if `workers` is empty.
     pub fn new(workers: Vec<R>, routing: PoolRouting) -> Self {
+        Self::with_capacity(workers, routing, DEFAULT_ROUTER_CAPACITY)
+    }
+
+    /// Create a new virtual pool with an explicit router channel capacity.
+    ///
+    /// The `capacity` controls how many operations can be queued before
+    /// senders receive back-pressure via [`ActorSendError`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `workers` is empty or `capacity` is zero.
+    pub fn with_capacity(workers: Vec<R>, routing: PoolRouting, capacity: usize) -> Self {
         assert!(!workers.is_empty(), "pool must have at least one worker");
+        assert!(capacity > 0, "router capacity must be > 0");
 
         let pool_local = NEXT_VPOOL_ID.fetch_add(1, Ordering::Relaxed);
         let pool_id = ActorId {
@@ -109,7 +130,7 @@ impl<A: Actor, R: ActorRef<A>> VirtualPoolRef<A, R> {
         let name = format!("vpool({})", workers[0].name());
         let alive = Arc::new(AtomicBool::new(true));
 
-        let (ops_tx, ops_rx) = mpsc::unbounded_channel();
+        let (ops_tx, ops_rx) = mpsc::channel(capacity);
 
         let alive_clone = alive.clone();
         tokio::spawn(router_loop(ops_rx, workers, routing, alive_clone));
@@ -129,11 +150,11 @@ impl<A: Actor, R: ActorRef<A>> VirtualPoolRef<A, R> {
 // ---------------------------------------------------------------------------
 
 async fn router_loop<A: Actor, R: ActorRef<A>>(
-    mut rx: mpsc::UnboundedReceiver<RouterCommand<R>>,
+    mut rx: mpsc::Receiver<RouterCommand<R>>,
     workers: Vec<R>,
     routing: PoolRouting,
     alive: Arc<AtomicBool>,
-) {
+){
     let mut counter: u64 = 0;
 
     while let Some(cmd) = rx.recv().await {
@@ -217,7 +238,8 @@ impl<A: Actor, R: ActorRef<A>> ActorRef<A> for VirtualPoolRef<A, R> {
     }
 
     fn stop(&self) {
-        let _ = self.ops_tx.send(RouterCommand::Stop);
+        self.alive.store(false, Ordering::Release);
+        let _ = self.ops_tx.try_send(RouterCommand::Stop);
     }
 
     fn tell<M>(&self, msg: M) -> Result<(), ActorSendError>
@@ -226,11 +248,13 @@ impl<A: Actor, R: ActorRef<A>> ActorRef<A> for VirtualPoolRef<A, R> {
         M: Message<Reply = ()>,
     {
         let op: PoolOp<R> = Box::new(move |worker: &R| {
-            let _ = worker.tell(msg);
+            if let Err(e) = worker.tell(msg) {
+                tracing::warn!(error = %e, "virtual pool: worker tell failed");
+            }
         });
         self.ops_tx
-            .send(RouterCommand::Op(op))
-            .map_err(|_| ActorSendError("virtual pool router stopped".into()))
+            .try_send(RouterCommand::Op(op))
+            .map_err(|_| ActorSendError("virtual pool router stopped or full".into()))
     }
 
     fn ask<M>(
@@ -252,8 +276,8 @@ impl<A: Actor, R: ActorRef<A>> ActorRef<A> for VirtualPoolRef<A, R> {
         });
 
         self.ops_tx
-            .send(RouterCommand::Op(op))
-            .map_err(|_| ActorSendError("virtual pool router stopped".into()))?;
+            .try_send(RouterCommand::Op(op))
+            .map_err(|_| ActorSendError("virtual pool router stopped or full".into()))?;
 
         // Build a final AskReply that flattens the two layers:
         //   bridge_rx → Result<AskReply<M::Reply>, ActorSendError>
@@ -306,8 +330,8 @@ impl<A: Actor, R: ActorRef<A>> ActorRef<A> for VirtualPoolRef<A, R> {
         });
 
         self.ops_tx
-            .send(RouterCommand::Op(op))
-            .map_err(|_| ActorSendError("virtual pool router stopped".into()))?;
+            .try_send(RouterCommand::Op(op))
+            .map_err(|_| ActorSendError("virtual pool router stopped or full".into()))?;
 
         // Block-wait via a oneshot. Since we need a sync return of
         // Result<BoxStream, ActorSendError>, we rely on the router task
@@ -319,8 +343,14 @@ impl<A: Actor, R: ActorRef<A>> ActorRef<A> for VirtualPoolRef<A, R> {
         let stream = futures::stream::once(async move {
             match bridge_rx.await {
                 Ok(Ok(inner_stream)) => inner_stream,
-                Ok(Err(_)) => Box::pin(futures::stream::empty()) as BoxStream<OutputItem>,
-                Err(_) => Box::pin(futures::stream::empty()) as BoxStream<OutputItem>,
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "virtual pool: worker expand failed");
+                    Box::pin(futures::stream::empty()) as BoxStream<OutputItem>
+                }
+                Err(_) => {
+                    tracing::warn!("virtual pool: router dropped before forwarding expand");
+                    Box::pin(futures::stream::empty()) as BoxStream<OutputItem>
+                }
             }
         });
 
@@ -349,8 +379,8 @@ impl<A: Actor, R: ActorRef<A>> ActorRef<A> for VirtualPoolRef<A, R> {
         });
 
         self.ops_tx
-            .send(RouterCommand::Op(op))
-            .map_err(|_| ActorSendError("virtual pool router stopped".into()))?;
+            .try_send(RouterCommand::Op(op))
+            .map_err(|_| ActorSendError("virtual pool router stopped or full".into()))?;
 
         let (final_tx, final_rx) =
             tokio::sync::oneshot::channel::<Result<Reply, RuntimeError>>();
@@ -400,14 +430,20 @@ impl<A: Actor, R: ActorRef<A>> ActorRef<A> for VirtualPoolRef<A, R> {
         });
 
         self.ops_tx
-            .send(RouterCommand::Op(op))
-            .map_err(|_| ActorSendError("virtual pool router stopped".into()))?;
+            .try_send(RouterCommand::Op(op))
+            .map_err(|_| ActorSendError("virtual pool router stopped or full".into()))?;
 
         let stream = futures::stream::once(async move {
             match bridge_rx.await {
                 Ok(Ok(inner_stream)) => inner_stream,
-                Ok(Err(_)) => Box::pin(futures::stream::empty()) as BoxStream<OutputItem>,
-                Err(_) => Box::pin(futures::stream::empty()) as BoxStream<OutputItem>,
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "virtual pool: worker transform failed");
+                    Box::pin(futures::stream::empty()) as BoxStream<OutputItem>
+                }
+                Err(_) => {
+                    tracing::warn!("virtual pool: router dropped before forwarding transform");
+                    Box::pin(futures::stream::empty()) as BoxStream<OutputItem>
+                }
             }
         });
 
@@ -586,8 +622,7 @@ mod tests {
         assert!(pool.is_alive());
         pool.stop();
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+        // is_alive() returns false immediately after stop()
         assert!(!pool.is_alive());
     }
 
