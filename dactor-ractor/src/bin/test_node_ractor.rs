@@ -224,7 +224,7 @@ async fn main() {
         .parse()
         .expect("invalid port");
 
-    let runtime = RactorRuntime::new();
+    let runtime = RactorRuntime::with_node_id(dactor::node::NodeId(node_id.clone()));
     let handler = Arc::new(RactorCommandHandler::new(runtime));
 
     let config = TestNodeConfig::from_args(&node_id, port);

@@ -224,7 +224,7 @@ async fn main() {
         .parse()
         .expect("invalid port");
 
-    let runtime = CoerceRuntime::new();
+    let runtime = CoerceRuntime::with_node_id(dactor::node::NodeId(node_id.clone()));
     let handler = Arc::new(CoerceCommandHandler::new(runtime));
 
     let config = TestNodeConfig::from_args(&node_id, port);

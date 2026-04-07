@@ -225,7 +225,7 @@ async fn main() {
         .parse()
         .expect("invalid port");
 
-    let runtime = KameoRuntime::new();
+    let runtime = KameoRuntime::with_node_id(dactor::node::NodeId(node_id.clone()));
     let handler = Arc::new(KameoCommandHandler::new(runtime));
 
     let config = TestNodeConfig::from_args(&node_id, port);
