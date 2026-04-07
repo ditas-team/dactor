@@ -88,6 +88,8 @@ pub mod transport;
 pub mod type_registry;
 /// Envelope-level interceptor for incoming remote messages.
 pub mod wire_interceptor;
+/// Worker reference for distributed actor pools (local + remote).
+pub mod worker_ref;
 
 #[cfg(feature = "test-support")]
 pub mod test_support;
@@ -192,6 +194,7 @@ pub use wire_interceptor::{
     MaxBodySizeInterceptor, RateLimitWireInterceptor, WireDisposition, WireInterceptor,
     WireInterceptorPipeline, WireProcessResult, WireRejectError,
 };
+pub use worker_ref::WorkerRef;
 
 // Backward-compatible re-export of TestClock (feature-gated)
 #[cfg(feature = "test-support")]
