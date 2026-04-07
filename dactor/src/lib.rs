@@ -60,6 +60,8 @@ pub mod outbound_queue;
 pub mod persistence;
 /// Actor pool routing and configuration.
 pub mod pool;
+/// Virtual actor pool with single-threaded routing task.
+pub mod virtual_pool;
 /// Protobuf serialization for system messages and wire envelope framing.
 pub mod proto;
 /// Named actor registry for service location.
@@ -155,6 +157,7 @@ pub use persistence::{
     SnapshotEntry, SnapshotStorage, StateStorage, StorageProvider,
 };
 pub use pool::{Keyed, PoolConfig, PoolRef, PoolRouting};
+pub use virtual_pool::VirtualPoolRef;
 pub use registry::ActorRegistry;
 #[cfg(feature = "serde")]
 pub use remote::{build_ask_envelope, build_tell_envelope, build_wire_envelope, JsonSerializer};
