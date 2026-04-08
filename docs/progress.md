@@ -147,6 +147,63 @@ Findings were consolidated, addressed, and verified before merge. Key patterns f
 ### Pending Work for Next Session
 All v0.2 planned work items and stretch goals are now complete.
 
+### New Work Items
+
+#### PUB1: Usage Documentation for crates.io
+
+**Goal:** Create a polished, comprehensive usage document before publishing dactor to crates.io.
+
+**Design focus:**
+- **What is dactor** — framework overview, provider-agnostic actor abstraction, multi-runtime support
+- **Why need dactor** — pain points with existing actor frameworks, vendor lock-in, portability, testability
+- **How to use dactor** — getting started guide, communication patterns, interceptors, persistence, pools, streaming, supervision, cluster management
+
+**Deliverable:** `docs/usage-guide.md` (or `GUIDE.md` at workspace root) — a standalone guide suitable for crates.io documentation and GitHub landing page.
+
+**Status:** 🔲 Not started
+
+---
+
+#### PUB2: Real-World Sample Application
+
+**Goal:** Create a separate sample crate demonstrating a real-world hosting system built with dactor.
+
+**Scope:**
+- Standalone crate (e.g., `examples/dactor-sample-app/` or `dactor-sample/`)
+- Demonstrates a realistic use case: e.g., distributed task queue, chat server, IoT device manager, or order processing pipeline
+- Uses one or more adapters (ractor/kameo/coerce)
+- Exercises core features: tell/ask, streaming, persistence, supervision, pools, interceptors, cluster events
+- Includes README with architecture diagram and run instructions
+
+**Status:** 🔲 Not started
+
+---
+
+#### PUB3: Cloud Hosting Discovery Crates
+
+**Goal:** Define hosting utility crates that enable dactor to discover and manage nodes on cloud platforms.
+
+**Crates:**
+- `dactor-discover-k8s` — Kubernetes node discovery (AKS, EKS, GKE)
+  - Uses Kubernetes API (pod labels, headless services, StatefulSets) for peer discovery
+  - Implements `ClusterDiscovery` trait from dactor core
+  - Works with AKS (Azure), EKS (Amazon), GKE (Google), and vanilla Kubernetes
+- `dactor-discover-aws` — AWS Auto Scaling discovery (EC2, ECS)
+  - Uses AWS APIs (Auto Scaling Groups, EC2 instance metadata) for peer discovery
+  - Implements `ClusterDiscovery` trait
+- `dactor-discover-azure` — Azure VMSS discovery
+  - Uses Azure Instance Metadata Service + VMSS APIs for peer discovery
+  - Implements `ClusterDiscovery` trait
+
+**Each crate provides:**
+- `ClusterDiscovery` implementation for the platform
+- Node health checking via platform APIs
+- Graceful shutdown integration (drain, deregister)
+- Configuration via environment variables or builder pattern
+- Example and documentation
+
+**Status:** 🔲 Not started
+
 ### Documentation Created This Session
 - `docs/cluster-behavior.md` — K8s/EKS/VMSS autoscale, simultaneous restart, graceful shutdown, split-brain
 - `dactor-ractor/docs/implementation.md` — ractor adapter architecture + limitations
