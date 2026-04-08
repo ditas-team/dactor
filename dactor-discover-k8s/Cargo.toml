@@ -1,0 +1,17 @@
+[package]
+name = "dactor-discover-k8s"
+version = "0.1.0"
+edition = "2021"
+description = "Kubernetes node discovery for the dactor distributed actor framework"
+license = "MIT"
+repository = "https://github.com/Yaming-Hub/dactor"
+
+[dependencies]
+dactor = { version = "0.2.0", path = "../dactor" }
+kube = { version = "0.98", features = ["runtime", "client", "derive"] }
+k8s-openapi = { version = "0.24", features = ["latest"] }
+tokio = { version = "1", features = ["sync", "rt", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }

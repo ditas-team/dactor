@@ -1,5 +1,5 @@
 [workspace]
-members = ["dactor", "dactor-ractor", "dactor-kameo", "dactor-test-harness", "dactor-mock", "dactor-coerce"]
+members = ["dactor", "dactor-ractor", "dactor-kameo", "dactor-test-harness", "dactor-mock", "dactor-coerce", "dactor-discover-k8s"]
 resolver = "2"
 
 [workspace.metadata]
