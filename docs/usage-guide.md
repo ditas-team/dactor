@@ -626,8 +626,9 @@ use dactor::BroadcastRef;
 
 let group = BroadcastRef::new(vec![worker1, worker2, worker3]);
 
-// Fire-and-forget to all members
-group.tell(DoWork).unwrap();
+// Fire-and-forget to all members (returns BroadcastTellResult, not Result)
+let result = group.tell(DoWork);
+// result contains per-actor outcomes (Ok, SendError)
 
 // Ask all members with a per-actor timeout
 use std::time::Duration;
@@ -1199,6 +1200,9 @@ JSON-based serialization.
 
 `RemoteActorRef<A>` implements `ActorRef<A>` for actors on remote nodes.
 Messages are serialized into `WireEnvelope`s and sent through a `Transport`.
+
+> **Note:** The `register_tell` / `register_ask` convenience methods require
+> the `serde` feature: `dactor = { version = "0.2", features = ["serde"] }`
 
 ```rust,ignore
 use dactor::remote_ref::RemoteActorRefBuilder;
