@@ -254,23 +254,34 @@ pub struct HeadlessServiceDiscovery {
     service_name: String,
     namespace: String,
     port: u16,
+    cluster_domain: String,
 }
 
 impl HeadlessServiceDiscovery {
-    /// Create a new headless-service discovery.
+    /// Create a new headless-service discovery with default cluster domain (`cluster.local`).
     pub fn new(service_name: &str, namespace: &str, port: u16) -> Self {
         Self {
             service_name: service_name.to_string(),
             namespace: namespace.to_string(),
             port,
+            cluster_domain: "cluster.local".to_string(),
         }
+    }
+
+    /// Override the cluster DNS domain (default: `cluster.local`).
+    ///
+    /// Some clusters use a custom domain. Set this to match your
+    /// cluster's `--cluster-domain` kubelet configuration.
+    pub fn with_cluster_domain(mut self, domain: &str) -> Self {
+        self.cluster_domain = domain.to_string();
+        self
     }
 
     /// Returns the FQDN used for DNS resolution.
     pub fn dns_name(&self) -> String {
         format!(
-            "{}.{}.svc.cluster.local",
-            self.service_name, self.namespace
+            "{}.{}.svc.{}",
+            self.service_name, self.namespace, self.cluster_domain
         )
     }
 }
