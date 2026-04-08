@@ -1,6 +1,6 @@
 # Task Queue Example
 
-A distributed task queue demonstrating **dactor** features in a realistic pipeline with workers, priorities, retries, and dead-letter routing.
+A task queue demonstrating **dactor** features in a realistic pipeline with workers, retries, and dead-letter routing. Runs locally using `TestRuntime` with a `PoolRef` worker pool.
 
 ## Features Demonstrated
 

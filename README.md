@@ -213,6 +213,7 @@ examples:
 | [`metrics`](dactor/examples/metrics.rs) | MetricsInterceptor and MetricsStore for observability | `cargo run --example metrics -p dactor --features test-support` |
 | [`rate_limiting`](dactor/examples/rate_limiting.rs) | ActorRateLimiter outbound throttling | `cargo run --example rate_limiting -p dactor --features test-support` |
 | [`error_handling`](dactor/examples/error_handling.rs) | ActorError with ErrorCode and error chains | `cargo run --example error_handling -p dactor --features test-support` |
+| [`task_queue`](dactor/examples/task_queue.rs) | Distributed task queue with worker pool, retries, dead letters | `cargo run --example task_queue -p dactor --features test-support,metrics` |
 | [`event_sourcing`](dactor/examples/event_sourcing.rs) | Event sourcing with CQRS patterns | `cargo run --example event_sourcing -p dactor --features test-support` |
 | [`actor_pool`](dactor/examples/actor_pool.rs) | Actor pools with routing strategies | `cargo run --example actor_pool -p dactor --features test-support` |
 | [`showcase`](dactor/examples/showcase.rs) | Comprehensive feature showcase | `cargo run --example showcase -p dactor --features test-support` |
@@ -244,7 +245,7 @@ dactor/                  Workspace root
 │   │   ├── system_router.rs SystemMessageRouter for transport routing
 │   │   ├── dispatch.rs      Type-erased message dispatch
 │   │   └── test_support/    TestRuntime, TestClock, conformance suite
-│   ├── examples/            16 runnable examples
+│   ├── examples/            17 runnable examples
 │   └── tests/               Core integration tests
 ├── dactor-ractor/       Ractor adapter (full v0.2 API)
 ├── dactor-kameo/        Kameo adapter (full v0.2 API)

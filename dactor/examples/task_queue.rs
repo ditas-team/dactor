@@ -131,6 +131,9 @@ struct MetricsSnapshot {
     dead_lettered: u64,
 }
 
+// Priority is included in the task model for structural completeness.
+// This example uses RoundRobin routing; for priority-based routing,
+// implement the `Keyed` trait and use `PoolRouting::KeyBased`.
 #[derive(Clone, Debug)]
 enum TaskPriority {
     High,
