@@ -375,15 +375,24 @@ async fn test_deserialize_corrupted_event_fails() {
     let storage = InMemoryStorage::new();
     let pid = PersistenceId::new("Counter", "corrupt-ev");
 
-    // Write a corrupted journal entry directly (wrong length → deserialize_event returns Err).
+    // Write a valid event first, then a corrupted one.
+    // This tests that valid events are NOT partially applied before the
+    // corrupt one aborts recovery.
+    let mut setup = CounterActor::new("corrupt-ev");
+    setup.persist(CounterEvent::Add(100), &storage).await.unwrap();
+
+    // Write corrupted entry at seq 2 (wrong length → deserialize_event returns Err).
     storage
-        .write_event(&pid, SequenceId(1), "garbage", &[0xFF, 0xFF])
+        .write_event(&pid, SequenceId(2), "garbage", &[0xFF, 0xFF])
         .await
         .unwrap();
 
     let mut actor = CounterActor::new("corrupt-ev");
     let result = recover_event_sourced(&mut actor, &storage, &storage).await;
     assert!(result.is_err(), "recovery should fail on corrupted event payload");
+    // Actor state should remain unchanged — valid event before the corrupt
+    // one must NOT be partially applied.
+    assert_eq!(actor.value, 0, "actor state should not change on failed recovery");
 }
 
 #[tokio::test]
@@ -404,6 +413,8 @@ async fn test_deserialize_corrupted_snapshot_fails() {
     let mut recovered = CounterActor::new("corrupt-snap");
     let result = recover_event_sourced(&mut recovered, &storage, &storage).await;
     assert!(result.is_err(), "recovery should fail on corrupted snapshot payload");
+    // Actor state should remain unchanged (default)
+    assert_eq!(recovered.value, 0, "actor state should not change on failed recovery");
 }
 
 #[tokio::test]
@@ -420,6 +431,8 @@ async fn test_durable_state_corrupted_payload() {
     let mut actor = ConfigActor::new("corrupt-cfg");
     let result = recover_durable_state(&mut actor, &storage).await;
     assert!(result.is_err(), "recovery should fail on non-UTF-8 state payload");
+    // Actor state should remain unchanged (default)
+    assert_eq!(actor.data, "", "actor state should not change on failed recovery");
 }
 
 #[tokio::test]
