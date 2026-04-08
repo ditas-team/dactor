@@ -65,8 +65,10 @@ impl EventSourced for CounterActor {
     }
 
     fn deserialize_event(&self, payload: &[u8]) -> Result<CounterEvent, PersistError> {
-        if payload.len() < 10 {
-            return Err(PersistError::SerializationFailed("too short".into()));
+        if payload.len() != 10 {
+            return Err(PersistError::SerializationFailed(
+                format!("expected 10 bytes, got {}", payload.len()),
+            ));
         }
         let val = i64::from_le_bytes(payload[2..10].try_into().unwrap());
         match &payload[..2] {
@@ -273,6 +275,14 @@ async fn test_event_sourced_batch_persist() {
     let pid = actor.persistence_id();
     let entries = storage.read_events(&pid, SequenceId(1)).await.unwrap();
     assert_eq!(entries.len(), 10);
+
+    // Verify batch content by recovering a fresh actor from the journal.
+    let mut recovered = CounterActor::new("batch");
+    recover_event_sourced(&mut recovered, &storage, &storage)
+        .await
+        .unwrap();
+    assert_eq!(recovered.value, expected_sum, "recovered state should match batch sum");
+    assert_eq!(recovered.last_sequence_id(), SequenceId(10));
 }
 
 #[tokio::test]
