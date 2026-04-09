@@ -4,7 +4,7 @@
 //! - [`KubernetesDiscovery`]: Uses the Kubernetes API to list pods by label selector.
 //! - [`HeadlessServiceDiscovery`]: Uses DNS resolution of a headless Kubernetes service.
 
-use dactor::ClusterDiscovery;
+use dactor::{ClusterDiscovery, DiscoveryError};
 use k8s_openapi::api::core::v1::Pod;
 use kube::{api::ListParams, Api, Client};
 use std::fmt;
@@ -172,30 +172,12 @@ impl KubernetesDiscovery {
     }
 }
 
+#[async_trait::async_trait]
 impl ClusterDiscovery for KubernetesDiscovery {
-    fn discover(&self) -> Vec<String> {
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                // Spawn a dedicated thread so we can call `block_on` without
-                // panicking from within an async context.
-                std::thread::scope(|s| {
-                    s.spawn(|| handle.block_on(self.discover_async()))
-                        .join()
-                        .unwrap_or_else(|_| {
-                            tracing::error!("kubernetes discovery thread panicked");
-                            Ok(Vec::new())
-                        })
-                })
-                .unwrap_or_else(|e| {
-                    tracing::error!("kubernetes discovery failed: {e}");
-                    Vec::new()
-                })
-            }
-            Err(_) => {
-                tracing::error!("no tokio runtime available for kubernetes discovery");
-                Vec::new()
-            }
-        }
+    async fn discover(&self) -> Result<Vec<String>, DiscoveryError> {
+        self.discover_async()
+            .await
+            .map_err(|e| DiscoveryError::new(e.to_string()))
     }
 }
 
@@ -286,16 +268,16 @@ impl HeadlessServiceDiscovery {
     }
 }
 
+#[async_trait::async_trait]
 impl ClusterDiscovery for HeadlessServiceDiscovery {
-    fn discover(&self) -> Vec<String> {
+    async fn discover(&self) -> Result<Vec<String>, DiscoveryError> {
         let dns = self.dns_name();
         let lookup = format!("{dns}:{}", self.port);
         match lookup.to_socket_addrs() {
-            Ok(addrs) => addrs.map(|a| a.to_string()).collect(),
-            Err(e) => {
-                tracing::warn!(service = %dns, "DNS resolution failed: {e}");
-                Vec::new()
-            }
+            Ok(addrs) => Ok(addrs.map(|a| a.to_string()).collect()),
+            Err(e) => Err(DiscoveryError::new(format!(
+                "DNS resolution failed for {dns}: {e}"
+            ))),
         }
     }
 }

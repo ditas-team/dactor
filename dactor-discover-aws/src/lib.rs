@@ -4,7 +4,7 @@
 //! - [`AutoScalingDiscovery`]: Lists instances in an EC2 Auto Scaling Group.
 //! - [`Ec2TagDiscovery`]: Queries EC2 instances by tag key/value filters.
 
-use dactor::ClusterDiscovery;
+use dactor::{ClusterDiscovery, DiscoveryError};
 use std::fmt;
 
 // ---------------------------------------------------------------------------
@@ -163,28 +163,12 @@ impl AutoScalingDiscovery {
     }
 }
 
+#[async_trait::async_trait]
 impl ClusterDiscovery for AutoScalingDiscovery {
-    fn discover(&self) -> Vec<String> {
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                std::thread::scope(|s| {
-                    s.spawn(|| handle.block_on(self.discover_async()))
-                        .join()
-                        .unwrap_or_else(|_| {
-                            tracing::error!("ASG discovery thread panicked");
-                            Ok(Vec::new())
-                        })
-                })
-                .unwrap_or_else(|e| {
-                    tracing::error!("ASG discovery failed: {e}");
-                    Vec::new()
-                })
-            }
-            Err(_) => {
-                tracing::error!("no tokio runtime available for ASG discovery");
-                Vec::new()
-            }
-        }
+    async fn discover(&self) -> Result<Vec<String>, DiscoveryError> {
+        self.discover_async()
+            .await
+            .map_err(|e| DiscoveryError::new(e.to_string()))
     }
 }
 
@@ -344,28 +328,12 @@ impl Ec2TagDiscovery {
     }
 }
 
+#[async_trait::async_trait]
 impl ClusterDiscovery for Ec2TagDiscovery {
-    fn discover(&self) -> Vec<String> {
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                std::thread::scope(|s| {
-                    s.spawn(|| handle.block_on(self.discover_async()))
-                        .join()
-                        .unwrap_or_else(|_| {
-                            tracing::error!("EC2 tag discovery thread panicked");
-                            Ok(Vec::new())
-                        })
-                })
-                .unwrap_or_else(|e| {
-                    tracing::error!("EC2 tag discovery failed: {e}");
-                    Vec::new()
-                })
-            }
-            Err(_) => {
-                tracing::error!("no tokio runtime available for EC2 tag discovery");
-                Vec::new()
-            }
-        }
+    async fn discover(&self) -> Result<Vec<String>, DiscoveryError> {
+        self.discover_async()
+            .await
+            .map_err(|e| DiscoveryError::new(e.to_string()))
     }
 }
 

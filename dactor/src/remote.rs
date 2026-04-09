@@ -223,10 +223,35 @@ impl ClusterState {
     }
 }
 
+/// Error returned by [`ClusterDiscovery`] implementations.
+#[derive(Debug, Clone)]
+pub struct DiscoveryError {
+    /// Human-readable description of what went wrong.
+    pub message: String,
+}
+
+impl DiscoveryError {
+    /// Create a new discovery error with the given message.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for DiscoveryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for DiscoveryError {}
+
 /// Trait for cluster discovery — how nodes find each other.
+#[async_trait::async_trait]
 pub trait ClusterDiscovery: Send + Sync + 'static {
     /// Discover seed nodes to connect to.
-    fn discover(&self) -> Vec<String>;
+    async fn discover(&self) -> Result<Vec<String>, DiscoveryError>;
 }
 
 /// Static list of seed nodes (simplest discovery mechanism).
@@ -242,9 +267,10 @@ impl StaticSeeds {
     }
 }
 
+#[async_trait::async_trait]
 impl ClusterDiscovery for StaticSeeds {
-    fn discover(&self) -> Vec<String> {
-        self.seeds.clone()
+    async fn discover(&self) -> Result<Vec<String>, DiscoveryError> {
+        Ok(self.seeds.clone())
     }
 }
 
@@ -459,10 +485,10 @@ mod tests {
         assert!(state.is_leader);
     }
 
-    #[test]
-    fn test_static_seeds() {
+    #[tokio::test]
+    async fn test_static_seeds() {
         let seeds = StaticSeeds::new(vec!["node1:4697".into(), "node2:4697".into()]);
-        let discovered = seeds.discover();
+        let discovered = seeds.discover().await.unwrap();
         assert_eq!(discovered.len(), 2);
         assert_eq!(discovered[0], "node1:4697");
     }

@@ -791,6 +791,7 @@ dependencies = [
 name = "dactor-discover-aws"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "aws-config",
  "aws-sdk-autoscaling",
  "aws-sdk-ec2",
@@ -803,6 +804,7 @@ dependencies = [
 name = "dactor-discover-k8s"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "dactor",
  "k8s-openapi",
  "kube",

@@ -163,8 +163,9 @@ pub use registry::ActorRegistry;
 pub use remote::{build_ask_envelope, build_tell_envelope, build_wire_envelope, JsonSerializer};
 pub use remote::{receive_envelope_body, receive_envelope_body_versioned};
 pub use remote::{
-    ClusterDiscovery, ClusterState, HeaderRegistry, MessageSerializer, MessageVersionHandler,
-    RemoteMessage, SerializationError, StaticSeeds, WireEnvelope, WireHeaders,
+    ClusterDiscovery, ClusterState, DiscoveryError, HeaderRegistry, MessageSerializer,
+    MessageVersionHandler, RemoteMessage, SerializationError, StaticSeeds, WireEnvelope,
+    WireHeaders,
 };
 pub use remote_ref::{
     ActorRefEnvelope, ActorRefTypeMismatch, RemoteActorRef, RemoteActorRefBuilder,
