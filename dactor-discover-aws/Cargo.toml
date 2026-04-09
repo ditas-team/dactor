@@ -1,0 +1,18 @@
+[package]
+name = "dactor-discover-aws"
+version = "0.1.0"
+edition = "2021"
+description = "AWS node discovery for the dactor distributed actor framework"
+license = "MIT"
+repository = "https://github.com/Yaming-Hub/dactor"
+
+[dependencies]
+dactor = { version = "0.2.0", path = "../dactor" }
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-autoscaling = "1"
+aws-sdk-ec2 = "1"
+tokio = { version = "1", features = ["sync", "rt", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
