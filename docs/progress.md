@@ -250,38 +250,56 @@ retry on the next cycle.
 
 **Goal:** Design and document the complete version compatibility story for dactor clusters during rolling upgrades.
 
-**Problem:** In production, clusters undergo rolling upgrades where nodes run different versions simultaneously. This creates compatibility challenges:
+**Two fundamental upgrade categories:**
 
-1. **Application message schema changes** — Sender v1, receiver v2 (or vice versa)
-   - Backward-compatible: added optional fields (serde defaults handle it)
-   - Breaking: renamed/removed fields, changed types
-   - `MessageVersionHandler` exists but needs clear upgrade playbook
+##### Category 1: Infrastructure-level change (dactor framework / adapter version change)
 
-2. **dactor framework version upgrades** — Different nodes running different dactor versions
-   - Wire protocol changes (WireEnvelope, protobuf system messages)
-   - SystemMessageRouter compatibility across versions
-   - Proto field numbering guarantees (frozen fields)
+When the dactor framework itself or the underlying actor library (ractor, kameo, coerce) changes its wire protocol, **node-to-node communication breaks completely** — including system actor communication (SpawnManager, WatchManager, etc.). Nodes running different dactor wire protocol versions **cannot form a single cluster**.
 
-3. **Adapter version mismatches** — e.g., ractor 0.15 on node-1, ractor 0.16 on node-2
-   - Native transport protocol changes
-   - Actor ID format changes
-   - Mailbox protocol changes
+**Upgrade strategy:** Cluster split
+- Old cluster and new cluster run **side by side** as separate clusters
+- Traffic is gradually shifted from old cluster to new cluster
+- Old cluster shrinks (nodes drained), new cluster grows (nodes added)
+- No mixed-version cluster — nodes never attempt to communicate across protocol versions
+- Similar to blue/green deployment at the cluster level
+
+**Detection:** The dactor framework should include a **wire protocol version** in the initial handshake when two nodes connect. If versions are incompatible, the connection is rejected immediately with a clear error (not silently dropped).
+
+##### Category 2: Application-level change (dactor version unchanged)
+
+When only the application code changes but dactor and adapter versions remain the same, **node-to-node communication at the system actor level works fine**. Nodes can join the same cluster, system actors communicate normally (spawn, watch, cancel, peer management all work).
+
+However, **remote actor calls may fail** depending on whether the application message schemas changed:
+- **Backward-compatible change** (added optional fields, new message types): works — `MessageVersionHandler` can migrate, serde defaults handle missing fields
+- **Breaking change** (removed fields, renamed types, changed semantics): remote actor calls from old→new or new→old nodes will fail with deserialization errors
+
+**Upgrade strategy:** Rolling restart within one cluster
+- Nodes upgraded one at a time
+- Mixed-version cluster is expected and supported
+- `MessageVersionHandler` handles schema migration between versions
+- Incompatible messages are rejected with clear errors (not silent corruption)
+
+**Detection:** The dactor framework should:
+1. Include a **dactor wire protocol version** in the connect handshake → determines Category 1 vs 2
+2. Include an **application version** (user-configured) in the handshake → enables logging and routing decisions
+3. Include **message version** in WireEnvelope (already exists: `version` field) → enables per-message migration via `MessageVersionHandler`
 
 **Scenarios to design for:**
-- **Green/Blue deployment**: Two complete versions running simultaneously
-- **Rolling restart**: Nodes upgraded one at a time, mixed versions during transition
-- **Canary deployment**: Small % of traffic to new version
-- **Rollback**: New version has bugs, revert to old version mid-deployment
+- **Category 1 — Blue/Green cluster split**: complete traffic cutover between clusters
+- **Category 2 — Rolling restart**: mixed-version single cluster with message migration
+- **Category 2 — Canary deployment**: small % of traffic to new app version within same cluster
+- **Rollback**: revert to old version (Category 1: switch back to old cluster; Category 2: roll back nodes)
 
 **Design deliverables:**
-- Version negotiation protocol (handshake on connect)
-- Wire protocol version header in WireEnvelope
-- Compatibility matrix documentation (which versions can talk to which)
-- `MessageVersionHandler` upgrade playbook with examples
+- Wire protocol version in connect handshake (reject incompatible immediately)
+- Application version in connect handshake (log, expose via ClusterState)
+- Detection logic: auto-determine Category 1 vs 2 on connection attempt
+- `MessageVersionHandler` upgrade playbook with examples for Category 2
 - Framework version compatibility guarantees (semver policy for wire format)
-- Graceful degradation: what happens when versions are incompatible
-  (reject connection? drop messages? error events?)
-- Testing strategy: how to test mixed-version clusters
+- Cluster split orchestration guide for Category 1
+- Error handling: clear error messages distinguishing protocol vs application incompatibility
+- ClusterEvent: `NodeRejected { reason: IncompatibleProtocol | IncompatibleVersion }`
+- Testing strategy: how to test mixed-version clusters (both categories)
 
 **Output:** Design document `docs/version-compatibility.md`
 
