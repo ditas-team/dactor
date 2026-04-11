@@ -175,7 +175,7 @@ All v0.2 planned work items and stretch goals are now complete.
 - Exercises core features: tell/ask, streaming, persistence, supervision, pools, interceptors, cluster events
 - Includes README with architecture diagram and run instructions
 
-**Status:** 🔲 Not started
+**Status:** ✅ Done (PR #134 — task queue example)
 
 ---
 
@@ -202,7 +202,7 @@ All v0.2 planned work items and stretch goals are now complete.
 - Configuration via environment variables or builder pattern
 - Example and documentation
 
-**Status:** 🔲 Not started
+**Status:** ✅ Done (PRs #135, #136, #138 — K8s, AWS, Azure crates)
 
 ---
 
@@ -242,7 +242,7 @@ retry on the next cycle.
 - Update `dactor-discover-aws`: remove `block_on` workaround, return proper errors
 - Update usage guide and docs
 
-**Status:** 🔲 Not started
+**Status:** ✅ Done (PR #137 — async trait with Result)
 
 ---
 
