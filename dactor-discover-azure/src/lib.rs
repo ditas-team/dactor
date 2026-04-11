@@ -70,7 +70,7 @@ struct ImdsResponse {
 struct ImdsCompute {
     subscription_id: String,
     resource_group_name: String,
-    #[serde(default)]
+    #[serde(default, rename = "vmScaleSetName")]
     vmss_name: Option<String>,
 }
 
@@ -185,7 +185,7 @@ async fn query_imds(client: &reqwest::Client) -> Result<ImdsResponse, AzureDisco
 
 /// Get the current VM's subscription ID from IMDS.
 pub async fn current_subscription_id() -> Option<String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().unwrap_or_default();
     query_imds(&client)
         .await
         .ok()
@@ -194,7 +194,7 @@ pub async fn current_subscription_id() -> Option<String> {
 
 /// Get the current VM's resource group name from IMDS.
 pub async fn current_resource_group() -> Option<String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().unwrap_or_default();
     query_imds(&client)
         .await
         .ok()
@@ -418,7 +418,7 @@ impl VmssDiscoveryBuilder {
     pub fn build(self) -> VmssDiscovery {
         VmssDiscovery {
             config: self.config,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().unwrap_or_default(),
         }
     }
 }
@@ -670,7 +670,7 @@ impl AzureTagDiscoveryBuilder {
     pub fn build(self) -> AzureTagDiscovery {
         AzureTagDiscovery {
             config: self.config,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().unwrap_or_default(),
         }
     }
 }
