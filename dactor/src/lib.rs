@@ -88,6 +88,8 @@ pub mod timer;
 pub mod transport;
 /// Type registry for remote message deserialization and actor factories.
 pub mod type_registry;
+/// Wire protocol version for cluster compatibility checks.
+pub mod version;
 /// Envelope-level interceptor for incoming remote messages.
 pub mod wire_interceptor;
 /// Worker reference for distributed actor pools (local + remote).
@@ -199,6 +201,7 @@ pub use wire_interceptor::{
     WireInterceptorPipeline, WireProcessResult, WireRejectError,
 };
 pub use worker_ref::WorkerRef;
+pub use version::{DACTOR_WIRE_VERSION, ParseWireVersionError, WireVersion};
 
 // Backward-compatible re-export of TestClock (feature-gated)
 #[cfg(feature = "test-support")]
