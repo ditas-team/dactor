@@ -199,8 +199,9 @@ impl InMemoryTransport {
     /// Register this node's handshake information for version negotiation.
     ///
     /// Must be called before [`handshake`](Transport::handshake) can validate
-    /// against a peer. When transports are [`link`](Self::link)ed, handshake
-    /// info is shared automatically.
+    /// against a peer. Call this before [`link`](Self::link) — info is copied
+    /// (not shared) during link, so post-link updates are not visible to
+    /// already-linked transports.
     pub async fn set_handshake_info(&self, request: HandshakeRequest) {
         let node = request.node_id.clone();
         self.handshake_info.lock().await.insert(node, request);
@@ -299,7 +300,7 @@ impl Transport for InMemoryTransport {
         let remote_info = info.get(node).ok_or_else(|| {
             TransportError::new(format!("no handshake info registered for {node}"))
         })?;
-        Ok(crate::system_actors::validate_handshake(&request, remote_info))
+        Ok(crate::system_actors::validate_handshake(remote_info, &request))
     }
 }
 
@@ -559,7 +560,13 @@ mod tests {
 
         let req = test_handshake_req("node-1", "0.2.0", "ractor");
         let resp = t1.handshake(&NodeId("node-2".into()), req).await.unwrap();
-        assert!(matches!(resp, HandshakeResponse::Accepted { .. }));
+        match resp {
+            HandshakeResponse::Accepted { node_id, .. } => {
+                // Response should come from the remote node (node-2), not the caller
+                assert_eq!(node_id, NodeId("node-2".into()));
+            }
+            _ => panic!("expected Accepted"),
+        }
     }
 
     #[tokio::test]

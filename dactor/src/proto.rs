@@ -460,6 +460,16 @@ pub fn decode_handshake_response(bytes: &[u8]) -> Result<HandshakeResponse, Seri
                     "HandshakeAccepted: node_id must not be empty",
                 ));
             }
+            if a.wire_version.is_empty() {
+                return Err(SerializationError::new(
+                    "HandshakeAccepted: wire_version must not be empty",
+                ));
+            }
+            if a.adapter.is_empty() {
+                return Err(SerializationError::new(
+                    "HandshakeAccepted: adapter must not be empty",
+                ));
+            }
             let wire_version =
                 crate::version::WireVersion::parse(&a.wire_version).map_err(|e| {
                     SerializationError::new(format!(
@@ -477,6 +487,11 @@ pub fn decode_handshake_response(bytes: &[u8]) -> Result<HandshakeResponse, Seri
             if r.node_id.is_empty() {
                 return Err(SerializationError::new(
                     "HandshakeRejected: node_id must not be empty",
+                ));
+            }
+            if r.wire_version.is_empty() {
+                return Err(SerializationError::new(
+                    "HandshakeRejected: wire_version must not be empty",
                 ));
             }
             let wire_version =
@@ -1076,5 +1091,56 @@ mod tests {
         let bytes = proto.encode_to_vec();
         let err = decode_handshake_response(&bytes).unwrap_err();
         assert!(err.message.contains("node_id"));
+    }
+
+    #[test]
+    fn handshake_response_accepted_empty_adapter() {
+        let proto = HandshakeResponseProto {
+            result: Some(handshake_response_proto::Result::Accepted(
+                HandshakeAcceptedProto {
+                    node_id: "node-a".into(),
+                    wire_version: "0.2.0".into(),
+                    app_version: None,
+                    adapter: String::new(),
+                },
+            )),
+        };
+        let bytes = proto.encode_to_vec();
+        let err = decode_handshake_response(&bytes).unwrap_err();
+        assert!(err.message.contains("adapter"));
+    }
+
+    #[test]
+    fn handshake_response_accepted_empty_wire_version() {
+        let proto = HandshakeResponseProto {
+            result: Some(handshake_response_proto::Result::Accepted(
+                HandshakeAcceptedProto {
+                    node_id: "node-a".into(),
+                    wire_version: String::new(),
+                    app_version: None,
+                    adapter: "ractor".into(),
+                },
+            )),
+        };
+        let bytes = proto.encode_to_vec();
+        let err = decode_handshake_response(&bytes).unwrap_err();
+        assert!(err.message.contains("wire_version"));
+    }
+
+    #[test]
+    fn handshake_response_rejected_empty_wire_version() {
+        let proto = HandshakeResponseProto {
+            result: Some(handshake_response_proto::Result::Rejected(
+                HandshakeRejectedProto {
+                    node_id: "node-a".into(),
+                    wire_version: String::new(),
+                    reason: 0,
+                    detail: "test".into(),
+                },
+            )),
+        };
+        let bytes = proto.encode_to_vec();
+        let err = decode_handshake_response(&bytes).unwrap_err();
+        assert!(err.message.contains("wire_version"));
     }
 }
