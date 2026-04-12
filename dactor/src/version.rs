@@ -14,6 +14,12 @@
 //! - Same MAJOR → compatible (e.g. `0.2.0` ↔ `0.3.0`)
 //! - Different MAJOR → incompatible (e.g. `0.2.0` ↔ `1.0.0`)
 //!
+//! **Note:** Unlike generic semver where `0.x` releases are considered
+//! unstable, the dactor wire-version policy intentionally treats major=0
+//! as compatible across minor bumps. This enables experimentation during
+//! pre-1.0 development without forcing cluster splits for every minor
+//! wire format addition.
+//!
 //! # When to Bump
 //!
 //! | Change | Bump |
@@ -51,6 +57,16 @@ impl ParseWireVersionError {
             input: input.into(),
             reason,
         }
+    }
+
+    /// The input string that failed to parse.
+    pub fn input(&self) -> &str {
+        &self.input
+    }
+
+    /// A human-readable description of why parsing failed.
+    pub fn reason(&self) -> &str {
+        self.reason
     }
 }
 
@@ -123,6 +139,13 @@ impl FromStr for WireVersion {
                 return Err(ParseWireVersionError::new(
                     s,
                     "leading zeros are not allowed",
+                ));
+            }
+            // Reject leading '+' sign for canonical form
+            if seg.starts_with('+') {
+                return Err(ParseWireVersionError::new(
+                    s,
+                    "leading '+' sign is not allowed",
                 ));
             }
             seg.parse::<u32>().map_err(|_| {
@@ -257,6 +280,19 @@ mod tests {
         assert!(WireVersion::parse("4294967296.0.0").is_err());
     }
 
+    #[test]
+    fn parse_accepts_u32_max() {
+        let v = WireVersion::parse("4294967295.0.0").unwrap();
+        assert_eq!(v.major, u32::MAX);
+    }
+
+    #[test]
+    fn parse_rejects_plus_sign() {
+        assert!(WireVersion::parse("+1.2.3").is_err());
+        assert!(WireVersion::parse("1.+2.3").is_err());
+        assert!(WireVersion::parse("1.2.+3").is_err());
+    }
+
     // -- Compatibility (dactor wire-version policy) -------------------------
 
     #[test]
@@ -352,5 +388,12 @@ mod tests {
     fn error_is_std_error() {
         let err = WireVersion::parse("x.y.z").unwrap_err();
         let _: &dyn std::error::Error = &err;
+    }
+
+    #[test]
+    fn error_accessors() {
+        let err = WireVersion::parse("bad").unwrap_err();
+        assert_eq!(err.input(), "bad");
+        assert!(!err.reason().is_empty());
     }
 }
