@@ -132,18 +132,47 @@ impl MockCluster {
         node.runtime.unwatch(watcher_id, target_id);
     }
 
+    /// Get a ClusterState snapshot from the perspective of a specific node.
+    ///
+    /// The `local_node` parameter determines which node is treated as local
+    /// (excluded from `peer_versions`). Returns `None` if the cluster is
+    /// empty or the node is not in the cluster.
+    pub fn state_for(&self, local_node: &str) -> Option<ClusterState> {
+        let local = NodeId(local_node.into());
+        if !self.nodes.contains_key(&local) {
+            return None;
+        }
+        let node_ids: Vec<NodeId> = self.nodes.keys().cloned().collect();
+        let mut state = ClusterState::new(local.clone(), node_ids);
+        for node_id in &state.nodes {
+            if node_id != &local {
+                state.peer_versions.insert(
+                    node_id.clone(),
+                    dactor::remote::PeerVersionInfo {
+                        wire_version: dactor::version::WireVersion::parse(
+                            dactor::version::DACTOR_WIRE_VERSION,
+                        )
+                        .unwrap(),
+                        app_version: None,
+                        adapter: "mock".into(),
+                    },
+                );
+            }
+        }
+        Some(state)
+    }
+
     /// Get a ClusterState snapshot. Returns `None` if the cluster is empty.
+    ///
+    /// Uses the first node (sorted by ID) as the local node perspective.
+    /// For deterministic results, prefer [`state_for`](Self::state_for).
     pub fn state(&self) -> Option<ClusterState> {
         if self.nodes.is_empty() {
             return None;
         }
-        let node_ids: Vec<NodeId> = self.nodes.keys().cloned().collect();
-        let local = node_ids[0].clone();
-        Some(ClusterState {
-            local_node: local,
-            nodes: node_ids,
-            is_leader: false,
-        })
+        let mut node_ids: Vec<NodeId> = self.nodes.keys().cloned().collect();
+        node_ids.sort_by(|a, b| a.0.cmp(&b.0));
+        self.state_for(&node_ids[0].0)
     }
 
     /// Register a remote watch via the target node's WatchManager.

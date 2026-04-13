@@ -201,7 +201,20 @@ pub trait MessageVersionHandler: Send + Sync + 'static {
 }
 
 /// Snapshot of the cluster state at a point in time.
+///
+/// Includes topology (which nodes are known), version information for
+/// each peer, and the local node's own version metadata. This is the
+/// primary type for operational visibility during rolling upgrades.
+///
+/// # Invariants
+///
+/// - `nodes` includes the local node.
+/// - `peer_versions` excludes the local node (local version info is in
+///   `wire_version` and `app_version`).
+/// - Every connected remote node in `nodes` should have a corresponding
+///   entry in `peer_versions`.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ClusterState {
     /// The local node's identity.
     pub local_node: NodeId,
@@ -209,9 +222,37 @@ pub struct ClusterState {
     pub nodes: Vec<NodeId>,
     /// Whether this node considers itself the leader (if applicable).
     pub is_leader: bool,
+    /// This node's wire protocol version.
+    pub wire_version: crate::version::WireVersion,
+    /// This node's application version, if configured. Purely
+    /// informational — does not affect compatibility.
+    pub app_version: Option<String>,
+    /// Version metadata for each connected remote peer. Populated from
+    /// successful handshake responses. Keyed by [`NodeId`]; does **not**
+    /// include the local node.
+    pub peer_versions: std::collections::HashMap<NodeId, PeerVersionInfo>,
 }
 
 impl ClusterState {
+    /// Create a new ClusterState with the given local node and defaults.
+    ///
+    /// Sets `wire_version` to [`DACTOR_WIRE_VERSION`](crate::version::DACTOR_WIRE_VERSION),
+    /// `app_version` to `None`, `is_leader` to `false`, and empty
+    /// `peer_versions`.
+    pub fn new(local_node: NodeId, nodes: Vec<NodeId>) -> Self {
+        Self {
+            local_node,
+            nodes,
+            is_leader: false,
+            wire_version: crate::version::WireVersion::parse(
+                crate::version::DACTOR_WIRE_VERSION,
+            )
+            .expect("DACTOR_WIRE_VERSION must be valid"),
+            app_version: None,
+            peer_versions: std::collections::HashMap::new(),
+        }
+    }
+
     /// Number of nodes in the cluster.
     pub fn node_count(&self) -> usize {
         self.nodes.len()
@@ -221,6 +262,25 @@ impl ClusterState {
     pub fn contains(&self, node_id: &NodeId) -> bool {
         self.nodes.contains(node_id)
     }
+
+    /// Look up version information for a remote peer.
+    pub fn peer_version(&self, node_id: &NodeId) -> Option<&PeerVersionInfo> {
+        self.peer_versions.get(node_id)
+    }
+}
+
+/// Version metadata for a connected remote peer.
+///
+/// Populated from a successful [`HandshakeResponse::Accepted`](crate::system_actors::HandshakeResponse)
+/// during connection setup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerVersionInfo {
+    /// The peer's wire protocol version.
+    pub wire_version: crate::version::WireVersion,
+    /// The peer's application version, if configured.
+    pub app_version: Option<String>,
+    /// The peer's actor framework adapter (e.g. "ractor", "kameo").
+    pub adapter: String,
 }
 
 /// Error returned by [`ClusterDiscovery`] implementations.
@@ -470,19 +530,115 @@ mod tests {
 
     #[test]
     fn test_cluster_state() {
-        let state = ClusterState {
-            local_node: NodeId("node-1".into()),
-            nodes: vec![
+        let mut state = ClusterState::new(
+            NodeId("node-1".into()),
+            vec![
                 NodeId("node-1".into()),
                 NodeId("node-2".into()),
                 NodeId("node-3".into()),
             ],
-            is_leader: true,
-        };
+        );
+        state.is_leader = true;
         assert_eq!(state.node_count(), 3);
         assert!(state.contains(&NodeId("node-2".into())));
         assert!(!state.contains(&NodeId("node-99".into())));
         assert!(state.is_leader);
+        assert!(state.app_version.is_none());
+        assert_eq!(
+            state.wire_version,
+            crate::version::WireVersion::parse(crate::version::DACTOR_WIRE_VERSION).unwrap()
+        );
+        assert!(state.peer_versions.is_empty());
+    }
+
+    #[test]
+    fn test_cluster_state_with_app_version() {
+        let mut state = ClusterState::new(
+            NodeId("node-1".into()),
+            vec![NodeId("node-1".into()), NodeId("node-2".into())],
+        );
+        state.app_version = Some("2.3.1".into());
+        assert_eq!(state.app_version.as_deref(), Some("2.3.1"));
+    }
+
+    #[test]
+    fn test_cluster_state_peer_versions() {
+        let mut state = ClusterState::new(
+            NodeId("node-1".into()),
+            vec![
+                NodeId("node-1".into()),
+                NodeId("node-2".into()),
+                NodeId("node-3".into()),
+            ],
+        );
+        state.peer_versions.insert(
+            NodeId("node-2".into()),
+            PeerVersionInfo {
+                wire_version: crate::version::WireVersion::parse("0.2.0").unwrap(),
+                app_version: Some("1.0.0".into()),
+                adapter: "ractor".into(),
+            },
+        );
+        state.peer_versions.insert(
+            NodeId("node-3".into()),
+            PeerVersionInfo {
+                wire_version: crate::version::WireVersion::parse("0.2.0").unwrap(),
+                app_version: Some("1.0.1".into()),
+                adapter: "ractor".into(),
+            },
+        );
+
+        // Lookup works
+        let p2 = state.peer_version(&NodeId("node-2".into())).unwrap();
+        assert_eq!(p2.app_version.as_deref(), Some("1.0.0"));
+        assert_eq!(p2.adapter, "ractor");
+
+        let p3 = state.peer_version(&NodeId("node-3".into())).unwrap();
+        assert_eq!(p3.app_version.as_deref(), Some("1.0.1"));
+
+        // Local node not in peer_versions
+        assert!(state.peer_version(&NodeId("node-1".into())).is_none());
+
+        // Unknown node not in peer_versions
+        assert!(state.peer_version(&NodeId("node-99".into())).is_none());
+    }
+
+    #[test]
+    fn test_cluster_state_mixed_app_versions() {
+        let mut state = ClusterState::new(
+            NodeId("node-1".into()),
+            vec![
+                NodeId("node-1".into()),
+                NodeId("node-2".into()),
+                NodeId("node-3".into()),
+            ],
+        );
+        state.app_version = Some("2.3.1".into());
+        state.peer_versions.insert(
+            NodeId("node-2".into()),
+            PeerVersionInfo {
+                wire_version: crate::version::WireVersion::parse("0.2.0").unwrap(),
+                app_version: Some("2.3.0".into()),
+                adapter: "ractor".into(),
+            },
+        );
+        state.peer_versions.insert(
+            NodeId("node-3".into()),
+            PeerVersionInfo {
+                wire_version: crate::version::WireVersion::parse("0.2.0").unwrap(),
+                app_version: Some("2.3.1".into()),
+                adapter: "ractor".into(),
+            },
+        );
+
+        // Can compute rollout progress
+        let total = state.node_count();
+        let on_latest = 1 // local
+            + state.peer_versions.values()
+                .filter(|p| p.app_version.as_deref() == Some("2.3.1"))
+                .count();
+        assert_eq!(total, 3);
+        assert_eq!(on_latest, 2); // node-1 (local) + node-3
     }
 
     #[tokio::test]
