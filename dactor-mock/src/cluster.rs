@@ -139,11 +139,24 @@ impl MockCluster {
         }
         let node_ids: Vec<NodeId> = self.nodes.keys().cloned().collect();
         let local = node_ids[0].clone();
-        Some(ClusterState {
-            local_node: local,
-            nodes: node_ids,
-            is_leader: false,
-        })
+        let mut state = ClusterState::new(local.clone(), node_ids);
+        // Populate peer_versions for all remote nodes with default version info
+        for node_id in &state.nodes {
+            if node_id != &local {
+                state.peer_versions.insert(
+                    node_id.clone(),
+                    dactor::remote::PeerVersionInfo {
+                        wire_version: dactor::version::WireVersion::parse(
+                            dactor::version::DACTOR_WIRE_VERSION,
+                        )
+                        .unwrap(),
+                        app_version: None,
+                        adapter: "mock".into(),
+                    },
+                );
+            }
+        }
+        Some(state)
     }
 
     /// Register a remote watch via the target node's WatchManager.

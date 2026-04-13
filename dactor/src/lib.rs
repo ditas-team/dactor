@@ -166,8 +166,8 @@ pub use remote::{build_ask_envelope, build_tell_envelope, build_wire_envelope, J
 pub use remote::{receive_envelope_body, receive_envelope_body_versioned};
 pub use remote::{
     ClusterDiscovery, ClusterState, DiscoveryError, HeaderRegistry, MessageSerializer,
-    MessageVersionHandler, RemoteMessage, SerializationError, StaticSeeds, WireEnvelope,
-    WireHeaders,
+    MessageVersionHandler, PeerVersionInfo, RemoteMessage, SerializationError, StaticSeeds,
+    WireEnvelope, WireHeaders,
 };
 pub use remote_ref::{
     ActorRefEnvelope, ActorRefTypeMismatch, RemoteActorRef, RemoteActorRefBuilder,
