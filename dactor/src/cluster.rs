@@ -7,6 +7,7 @@ use crate::node::NodeId;
 /// such as scaling, failover, or planned maintenance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum ClusterEvent {
     /// A new node has joined the cluster and is ready to receive messages.
     NodeJoined(NodeId),
@@ -37,6 +38,7 @@ pub enum ClusterEvent {
 /// implementation to convert handshake rejections into cluster events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum NodeRejectionReason {
     /// The remote node's wire protocol MAJOR version differs (Category 1).
     IncompatibleProtocol,
@@ -94,8 +96,9 @@ impl SubscriptionId {
 /// Subscription to cluster membership events.
 pub trait ClusterEvents: Send + Sync + 'static {
     /// Subscribe to cluster membership changes. The callback is invoked for
-    /// each `NodeJoined` / `NodeLeft` event. Returns a [`SubscriptionId`]
-    /// that can be used to cancel the subscription.
+    /// each [`ClusterEvent`] (`NodeJoined`, `NodeLeft`, `NodeRejected`).
+    /// Returns a [`SubscriptionId`] that can be used to cancel the
+    /// subscription.
     fn subscribe(
         &self,
         on_event: Box<dyn Fn(ClusterEvent) + Send + Sync>,
