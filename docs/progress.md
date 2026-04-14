@@ -339,7 +339,7 @@ However, **remote actor calls may fail** depending on whether the application me
 - Framework version compatibility guarantees (semver policy for wire format)
 - Cluster split orchestration guide for Category 1
 - Error handling: clear error messages distinguishing protocol vs application incompatibility
-- ClusterEvent: `NodeRejected { reason: IncompatibleProtocol | IncompatibleVersion }`
+- ClusterEvent: `NodeRejected { reason: IncompatibleProtocol | IncompatibleAdapter | ConnectionFailed }`
 - Testing strategy: how to test mixed-version clusters (both categories)
 
 **Output:** Design document `docs/version-compatibility.md`
