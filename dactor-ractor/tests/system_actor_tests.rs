@@ -543,3 +543,309 @@ fn nr2_disconnect_unconnected_does_not_emit() {
     runtime.disconnect_peer(&NodeId("unknown".into()));
     assert_eq!(left_count.load(AtomicOrdering::SeqCst), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Handshake integration: try_connect_peer() with InMemoryTransport
+// ---------------------------------------------------------------------------
+
+use dactor::system_actors::HandshakeRequest;
+use dactor::transport::{InMemoryTransport, Transport};
+use dactor::version::WireVersion;
+
+fn handshake_req(node: &str, wire: &str, adapter: &str) -> HandshakeRequest {
+    HandshakeRequest {
+        node_id: NodeId(node.into()),
+        wire_version: WireVersion::parse(wire).unwrap(),
+        app_version: None,
+        adapter: adapter.into(),
+    }
+}
+
+fn handshake_req_with_app(
+    node: &str,
+    wire: &str,
+    adapter: &str,
+    app: &str,
+) -> HandshakeRequest {
+    HandshakeRequest {
+        node_id: NodeId(node.into()),
+        wire_version: WireVersion::parse(wire).unwrap(),
+        app_version: Some(app.into()),
+        adapter: adapter.into(),
+    }
+}
+
+#[tokio::test]
+async fn try_connect_peer_accepted_same_version() {
+    use dactor::{ClusterEvent, ClusterEvents};
+
+    let mut runtime = RactorRuntime::with_node_id(NodeId("node-1".into()));
+
+    let t1 = InMemoryTransport::new(NodeId("node-1".into()));
+    let t2 = InMemoryTransport::new(NodeId("node-2".into()));
+
+    t1.set_handshake_info(handshake_req("node-1", "0.2.0", "ractor")).await;
+    t2.set_handshake_info(handshake_req("node-2", "0.2.0", "ractor")).await;
+
+    let _rx1 = t1.register_node(NodeId("node-1".into())).await;
+    let _rx2 = t2.register_node(NodeId("node-2".into())).await;
+    t1.link(&t2).await;
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+    runtime.cluster_events().subscribe(Box::new(move |event| {
+        events_clone.lock().unwrap().push(event);
+    })).unwrap();
+
+    let result = runtime
+        .try_connect_peer(NodeId("node-2".into()), None, &t1)
+        .await;
+
+    // Should succeed
+    let info = result.unwrap();
+    assert_eq!(info.adapter, "ractor");
+    assert_eq!(info.wire_version, WireVersion::parse("0.2.0").unwrap());
+
+    // Peer should be connected
+    assert!(runtime.is_peer_connected(&NodeId("node-2".into())));
+
+    // NodeJoined should be emitted
+    let evts = events.lock().unwrap();
+    assert_eq!(evts.len(), 1);
+    assert!(matches!(&evts[0], ClusterEvent::NodeJoined(n) if n.0 == "node-2"));
+}
+
+#[tokio::test]
+async fn try_connect_peer_accepted_different_app_versions() {
+    let mut runtime = RactorRuntime::with_node_id(NodeId("node-1".into()))
+        .with_app_version("2.3.1");
+
+    let t1 = InMemoryTransport::new(NodeId("node-1".into()));
+    let t2 = InMemoryTransport::new(NodeId("node-2".into()));
+
+    t1.set_handshake_info(handshake_req_with_app("node-1", "0.2.0", "ractor", "2.3.1"))
+        .await;
+    t2.set_handshake_info(handshake_req_with_app("node-2", "0.2.0", "ractor", "2.3.0"))
+        .await;
+
+    let _rx1 = t1.register_node(NodeId("node-1".into())).await;
+    let _rx2 = t2.register_node(NodeId("node-2".into())).await;
+    t1.link(&t2).await;
+
+    // Different app versions should be accepted (app_version is informational)
+    let result = runtime
+        .try_connect_peer(NodeId("node-2".into()), None, &t1)
+        .await;
+
+    let info = result.unwrap();
+    assert_eq!(info.app_version.as_deref(), Some("2.3.0"));
+    assert!(runtime.is_peer_connected(&NodeId("node-2".into())));
+}
+
+#[tokio::test]
+async fn try_connect_peer_rejected_incompatible_protocol() {
+    use dactor::{ClusterEvent, ClusterEvents, NodeRejectionReason};
+
+    let mut runtime = RactorRuntime::with_node_id(NodeId("node-1".into()));
+
+    let t1 = InMemoryTransport::new(NodeId("node-1".into()));
+    let t2 = InMemoryTransport::new(NodeId("node-2".into()));
+
+    t1.set_handshake_info(handshake_req("node-1", "0.2.0", "ractor")).await;
+    t2.set_handshake_info(handshake_req("node-2", "1.0.0", "ractor")).await;
+
+    let _rx1 = t1.register_node(NodeId("node-1".into())).await;
+    let _rx2 = t2.register_node(NodeId("node-2".into())).await;
+    t1.link(&t2).await;
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+    runtime.cluster_events().subscribe(Box::new(move |event| {
+        events_clone.lock().unwrap().push(event);
+    })).unwrap();
+
+    let result = runtime
+        .try_connect_peer(NodeId("node-2".into()), None, &t1)
+        .await;
+
+    // Should fail
+    assert!(result.is_err());
+
+    // Peer should NOT be connected
+    assert!(!runtime.is_peer_connected(&NodeId("node-2".into())));
+
+    // NodeRejected should be emitted (not NodeJoined)
+    {
+        let evts = events.lock().unwrap();
+        assert_eq!(evts.len(), 1);
+        assert!(matches!(
+            &evts[0],
+            ClusterEvent::NodeRejected {
+                reason: NodeRejectionReason::IncompatibleProtocol,
+                ..
+            }
+        ));
+    }
+
+    // Transport should be cleaned up
+    assert!(!t1.is_reachable(&NodeId("node-2".into())).await);
+}
+
+#[tokio::test]
+async fn try_connect_peer_rejected_incompatible_adapter() {
+    use dactor::{ClusterEvent, ClusterEvents, NodeRejectionReason};
+
+    let mut runtime = RactorRuntime::with_node_id(NodeId("node-1".into()));
+
+    let t1 = InMemoryTransport::new(NodeId("node-1".into()));
+    let t2 = InMemoryTransport::new(NodeId("node-2".into()));
+
+    t1.set_handshake_info(handshake_req("node-1", "0.2.0", "ractor")).await;
+    t2.set_handshake_info(handshake_req("node-2", "0.2.0", "kameo")).await;
+
+    let _rx1 = t1.register_node(NodeId("node-1".into())).await;
+    let _rx2 = t2.register_node(NodeId("node-2".into())).await;
+    t1.link(&t2).await;
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+    runtime.cluster_events().subscribe(Box::new(move |event| {
+        events_clone.lock().unwrap().push(event);
+    })).unwrap();
+
+    let result = runtime
+        .try_connect_peer(NodeId("node-2".into()), None, &t1)
+        .await;
+
+    assert!(result.is_err());
+    assert!(!runtime.is_peer_connected(&NodeId("node-2".into())));
+
+    let evts = events.lock().unwrap();
+    assert!(matches!(
+        &evts[0],
+        ClusterEvent::NodeRejected {
+            reason: NodeRejectionReason::IncompatibleAdapter,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn try_connect_peer_connection_failed_no_route() {
+    use dactor::{ClusterEvent, ClusterEvents, NodeRejectionReason};
+
+    let mut runtime = RactorRuntime::with_node_id(NodeId("node-1".into()));
+    let t1 = InMemoryTransport::new(NodeId("node-1".into()));
+    // No route to node-2 — transport.connect() will fail
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+    runtime.cluster_events().subscribe(Box::new(move |event| {
+        events_clone.lock().unwrap().push(event);
+    })).unwrap();
+
+    let result = runtime
+        .try_connect_peer(NodeId("node-2".into()), None, &t1)
+        .await;
+
+    assert!(result.is_err());
+    assert!(!runtime.is_peer_connected(&NodeId("node-2".into())));
+
+    let evts = events.lock().unwrap();
+    assert_eq!(evts.len(), 1);
+    assert!(matches!(
+        &evts[0],
+        ClusterEvent::NodeRejected {
+            reason: NodeRejectionReason::ConnectionFailed,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn try_connect_peer_failed_reconnect_clears_connected() {
+    use dactor::{ClusterEvent, ClusterEvents, NodeRejectionReason};
+
+    let mut runtime = RactorRuntime::with_node_id(NodeId("node-1".into()));
+
+    // First: connect peer normally (bypass handshake)
+    runtime.connect_peer(NodeId("node-2".into()), None);
+    assert!(runtime.is_peer_connected(&NodeId("node-2".into())));
+
+    // Now: try_connect_peer with incompatible version — should clear the old Connected state
+    let t1 = InMemoryTransport::new(NodeId("node-1".into()));
+    let t2 = InMemoryTransport::new(NodeId("node-2".into()));
+
+    t1.set_handshake_info(handshake_req("node-1", "0.2.0", "ractor")).await;
+    t2.set_handshake_info(handshake_req("node-2", "1.0.0", "ractor")).await;
+
+    let _rx1 = t1.register_node(NodeId("node-1".into())).await;
+    let _rx2 = t2.register_node(NodeId("node-2".into())).await;
+    t1.link(&t2).await;
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+    runtime.cluster_events().subscribe(Box::new(move |event| {
+        events_clone.lock().unwrap().push(event);
+    })).unwrap();
+
+    let result = runtime
+        .try_connect_peer(NodeId("node-2".into()), None, &t1)
+        .await;
+
+    assert!(result.is_err());
+
+    // Previously connected peer should now be disconnected
+    assert!(!runtime.is_peer_connected(&NodeId("node-2".into())));
+
+    // Should emit NodeLeft (from disconnect) then NodeRejected
+    let evts = events.lock().unwrap();
+    assert!(evts.len() >= 2);
+    assert!(matches!(&evts[0], ClusterEvent::NodeLeft(n) if n.0 == "node-2"));
+    assert!(matches!(
+        &evts[1],
+        ClusterEvent::NodeRejected {
+            reason: NodeRejectionReason::IncompatibleProtocol,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn try_connect_peer_accepted_same_major_different_minor() {
+    let mut runtime = RactorRuntime::with_node_id(NodeId("node-1".into()));
+
+    let t1 = InMemoryTransport::new(NodeId("node-1".into()));
+    let t2 = InMemoryTransport::new(NodeId("node-2".into()));
+
+    t1.set_handshake_info(handshake_req("node-1", "0.2.0", "ractor")).await;
+    t2.set_handshake_info(handshake_req("node-2", "0.3.0", "ractor")).await;
+
+    let _rx1 = t1.register_node(NodeId("node-1".into())).await;
+    let _rx2 = t2.register_node(NodeId("node-2".into())).await;
+    t1.link(&t2).await;
+
+    // Same MAJOR (0), different MINOR — should be compatible
+    let result = runtime
+        .try_connect_peer(NodeId("node-2".into()), None, &t1)
+        .await;
+
+    let info = result.unwrap();
+    assert_eq!(info.wire_version, WireVersion::parse("0.3.0").unwrap());
+    assert!(runtime.is_peer_connected(&NodeId("node-2".into())));
+}
+
+#[tokio::test]
+async fn try_connect_peer_handshake_request_uses_runtime_config() {
+    let runtime = RactorRuntime::with_node_id(NodeId("my-node".into()))
+        .with_app_version("1.2.3");
+
+    let req = runtime.handshake_request();
+    assert_eq!(req.node_id, NodeId("my-node".into()));
+    assert_eq!(req.app_version.as_deref(), Some("1.2.3"));
+    assert_eq!(req.adapter, "ractor");
+    assert_eq!(
+        req.wire_version,
+        WireVersion::parse(dactor::DACTOR_WIRE_VERSION).unwrap()
+    );
+}
