@@ -281,15 +281,28 @@ pub async fn perform_handshake(
     // Step 2: Exchange handshake
     match transport.handshake(node, request).await {
         Ok(crate::system_actors::HandshakeResponse::Accepted {
+            node_id: remote_node_id,
             wire_version,
             app_version,
             adapter,
-            ..
-        }) => HandshakeOutcome::Accepted(crate::remote::PeerVersionInfo {
-            wire_version,
-            app_version,
-            adapter,
-        }),
+        }) => {
+            // Verify the peer's claimed identity matches who we connected to
+            if &remote_node_id != node {
+                let _ = transport.disconnect(node).await;
+                return HandshakeOutcome::Rejected {
+                    reason: NodeRejectionReason::ConnectionFailed,
+                    detail: format!(
+                        "peer identity mismatch: expected {}, got {}",
+                        node, remote_node_id
+                    ),
+                };
+            }
+            HandshakeOutcome::Accepted(crate::remote::PeerVersionInfo {
+                wire_version,
+                app_version,
+                adapter,
+            })
+        }
         Ok(crate::system_actors::HandshakeResponse::Rejected {
             reason,
             detail,
@@ -609,6 +622,8 @@ mod tests {
             }
             other => panic!("expected Rejected, got {:?}", other),
         }
+        // Transport should be disconnected after rejection
+        assert!(!t1.is_reachable(&NodeId("node-2".into())).await);
     }
 
     #[tokio::test]

@@ -1364,6 +1364,8 @@ impl RactorRuntime {
                 Ok(info)
             }
             dactor::HandshakeOutcome::Rejected { reason, detail } => {
+                // Disconnect existing peer if it was previously connected
+                self.disconnect_peer(&peer_id);
                 self.cluster_events.emit(dactor::ClusterEvent::NodeRejected {
                     node_id: peer_id,
                     reason,
@@ -1372,6 +1374,8 @@ impl RactorRuntime {
                 Err(dactor::ClusterError(detail))
             }
             dactor::HandshakeOutcome::ConnectionFailed { detail } => {
+                // Disconnect existing peer if it was previously connected
+                self.disconnect_peer(&peer_id);
                 self.cluster_events.emit(dactor::ClusterEvent::NodeRejected {
                     node_id: peer_id,
                     reason: dactor::NodeRejectionReason::ConnectionFailed,

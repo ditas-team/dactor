@@ -1355,6 +1355,7 @@ impl KameoRuntime {
                 Ok(info)
             }
             dactor::HandshakeOutcome::Rejected { reason, detail } => {
+                self.disconnect_peer(&peer_id);
                 self.cluster_events.emit(dactor::ClusterEvent::NodeRejected {
                     node_id: peer_id,
                     reason,
@@ -1363,6 +1364,7 @@ impl KameoRuntime {
                 Err(dactor::ClusterError(detail))
             }
             dactor::HandshakeOutcome::ConnectionFailed { detail } => {
+                self.disconnect_peer(&peer_id);
                 self.cluster_events.emit(dactor::ClusterEvent::NodeRejected {
                     node_id: peer_id,
                     reason: dactor::NodeRejectionReason::ConnectionFailed,
