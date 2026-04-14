@@ -490,6 +490,30 @@ pub struct HandshakeRequest {
     pub adapter: String,
 }
 
+impl HandshakeRequest {
+    /// Build a [`HandshakeRequest`] from runtime configuration.
+    ///
+    /// Uses [`DACTOR_WIRE_VERSION`](crate::version::DACTOR_WIRE_VERSION) as
+    /// the wire version. This is the canonical way for adapters to construct
+    /// a handshake request — avoids duplicating version/field logic across
+    /// adapter crates.
+    pub fn from_runtime(
+        node_id: NodeId,
+        app_version: Option<String>,
+        adapter: impl Into<String>,
+    ) -> Self {
+        Self {
+            node_id,
+            wire_version: crate::version::WireVersion::parse(
+                crate::version::DACTOR_WIRE_VERSION,
+            )
+            .expect("DACTOR_WIRE_VERSION must be valid"),
+            app_version,
+            adapter: adapter.into(),
+        }
+    }
+}
+
 /// The result of a version handshake.
 ///
 /// Returned by the remote node after comparing its own configuration
