@@ -63,11 +63,11 @@ Every PR was reviewed by 4 AI models (GPT-5.4, Gemini/Goldeneye, Claude Haiku 4.
 - #[non_exhaustive] added to prevent future enum/struct literal breakage
 
 ### PUB5 Implementation Complete
-All 5 phases of the version-compatibility implementation plan (from `docs/version-compatibility.md`) have been implemented:
+All 5 phases of the version-compatibility implementation plan (from `docs/version-compatibility.md`) have been implemented at the **core type/API level**. Adapter-level runtime integration (e.g. `app_version()` on adapter builders, handshake call during `connect_peer()`) is adapter-specific work:
 - ✅ Phase 1: Wire Protocol Version Constant (PR #141)
 - ✅ Phase 2: Handshake Protocol in Transport Trait (PR #142)
 - ✅ Phase 3: NodeRejected ClusterEvent (PR #143)
-- ✅ Phase 4: Application Version in Runtime Configuration (PR #144)
+- ✅ Phase 4: Application Version in ClusterState — core types (PR #144)
 - ✅ Phase 5: MessageVersionHandler Playbook (PR #145)
 
 ### Session 2026-04-06/07 Summary (PRs #111-#129)
@@ -344,7 +344,7 @@ However, **remote actor calls may fail** depending on whether the application me
 
 **Output:** Design document `docs/version-compatibility.md`
 
-**Status:** ✅ Done (design doc + implementation PRs #141-#145)
+**Status:** ✅ Done (design doc + core implementation PRs #141-#145; adapter runtime integration is adapter-specific)
 
 ### Documentation Created This Session
 - `docs/cluster-behavior.md` — K8s/EKS/VMSS autoscale, simultaneous restart, graceful shutdown, split-brain
