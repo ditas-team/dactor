@@ -846,6 +846,8 @@ pub struct CoerceRuntime {
     /// Stop notification receivers for await_stop(), keyed by ActorId.
     #[allow(clippy::type_complexity)]
     stop_receivers: Arc<Mutex<HashMap<ActorId, tokio::sync::oneshot::Receiver<Result<(), String>>>>>,
+    /// Application version for this node (informational, used in handshake).
+    app_version: Option<String>,
 }
 
 impl CoerceRuntime {
@@ -880,7 +882,36 @@ impl CoerceRuntime {
             node_directory: NodeDirectory::new(),
             system_actors: None,
             stop_receivers: Arc::new(Mutex::new(HashMap::new())),
+            app_version: None,
         }
+    }
+
+    /// The adapter name for this runtime, used in version handshakes.
+    pub const ADAPTER_NAME: &'static str = "coerce";
+
+    /// Set the application version for this node.
+    ///
+    /// This is your application's release version (e.g., "2.3.1"), not the
+    /// dactor framework version. It is included in handshake requests for
+    /// operational visibility during rolling upgrades.
+    pub fn with_app_version(mut self, version: impl Into<String>) -> Self {
+        self.app_version = Some(version.into());
+        self
+    }
+
+    /// Returns the configured application version, if any.
+    pub fn app_version(&self) -> Option<&str> {
+        self.app_version.as_deref()
+    }
+
+    /// Build a [`HandshakeRequest`](dactor::HandshakeRequest) from this
+    /// runtime's current configuration.
+    pub fn handshake_request(&self) -> dactor::HandshakeRequest {
+        dactor::HandshakeRequest::from_runtime(
+            self.node_id.clone(),
+            self.app_version.clone(),
+            Self::ADAPTER_NAME,
+        )
     }
 
     /// Returns the node ID of this runtime.
@@ -1306,7 +1337,13 @@ impl CoerceRuntime {
         &mut self.node_directory
     }
 
-    /// Register a peer node in the directory.
+    /// Register a peer node as connected in the directory.
+    ///
+    /// **Post-validation only:** this method assumes the peer has already
+    /// passed the version handshake. Callers should validate compatibility
+    /// (via [`handshake_request`](Self::handshake_request) +
+    /// [`validate_handshake`](dactor::validate_handshake)) before calling
+    /// this method. Direct calls bypass compatibility checks.
     ///
     /// If the peer already exists, updates its status to `Connected` and
     /// preserves the existing address when `address` is `None`.
