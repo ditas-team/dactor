@@ -334,6 +334,13 @@ impl DiscoveredPeer {
     /// Convenience for discovery backends that don't provide stable
     /// identities (e.g., DNS resolution). The address is used as both
     /// the identity and the endpoint.
+    ///
+    /// **Important:** When using this with [`try_connect_peer`](crate::cluster::perform_handshake),
+    /// the remote node must be configured with a `node_id` that matches
+    /// this address string exactly. If the remote node uses a different
+    /// `node_id` (e.g., `"my-node"` instead of `"10.0.0.1:9000"`), the
+    /// handshake will fail with a node identity mismatch. For such cases,
+    /// use [`DiscoveredPeer::new`] with an explicit `node_id` instead.
     pub fn from_address(address: impl Into<String>) -> Self {
         let addr = address.into();
         Self {
