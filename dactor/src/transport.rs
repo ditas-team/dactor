@@ -74,7 +74,18 @@ pub trait Transport: Send + Sync + 'static {
     async fn is_reachable(&self, node: &NodeId) -> bool;
 
     /// Establish a connection to a remote node.
-    async fn connect(&self, node: &NodeId) -> Result<(), TransportError>;
+    ///
+    /// The `address` parameter provides the network endpoint to dial
+    /// (e.g., "10.0.0.1:9000"). If `None`, the transport uses whatever
+    /// endpoint is already associated with the `node` (e.g., a previously
+    /// registered route). After a successful connect, the transport must
+    /// retain the `NodeId → connection` association so that subsequent
+    /// `send()` and `handshake()` calls can reach the node by `NodeId`.
+    async fn connect(
+        &self,
+        node: &NodeId,
+        address: Option<&str>,
+    ) -> Result<(), TransportError>;
 
     /// Disconnect from a remote node.
     async fn disconnect(&self, node: &NodeId) -> Result<(), TransportError>;
@@ -275,8 +286,8 @@ impl Transport for InMemoryTransport {
         self.connected.lock().await.contains(node)
     }
 
-    async fn connect(&self, node: &NodeId) -> Result<(), TransportError> {
-        // In-memory transport just marks the node as connected if we have a route.
+    async fn connect(&self, node: &NodeId, _address: Option<&str>) -> Result<(), TransportError> {
+        // In-memory transport ignores address and connects by NodeId route.
         let routes = self.routes.lock().await;
         if routes.contains_key(node) {
             self.connected.lock().await.insert(node.clone());
@@ -407,7 +418,7 @@ mod tests {
     async fn send_receive_roundtrip() {
         let transport = InMemoryTransport::new(NodeId("node-a".into()));
         let mut rx = transport.register_node(NodeId("node-b".into())).await;
-        transport.connect(&NodeId("node-b".into())).await.unwrap();
+        transport.connect(&NodeId("node-b".into()), None).await.unwrap();
 
         let envelope = test_envelope("node-b", b"hello");
         transport
@@ -424,7 +435,7 @@ mod tests {
     async fn send_request_with_reply() {
         let transport = Arc::new(InMemoryTransport::new(NodeId("node-a".into())));
         let mut rx = transport.register_node(NodeId("node-b".into())).await;
-        transport.connect(&NodeId("node-b".into())).await.unwrap();
+        transport.connect(&NodeId("node-b".into()), None).await.unwrap();
 
         let request_id = Uuid::new_v4();
         let envelope = test_envelope_with_request_id("node-b", b"question", request_id);
@@ -455,7 +466,7 @@ mod tests {
         assert!(!transport.is_reachable(&NodeId("node-b".into())).await);
         assert!(!transport.is_reachable(&NodeId("node-c".into())).await);
 
-        transport.connect(&NodeId("node-b".into())).await.unwrap();
+        transport.connect(&NodeId("node-b".into()), None).await.unwrap();
         assert!(transport.is_reachable(&NodeId("node-b".into())).await);
 
         transport
@@ -491,7 +502,7 @@ mod tests {
     #[tokio::test]
     async fn connect_fails_without_route() {
         let transport = InMemoryTransport::new(NodeId("node-a".into()));
-        let result = transport.connect(&NodeId("node-unknown".into())).await;
+        let result = transport.connect(&NodeId("node-unknown".into()), None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().message.contains("no route"));
     }
@@ -653,7 +664,7 @@ mod tests {
             async fn is_reachable(&self, _: &NodeId) -> bool {
                 false
             }
-            async fn connect(&self, _: &NodeId) -> Result<(), TransportError> {
+            async fn connect(&self, _: &NodeId, _: Option<&str>) -> Result<(), TransportError> {
                 Ok(())
             }
             async fn disconnect(&self, _: &NodeId) -> Result<(), TransportError> {

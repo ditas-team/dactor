@@ -972,7 +972,7 @@ mod tests {
         .build();
 
         // Connect so the transport can route
-        transport.connect(&NodeId("node-2".into())).await.unwrap();
+        transport.connect(&NodeId("node-2".into()), None).await.unwrap();
 
         remote.tell(Increment).unwrap();
 
@@ -993,7 +993,7 @@ mod tests {
         let transport = Arc::new(InMemoryTransport::new(NodeId("local".into())));
         let mut rx = transport.register_node(NodeId("node-2".into())).await;
 
-        transport.connect(&NodeId("node-2".into())).await.unwrap();
+        transport.connect(&NodeId("node-2".into()), None).await.unwrap();
 
         let remote = RemoteActorRefBuilder::<Counter>::new(
             ActorId {
@@ -1058,7 +1058,7 @@ mod tests {
     async fn remote_ref_ask_with_cancellation() {
         let transport = Arc::new(InMemoryTransport::new(NodeId("local".into())));
         let _rx = transport.register_node(NodeId("node-2".into())).await;
-        transport.connect(&NodeId("node-2".into())).await.unwrap();
+        transport.connect(&NodeId("node-2".into()), None).await.unwrap();
 
         let remote = RemoteActorRefBuilder::<Counter>::new(
             ActorId {
@@ -1130,7 +1130,7 @@ mod tests {
         async fn serde_tell_roundtrip() {
             let transport = Arc::new(InMemoryTransport::new(NodeId("local".into())));
             let mut rx = transport.register_node(NodeId("node-2".into())).await;
-            transport.connect(&NodeId("node-2".into())).await.unwrap();
+            transport.connect(&NodeId("node-2".into()), None).await.unwrap();
 
             let remote = RemoteActorRefBuilder::<Counter>::new(
                 ActorId {
@@ -1159,7 +1159,7 @@ mod tests {
         async fn serde_ask_roundtrip() {
             let transport = Arc::new(InMemoryTransport::new(NodeId("local".into())));
             let mut rx = transport.register_node(NodeId("node-2".into())).await;
-            transport.connect(&NodeId("node-2".into())).await.unwrap();
+            transport.connect(&NodeId("node-2".into()), None).await.unwrap();
 
             let remote = RemoteActorRefBuilder::<Counter>::new(
                 ActorId {
@@ -1339,7 +1339,7 @@ mod tests {
     async fn outbound_interceptor_stamps_headers_on_tell() {
         let transport = Arc::new(InMemoryTransport::new(NodeId("local".into())));
         let mut rx = transport.register_node(NodeId("node-2".into())).await;
-        transport.connect(&NodeId("node-2".into())).await.unwrap();
+        transport.connect(&NodeId("node-2".into()), None).await.unwrap();
 
         let remote = RemoteActorRefBuilder::<Counter>::new(
             ActorId {
@@ -1372,7 +1372,7 @@ mod tests {
     async fn outbound_interceptor_counter_tracks_sends() {
         let transport = Arc::new(InMemoryTransport::new(NodeId("local".into())));
         let _rx = transport.register_node(NodeId("node-2".into())).await;
-        transport.connect(&NodeId("node-2".into())).await.unwrap();
+        transport.connect(&NodeId("node-2".into()), None).await.unwrap();
 
         let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
 

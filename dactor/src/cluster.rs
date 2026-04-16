@@ -259,20 +259,25 @@ pub enum HandshakeOutcome {
 ///
 /// This is the core handshake enforcement logic shared by all adapters.
 /// It handles the full sequence:
-/// 1. `transport.connect(node)` — establish transport connectivity
+/// 1. `transport.connect(node, address)` — dial the network endpoint
 /// 2. `transport.handshake(node, request)` — exchange version info
 /// 3. On success: return `Accepted` with peer version metadata
 /// 4. On reject/error: `transport.disconnect(node)` and return failure
+///
+/// The `address` parameter is the network endpoint to dial (from
+/// [`DiscoveredPeer::address`](crate::remote::DiscoveredPeer)). If `None`,
+/// the transport uses whatever endpoint is already associated with the node.
 ///
 /// Adapter runtimes call this from their `try_connect_peer()` method,
 /// then update their own state (NodeDirectory, events) based on the outcome.
 pub async fn perform_handshake(
     transport: &dyn crate::transport::Transport,
     node: &NodeId,
+    address: Option<&str>,
     request: crate::system_actors::HandshakeRequest,
 ) -> HandshakeOutcome {
     // Step 1: Establish transport connectivity
-    if let Err(e) = transport.connect(node).await {
+    if let Err(e) = transport.connect(node, address).await {
         return HandshakeOutcome::ConnectionFailed {
             detail: format!("transport connect failed: {}", e.message),
         };
@@ -569,7 +574,7 @@ mod tests {
         t1.link(&t2).await;
 
         let req = test_req("node-1", "0.2.0", "ractor");
-        let outcome = perform_handshake(&t1, &NodeId("node-2".into()), req).await;
+        let outcome = perform_handshake(&t1, &NodeId("node-2".into()), None, req).await;
         match outcome {
             HandshakeOutcome::Accepted(info) => {
                 assert_eq!(info.adapter, "ractor");
@@ -591,7 +596,7 @@ mod tests {
         t1.link(&t2).await;
 
         let req = test_req("node-1", "0.2.0", "ractor");
-        let outcome = perform_handshake(&t1, &NodeId("node-2".into()), req).await;
+        let outcome = perform_handshake(&t1, &NodeId("node-2".into()), None, req).await;
         match outcome {
             HandshakeOutcome::Rejected { reason, .. } => {
                 assert_eq!(reason, NodeRejectionReason::IncompatibleProtocol);
@@ -615,7 +620,7 @@ mod tests {
         t1.link(&t2).await;
 
         let req = test_req("node-1", "0.2.0", "ractor");
-        let outcome = perform_handshake(&t1, &NodeId("node-2".into()), req).await;
+        let outcome = perform_handshake(&t1, &NodeId("node-2".into()), None, req).await;
         match outcome {
             HandshakeOutcome::Rejected { reason, .. } => {
                 assert_eq!(reason, NodeRejectionReason::IncompatibleAdapter);
@@ -632,7 +637,7 @@ mod tests {
         // No route to node-2 — transport.connect() will fail
 
         let req = test_req("node-1", "0.2.0", "ractor");
-        let outcome = perform_handshake(&t1, &NodeId("node-2".into()), req).await;
+        let outcome = perform_handshake(&t1, &NodeId("node-2".into()), None, req).await;
         match outcome {
             HandshakeOutcome::ConnectionFailed { detail } => {
                 assert!(detail.contains("connect failed"));

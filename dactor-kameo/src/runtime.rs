@@ -1349,7 +1349,7 @@ impl KameoRuntime {
         transport: &dyn dactor::Transport,
     ) -> Result<dactor::PeerVersionInfo, dactor::ClusterError> {
         let request = self.handshake_request();
-        match dactor::perform_handshake(transport, &peer_id, request).await {
+        match dactor::perform_handshake(transport, &peer_id, address.as_deref(), request).await {
             dactor::HandshakeOutcome::Accepted(info) => {
                 self.connect_peer(peer_id, address);
                 Ok(info)

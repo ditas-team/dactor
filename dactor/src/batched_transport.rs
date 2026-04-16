@@ -289,7 +289,7 @@ mod tests {
     async fn flushes_on_max_items() {
         let transport = Arc::new(InMemoryTransport::new(NodeId("local".into())));
         let mut rx = transport.register_node(NodeId("node-2".into())).await;
-        transport.connect(&NodeId("node-2".into())).await.unwrap();
+        transport.connect(&NodeId("node-2".into()), None).await.unwrap();
 
         let sender = BatchedTransportSender::new(
             Arc::clone(&transport) as Arc<dyn Transport>,
@@ -315,7 +315,7 @@ mod tests {
         let transport = Arc::new(InMemoryTransport::new(NodeId("local".into())));
         // Register node-3 but not node-2 (node-2 has no route = will fail)
         let mut rx3 = transport.register_node(NodeId("node-3".into())).await;
-        transport.connect(&NodeId("node-3".into())).await.unwrap();
+        transport.connect(&NodeId("node-3".into()), None).await.unwrap();
 
         let sender = BatchedTransportSender::new(
             Arc::clone(&transport) as Arc<dyn Transport>,
@@ -341,8 +341,8 @@ mod tests {
         let transport = Arc::new(InMemoryTransport::new(NodeId("local".into())));
         let _rx2 = transport.register_node(NodeId("node-2".into())).await;
         let _rx3 = transport.register_node(NodeId("node-3".into())).await;
-        transport.connect(&NodeId("node-2".into())).await.unwrap();
-        transport.connect(&NodeId("node-3".into())).await.unwrap();
+        transport.connect(&NodeId("node-2".into()), None).await.unwrap();
+        transport.connect(&NodeId("node-3".into()), None).await.unwrap();
 
         let sender = BatchedTransportSender::new(
             Arc::clone(&transport) as Arc<dyn Transport>,
@@ -371,7 +371,7 @@ mod tests {
     async fn batch_roundtrip() {
         let transport = Arc::new(InMemoryTransport::new(NodeId("local".into())));
         let mut rx = transport.register_node(NodeId("node-2".into())).await;
-        transport.connect(&NodeId("node-2".into())).await.unwrap();
+        transport.connect(&NodeId("node-2".into()), None).await.unwrap();
 
         let sender = BatchedTransportSender::new(
             Arc::clone(&transport) as Arc<dyn Transport>,
