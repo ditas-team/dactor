@@ -485,3 +485,375 @@ async fn nr2_disconnect_unconnected_does_not_emit() {
     runtime.disconnect_peer(&NodeId("unknown".into()));
     assert_eq!(left_count.load(AtomicOrdering::SeqCst), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Handshake integration: try_connect_peer() with InMemoryTransport
+// ---------------------------------------------------------------------------
+
+use dactor::system_actors::HandshakeRequest;
+use dactor::transport::{InMemoryTransport, Transport};
+use dactor::version::WireVersion;
+
+fn handshake_req(node: &str, wire: &str, adapter: &str) -> HandshakeRequest {
+    HandshakeRequest {
+        node_id: NodeId(node.into()),
+        wire_version: WireVersion::parse(wire).unwrap(),
+        app_version: None,
+        adapter: adapter.into(),
+    }
+}
+
+fn handshake_req_with_app(
+    node: &str,
+    wire: &str,
+    adapter: &str,
+    app: &str,
+) -> HandshakeRequest {
+    HandshakeRequest {
+        node_id: NodeId(node.into()),
+        wire_version: WireVersion::parse(wire).unwrap(),
+        app_version: Some(app.into()),
+        adapter: adapter.into(),
+    }
+}
+
+#[tokio::test]
+async fn try_connect_peer_accepted_same_version() {
+    use dactor::{ClusterEvent, ClusterEvents};
+
+    let mut runtime = CoerceRuntime::with_node_id(NodeId("node-1".into()));
+
+    let t1 = InMemoryTransport::new(NodeId("node-1".into()));
+    let t2 = InMemoryTransport::new(NodeId("node-2".into()));
+
+    t1.set_handshake_info(handshake_req("node-1", "0.2.0", "coerce")).await;
+    t2.set_handshake_info(handshake_req("node-2", "0.2.0", "coerce")).await;
+
+    let _rx1 = t1.register_node(NodeId("node-1".into())).await;
+    let _rx2 = t2.register_node(NodeId("node-2".into())).await;
+    t1.link(&t2).await;
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+    runtime.cluster_events().subscribe(Box::new(move |event| {
+        events_clone.lock().unwrap().push(event);
+    })).unwrap();
+
+    let result = runtime
+        .try_connect_peer(NodeId("node-2".into()), None, &t1)
+        .await;
+
+    let info = result.unwrap();
+    assert_eq!(info.adapter, "coerce");
+    assert_eq!(info.wire_version, WireVersion::parse("0.2.0").unwrap());
+    assert!(runtime.is_peer_connected(&NodeId("node-2".into())));
+
+    let evts = events.lock().unwrap();
+    assert_eq!(evts.len(), 1);
+    assert!(matches!(&evts[0], ClusterEvent::NodeJoined(n) if n.0 == "node-2"));
+}
+
+#[tokio::test]
+async fn try_connect_peer_accepted_different_app_versions() {
+    let mut runtime = CoerceRuntime::with_node_id(NodeId("node-1".into()))
+        .with_app_version("2.3.1");
+
+    let t1 = InMemoryTransport::new(NodeId("node-1".into()));
+    let t2 = InMemoryTransport::new(NodeId("node-2".into()));
+
+    t1.set_handshake_info(handshake_req_with_app("node-1", "0.2.0", "coerce", "2.3.1"))
+        .await;
+    t2.set_handshake_info(handshake_req_with_app("node-2", "0.2.0", "coerce", "2.3.0"))
+        .await;
+
+    let _rx1 = t1.register_node(NodeId("node-1".into())).await;
+    let _rx2 = t2.register_node(NodeId("node-2".into())).await;
+    t1.link(&t2).await;
+
+    let result = runtime
+        .try_connect_peer(NodeId("node-2".into()), None, &t1)
+        .await;
+
+    let info = result.unwrap();
+    assert_eq!(info.app_version.as_deref(), Some("2.3.0"));
+    assert!(runtime.is_peer_connected(&NodeId("node-2".into())));
+}
+
+#[tokio::test]
+async fn try_connect_peer_rejected_incompatible_protocol() {
+    use dactor::{ClusterEvent, ClusterEvents, NodeRejectionReason};
+
+    let mut runtime = CoerceRuntime::with_node_id(NodeId("node-1".into()));
+
+    let t1 = InMemoryTransport::new(NodeId("node-1".into()));
+    let t2 = InMemoryTransport::new(NodeId("node-2".into()));
+
+    t1.set_handshake_info(handshake_req("node-1", "0.2.0", "coerce")).await;
+    t2.set_handshake_info(handshake_req("node-2", "1.0.0", "coerce")).await;
+
+    let _rx1 = t1.register_node(NodeId("node-1".into())).await;
+    let _rx2 = t2.register_node(NodeId("node-2".into())).await;
+    t1.link(&t2).await;
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+    runtime.cluster_events().subscribe(Box::new(move |event| {
+        events_clone.lock().unwrap().push(event);
+    })).unwrap();
+
+    let result = runtime
+        .try_connect_peer(NodeId("node-2".into()), None, &t1)
+        .await;
+
+    assert!(result.is_err());
+    assert!(!runtime.is_peer_connected(&NodeId("node-2".into())));
+
+    {
+        let evts = events.lock().unwrap();
+        assert_eq!(evts.len(), 1);
+        assert!(matches!(
+            &evts[0],
+            ClusterEvent::NodeRejected {
+                reason: NodeRejectionReason::IncompatibleProtocol,
+                ..
+            }
+        ));
+    }
+
+    assert!(!t1.is_reachable(&NodeId("node-2".into())).await);
+}
+
+#[tokio::test]
+async fn try_connect_peer_rejected_incompatible_adapter() {
+    use dactor::{ClusterEvent, ClusterEvents, NodeRejectionReason};
+
+    let mut runtime = CoerceRuntime::with_node_id(NodeId("node-1".into()));
+
+    let t1 = InMemoryTransport::new(NodeId("node-1".into()));
+    let t2 = InMemoryTransport::new(NodeId("node-2".into()));
+
+    t1.set_handshake_info(handshake_req("node-1", "0.2.0", "coerce")).await;
+    t2.set_handshake_info(handshake_req("node-2", "0.2.0", "ractor")).await;
+
+    let _rx1 = t1.register_node(NodeId("node-1".into())).await;
+    let _rx2 = t2.register_node(NodeId("node-2".into())).await;
+    t1.link(&t2).await;
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+    runtime.cluster_events().subscribe(Box::new(move |event| {
+        events_clone.lock().unwrap().push(event);
+    })).unwrap();
+
+    let result = runtime
+        .try_connect_peer(NodeId("node-2".into()), None, &t1)
+        .await;
+
+    assert!(result.is_err());
+    assert!(!runtime.is_peer_connected(&NodeId("node-2".into())));
+
+    let evts = events.lock().unwrap();
+    assert_eq!(evts.len(), 1);
+    assert!(matches!(
+        &evts[0],
+        ClusterEvent::NodeRejected {
+            reason: NodeRejectionReason::IncompatibleAdapter,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn try_connect_peer_handshake_exchange_error() {
+    use dactor::{ClusterEvent, ClusterEvents, NodeRejectionReason};
+
+    let mut runtime = CoerceRuntime::with_node_id(NodeId("node-1".into()));
+
+    let t1 = InMemoryTransport::new(NodeId("node-1".into()));
+    let t2 = InMemoryTransport::new(NodeId("node-2".into()));
+
+    // Register routes but do NOT set handshake info for node-2
+    // This means transport.connect() succeeds but transport.handshake() errors
+    t1.set_handshake_info(handshake_req("node-1", "0.2.0", "coerce")).await;
+
+    let _rx1 = t1.register_node(NodeId("node-1".into())).await;
+    let _rx2 = t2.register_node(NodeId("node-2".into())).await;
+    t1.link(&t2).await;
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+    runtime.cluster_events().subscribe(Box::new(move |event| {
+        events_clone.lock().unwrap().push(event);
+    })).unwrap();
+
+    let result = runtime
+        .try_connect_peer(NodeId("node-2".into()), None, &t1)
+        .await;
+
+    assert!(result.is_err());
+    assert!(!runtime.is_peer_connected(&NodeId("node-2".into())));
+
+    let evts = events.lock().unwrap();
+    assert_eq!(evts.len(), 1);
+    assert!(matches!(
+        &evts[0],
+        ClusterEvent::NodeRejected {
+            reason: NodeRejectionReason::ConnectionFailed,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn try_connect_peer_node_id_mismatch_rejected() {
+    use dactor::{ClusterEvent, ClusterEvents, NodeRejectionReason};
+
+    let mut runtime = CoerceRuntime::with_node_id(NodeId("node-1".into()));
+
+    let t1 = InMemoryTransport::new(NodeId("node-1".into()));
+    let t2 = InMemoryTransport::new(NodeId("node-2".into()));
+
+    t1.set_handshake_info(handshake_req("node-1", "0.2.0", "coerce")).await;
+    // Register handshake info with wrong node_id — node-2's info claims to be "node-X"
+    t2.set_handshake_info(handshake_req("node-X", "0.2.0", "coerce")).await;
+
+    let _rx1 = t1.register_node(NodeId("node-1".into())).await;
+    let _rx2 = t2.register_node(NodeId("node-2".into())).await;
+    t1.link(&t2).await;
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+    runtime.cluster_events().subscribe(Box::new(move |event| {
+        events_clone.lock().unwrap().push(event);
+    })).unwrap();
+
+    let result = runtime
+        .try_connect_peer(NodeId("node-2".into()), None, &t1)
+        .await;
+
+    assert!(result.is_err());
+    assert!(!runtime.is_peer_connected(&NodeId("node-2".into())));
+
+    let evts = events.lock().unwrap();
+    assert_eq!(evts.len(), 1);
+    assert!(matches!(
+        &evts[0],
+        ClusterEvent::NodeRejected {
+            reason: NodeRejectionReason::ConnectionFailed,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn try_connect_peer_connection_failed_no_route() {
+    use dactor::{ClusterEvent, ClusterEvents, NodeRejectionReason};
+
+    let mut runtime = CoerceRuntime::with_node_id(NodeId("node-1".into()));
+    let t1 = InMemoryTransport::new(NodeId("node-1".into()));
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+    runtime.cluster_events().subscribe(Box::new(move |event| {
+        events_clone.lock().unwrap().push(event);
+    })).unwrap();
+
+    let result = runtime
+        .try_connect_peer(NodeId("node-2".into()), None, &t1)
+        .await;
+
+    assert!(result.is_err());
+    assert!(!runtime.is_peer_connected(&NodeId("node-2".into())));
+
+    let evts = events.lock().unwrap();
+    assert_eq!(evts.len(), 1);
+    assert!(matches!(
+        &evts[0],
+        ClusterEvent::NodeRejected {
+            reason: NodeRejectionReason::ConnectionFailed,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn try_connect_peer_failed_reconnect_clears_connected() {
+    use dactor::{ClusterEvent, ClusterEvents, NodeRejectionReason};
+
+    let mut runtime = CoerceRuntime::with_node_id(NodeId("node-1".into()));
+
+    runtime.connect_peer(NodeId("node-2".into()), None);
+    assert!(runtime.is_peer_connected(&NodeId("node-2".into())));
+
+    let t1 = InMemoryTransport::new(NodeId("node-1".into()));
+    let t2 = InMemoryTransport::new(NodeId("node-2".into()));
+
+    t1.set_handshake_info(handshake_req("node-1", "0.2.0", "coerce")).await;
+    t2.set_handshake_info(handshake_req("node-2", "1.0.0", "coerce")).await;
+
+    let _rx1 = t1.register_node(NodeId("node-1".into())).await;
+    let _rx2 = t2.register_node(NodeId("node-2".into())).await;
+    t1.link(&t2).await;
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+    runtime.cluster_events().subscribe(Box::new(move |event| {
+        events_clone.lock().unwrap().push(event);
+    })).unwrap();
+
+    let result = runtime
+        .try_connect_peer(NodeId("node-2".into()), None, &t1)
+        .await;
+
+    assert!(result.is_err());
+    assert!(!runtime.is_peer_connected(&NodeId("node-2".into())));
+
+    let evts = events.lock().unwrap();
+    assert!(evts.len() >= 2);
+    assert!(matches!(&evts[0], ClusterEvent::NodeLeft(n) if n.0 == "node-2"));
+    assert!(matches!(
+        &evts[1],
+        ClusterEvent::NodeRejected {
+            reason: NodeRejectionReason::IncompatibleProtocol,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn try_connect_peer_accepted_same_major_different_minor() {
+    let mut runtime = CoerceRuntime::with_node_id(NodeId("node-1".into()));
+
+    let t1 = InMemoryTransport::new(NodeId("node-1".into()));
+    let t2 = InMemoryTransport::new(NodeId("node-2".into()));
+
+    t1.set_handshake_info(handshake_req("node-1", "0.2.0", "coerce")).await;
+    t2.set_handshake_info(handshake_req("node-2", "0.3.0", "coerce")).await;
+
+    let _rx1 = t1.register_node(NodeId("node-1".into())).await;
+    let _rx2 = t2.register_node(NodeId("node-2".into())).await;
+    t1.link(&t2).await;
+
+    let result = runtime
+        .try_connect_peer(NodeId("node-2".into()), None, &t1)
+        .await;
+
+    let info = result.unwrap();
+    assert_eq!(info.wire_version, WireVersion::parse("0.3.0").unwrap());
+    assert!(runtime.is_peer_connected(&NodeId("node-2".into())));
+}
+
+#[tokio::test]
+async fn try_connect_peer_handshake_request_uses_runtime_config() {
+    let runtime = CoerceRuntime::with_node_id(NodeId("my-node".into()))
+        .with_app_version("1.2.3");
+
+    let req = runtime.handshake_request();
+    assert_eq!(req.node_id, NodeId("my-node".into()));
+    assert_eq!(req.app_version.as_deref(), Some("1.2.3"));
+    assert_eq!(req.adapter, "coerce");
+    assert_eq!(
+        req.wire_version,
+        WireVersion::parse(dactor::DACTOR_WIRE_VERSION).unwrap()
+    );
+}
