@@ -307,30 +307,81 @@ impl std::fmt::Display for DiscoveryError {
 
 impl std::error::Error for DiscoveryError {}
 
+/// A peer found by [`ClusterDiscovery`].
+///
+/// Combines a stable identity ([`NodeId`]) with a network address.
+/// Discovery backends that only know addresses (e.g., DNS-based discovery)
+/// can use the address as the node ID via [`DiscoveredPeer::from_address`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DiscoveredPeer {
+    /// The peer's stable identity in the cluster.
+    pub node_id: NodeId,
+    /// The peer's network address (e.g., "10.0.0.1:9000").
+    pub address: String,
+}
+
+impl DiscoveredPeer {
+    /// Create a discovered peer with an explicit node ID.
+    pub fn new(node_id: NodeId, address: impl Into<String>) -> Self {
+        Self {
+            node_id,
+            address: address.into(),
+        }
+    }
+
+    /// Create a discovered peer using the address string as the node ID.
+    ///
+    /// Convenience for discovery backends that don't provide stable
+    /// identities (e.g., DNS resolution). The address is used as both
+    /// the identity and the endpoint.
+    pub fn from_address(address: impl Into<String>) -> Self {
+        let addr = address.into();
+        Self {
+            node_id: NodeId(addr.clone()),
+            address: addr,
+        }
+    }
+}
+
 /// Trait for cluster discovery — how nodes find each other.
 #[async_trait::async_trait]
 pub trait ClusterDiscovery: Send + Sync + 'static {
-    /// Discover seed nodes to connect to.
-    async fn discover(&self) -> Result<Vec<String>, DiscoveryError>;
+    /// Discover peers to connect to.
+    ///
+    /// Returns a list of [`DiscoveredPeer`]s. The runtime will compare this
+    /// against currently connected peers and attempt to connect new ones
+    /// via [`try_connect_peer`](crate::cluster::perform_handshake).
+    async fn discover(&self) -> Result<Vec<DiscoveredPeer>, DiscoveryError>;
 }
 
-/// Static list of seed nodes (simplest discovery mechanism).
+/// Static list of seed peers (simplest discovery mechanism).
 pub struct StaticSeeds {
-    /// List of seed node addresses.
-    pub seeds: Vec<String>,
+    /// Pre-configured peers.
+    pub peers: Vec<DiscoveredPeer>,
 }
 
 impl StaticSeeds {
-    /// Create a new static seeds discovery with the given addresses.
-    pub fn new(seeds: Vec<String>) -> Self {
-        Self { seeds }
+    /// Create static seeds from a list of addresses.
+    ///
+    /// Each address is used as both the node ID and the endpoint
+    /// (via [`DiscoveredPeer::from_address`]).
+    pub fn new(addresses: Vec<String>) -> Self {
+        Self {
+            peers: addresses.into_iter().map(DiscoveredPeer::from_address).collect(),
+        }
+    }
+
+    /// Create static seeds from a list of [`DiscoveredPeer`]s with
+    /// explicit node IDs.
+    pub fn from_peers(peers: Vec<DiscoveredPeer>) -> Self {
+        Self { peers }
     }
 }
 
 #[async_trait::async_trait]
 impl ClusterDiscovery for StaticSeeds {
-    async fn discover(&self) -> Result<Vec<String>, DiscoveryError> {
-        Ok(self.seeds.clone())
+    async fn discover(&self) -> Result<Vec<DiscoveredPeer>, DiscoveryError> {
+        Ok(self.peers.clone())
     }
 }
 
@@ -646,7 +697,28 @@ mod tests {
         let seeds = StaticSeeds::new(vec!["node1:4697".into(), "node2:4697".into()]);
         let discovered = seeds.discover().await.unwrap();
         assert_eq!(discovered.len(), 2);
-        assert_eq!(discovered[0], "node1:4697");
+        assert_eq!(discovered[0].address, "node1:4697");
+        assert_eq!(discovered[0].node_id, NodeId("node1:4697".into()));
+    }
+
+    #[tokio::test]
+    async fn test_static_seeds_from_peers() {
+        let seeds = StaticSeeds::from_peers(vec![
+            DiscoveredPeer::new(NodeId("node-a".into()), "10.0.0.1:9000"),
+            DiscoveredPeer::new(NodeId("node-b".into()), "10.0.0.2:9000"),
+        ]);
+        let discovered = seeds.discover().await.unwrap();
+        assert_eq!(discovered.len(), 2);
+        assert_eq!(discovered[0].node_id, NodeId("node-a".into()));
+        assert_eq!(discovered[0].address, "10.0.0.1:9000");
+        assert_eq!(discovered[1].node_id, NodeId("node-b".into()));
+    }
+
+    #[test]
+    fn test_discovered_peer_from_address() {
+        let peer = DiscoveredPeer::from_address("10.0.0.1:9000");
+        assert_eq!(peer.node_id, NodeId("10.0.0.1:9000".into()));
+        assert_eq!(peer.address, "10.0.0.1:9000");
     }
 
     #[test]

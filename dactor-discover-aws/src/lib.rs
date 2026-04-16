@@ -165,9 +165,10 @@ impl AutoScalingDiscovery {
 
 #[async_trait::async_trait]
 impl ClusterDiscovery for AutoScalingDiscovery {
-    async fn discover(&self) -> Result<Vec<String>, DiscoveryError> {
+    async fn discover(&self) -> Result<Vec<dactor::DiscoveredPeer>, DiscoveryError> {
         self.discover_async()
             .await
+            .map(|addrs| addrs.into_iter().map(dactor::DiscoveredPeer::from_address).collect())
             .map_err(|e| DiscoveryError::new(e.to_string()))
     }
 }
@@ -330,9 +331,10 @@ impl Ec2TagDiscovery {
 
 #[async_trait::async_trait]
 impl ClusterDiscovery for Ec2TagDiscovery {
-    async fn discover(&self) -> Result<Vec<String>, DiscoveryError> {
+    async fn discover(&self) -> Result<Vec<dactor::DiscoveredPeer>, DiscoveryError> {
         self.discover_async()
             .await
+            .map(|addrs| addrs.into_iter().map(dactor::DiscoveredPeer::from_address).collect())
             .map_err(|e| DiscoveryError::new(e.to_string()))
     }
 }
