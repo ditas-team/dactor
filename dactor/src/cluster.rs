@@ -178,8 +178,9 @@ impl Default for ClusterEventEmitter {
 #[async_trait::async_trait]
 pub trait AdapterCluster: Send + Sync + 'static {
     /// Connect to a remote node. Called when discovery finds a new peer
-    /// or when reconnecting after failure.
-    async fn connect(&self, node: &NodeId) -> Result<(), ClusterError>;
+    /// or when reconnecting after failure. The `address` parameter is the
+    /// network endpoint from [`DiscoveredPeer::address`](crate::remote::DiscoveredPeer).
+    async fn connect(&self, node: &NodeId, address: Option<&str>) -> Result<(), ClusterError>;
 
     /// Disconnect from a remote node. Called on graceful shutdown or when
     /// removing a node from the cluster.
@@ -187,9 +188,9 @@ pub trait AdapterCluster: Send + Sync + 'static {
 
     /// Reconnect to a node (disconnect + connect). Used for recovery after
     /// transient failures.
-    async fn reconnect(&self, node: &NodeId) -> Result<(), ClusterError> {
+    async fn reconnect(&self, node: &NodeId, address: Option<&str>) -> Result<(), ClusterError> {
         self.disconnect(node).await?;
-        self.connect(node).await
+        self.connect(node, address).await
     }
 
     /// Check if a node is currently reachable.

@@ -1254,8 +1254,8 @@ impl Transport for MyTransport {
         todo!()
     }
 
-    async fn connect(&self, node: &NodeId) -> Result<(), TransportError> {
-        // Establish a connection to a remote node
+    async fn connect(&self, node: &NodeId, address: Option<&str>) -> Result<(), TransportError> {
+        // Establish a connection to a remote node at the given address
         todo!()
     }
 
