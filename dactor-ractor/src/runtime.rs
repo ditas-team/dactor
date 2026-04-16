@@ -1342,6 +1342,50 @@ impl RactorRuntime {
         }
     }
 
+    /// Attempt to connect a peer with version handshake validation.
+    ///
+    /// Performs the full validated connection sequence:
+    /// 1. `transport.connect()` — establish transport connectivity
+    /// 2. `transport.handshake()` — exchange version info
+    /// 3. On success: register peer, emit `NodeJoined`, store version info
+    /// 4. On reject/error: emit `NodeRejected`, clean up transport
+    ///
+    /// Returns `Ok(PeerVersionInfo)` on success, `Err(ClusterError)` on failure.
+    pub async fn try_connect_peer(
+        &mut self,
+        peer_id: NodeId,
+        address: Option<String>,
+        transport: &dyn dactor::Transport,
+    ) -> Result<dactor::PeerVersionInfo, dactor::ClusterError> {
+        let request = self.handshake_request();
+        match dactor::perform_handshake(transport, &peer_id, request).await {
+            dactor::HandshakeOutcome::Accepted(info) => {
+                self.connect_peer(peer_id, address);
+                Ok(info)
+            }
+            dactor::HandshakeOutcome::Rejected { reason, detail } => {
+                // Disconnect existing peer if it was previously connected
+                self.disconnect_peer(&peer_id);
+                self.cluster_events.emit(dactor::ClusterEvent::NodeRejected {
+                    node_id: peer_id,
+                    reason,
+                    detail: detail.clone(),
+                });
+                Err(dactor::ClusterError(detail))
+            }
+            dactor::HandshakeOutcome::ConnectionFailed { detail } => {
+                // Disconnect existing peer if it was previously connected
+                self.disconnect_peer(&peer_id);
+                self.cluster_events.emit(dactor::ClusterEvent::NodeRejected {
+                    node_id: peer_id,
+                    reason: dactor::NodeRejectionReason::ConnectionFailed,
+                    detail: detail.clone(),
+                });
+                Err(dactor::ClusterError(detail))
+            }
+        }
+    }
+
     /// Check if a peer node is connected.
     pub fn is_peer_connected(&self, peer_id: &NodeId) -> bool {
         self.node_directory.is_connected(peer_id)
