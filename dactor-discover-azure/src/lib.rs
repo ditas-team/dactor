@@ -367,9 +367,10 @@ impl VmssDiscovery {
 
 #[async_trait::async_trait]
 impl ClusterDiscovery for VmssDiscovery {
-    async fn discover(&self) -> Result<Vec<String>, DiscoveryError> {
+    async fn discover(&self) -> Result<Vec<dactor::DiscoveredPeer>, DiscoveryError> {
         self.discover_instances()
             .await
+            .map(|addrs| addrs.into_iter().map(dactor::DiscoveredPeer::from_address).collect())
             .map_err(|e| DiscoveryError::new(e.to_string()))
     }
 }
@@ -619,9 +620,10 @@ impl AzureTagDiscovery {
 
 #[async_trait::async_trait]
 impl ClusterDiscovery for AzureTagDiscovery {
-    async fn discover(&self) -> Result<Vec<String>, DiscoveryError> {
+    async fn discover(&self) -> Result<Vec<dactor::DiscoveredPeer>, DiscoveryError> {
         self.discover_by_tag()
             .await
+            .map(|addrs| addrs.into_iter().map(dactor::DiscoveredPeer::from_address).collect())
             .map_err(|e| DiscoveryError::new(e.to_string()))
     }
 }

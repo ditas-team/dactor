@@ -174,9 +174,10 @@ impl KubernetesDiscovery {
 
 #[async_trait::async_trait]
 impl ClusterDiscovery for KubernetesDiscovery {
-    async fn discover(&self) -> Result<Vec<String>, DiscoveryError> {
+    async fn discover(&self) -> Result<Vec<dactor::DiscoveredPeer>, DiscoveryError> {
         self.discover_async()
             .await
+            .map(|addrs| addrs.into_iter().map(dactor::DiscoveredPeer::from_address).collect())
             .map_err(|e| DiscoveryError::new(e.to_string()))
     }
 }
@@ -270,10 +271,9 @@ impl HeadlessServiceDiscovery {
 
 #[async_trait::async_trait]
 impl ClusterDiscovery for HeadlessServiceDiscovery {
-    async fn discover(&self) -> Result<Vec<String>, DiscoveryError> {
+    async fn discover(&self) -> Result<Vec<dactor::DiscoveredPeer>, DiscoveryError> {
         let dns = self.dns_name();
         let port = self.port;
-        // Use spawn_blocking to avoid blocking the async runtime with DNS lookup.
         let addrs = tokio::task::spawn_blocking(move || {
             let lookup = format!("{dns}:{port}");
             lookup.to_socket_addrs()
@@ -284,7 +284,7 @@ impl ClusterDiscovery for HeadlessServiceDiscovery {
             "DNS resolution failed for {}: {e}", self.dns_name()
         )))?;
 
-        Ok(addrs.map(|a| a.to_string()).collect())
+        Ok(addrs.map(|a| dactor::DiscoveredPeer::from_address(a.to_string())).collect())
     }
 }
 
