@@ -87,9 +87,10 @@ t2    node-4 discovers seeds                  ClusterDiscovery
       → In VMSS: queries Azure Instance Metadata
         or reads static seed list from config
 
-t3    node-4 connects to seeds               Transport layer
-      → For each seed: transport.connect(addr)
-      → Each successful connection:
+t3    node-4 connects to seeds               Adapter / System Actors
+      → For each seed: adapter establishes provider-specific connection
+      → Sends HandshakeRequest via system actor messaging
+      → On accepted handshake + verify_peer_identity:
         runtime.connect_peer(NodeId("node-X"), Some(addr))
         → NodeDirectory: Connecting → Connected
         → ClusterEvent::NodeJoined(node-X) emitted on node-4

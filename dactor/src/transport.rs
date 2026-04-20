@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::node::NodeId;
 use crate::remote::WireEnvelope;
-use crate::system_actors::{HandshakeRequest, HandshakeResponse};
+use crate::system_actors::HandshakeRequest;
 
 // ---------------------------------------------------------------------------
 // TransportError
@@ -51,9 +51,30 @@ impl std::error::Error for TransportError {}
 
 /// Abstract transport for sending [`WireEnvelope`]s between nodes.
 ///
-/// Implementations bridge the dactor framework to a network protocol
-/// (gRPC, TCP, QUIC, etc.). Each adapter provides its own `Transport`
-/// based on the underlying provider's networking.
+/// The `Transport` trait is the **message-level abstraction** — it defines
+/// how nodes exchange [`WireEnvelope`]s. It does **not** own connection
+/// management, handshakes, or address resolution.
+///
+/// ## Who Implements Transport
+///
+/// **Neither dactor core nor adapters implement this trait.** The user or
+/// the underlying actor framework provider (ractor, kameo, coerce) supplies
+/// the `Transport` implementation. dactor only defines the trait interface.
+///
+/// ## Version Handshake
+///
+/// Version handshakes are **not** part of the Transport trait. They are
+/// performed by adapter system actors (native ractor/kameo/coerce actors)
+/// that exchange [`HandshakeRequest`]/[`HandshakeResponse`] messages
+/// through the normal `WireEnvelope` path. This keeps the Transport
+/// focused on message delivery, while the framework handles version
+/// negotiation.
+///
+/// See `docs/version-compatibility.md` for the three-tier handshake
+/// detection strategy.
+///
+/// [`HandshakeRequest`]: crate::system_actors::HandshakeRequest
+/// [`HandshakeResponse`]: crate::system_actors::HandshakeResponse
 #[async_trait]
 pub trait Transport: Send + Sync + 'static {
     /// Send a wire envelope to a remote node (fire-and-forget).
@@ -72,30 +93,6 @@ pub trait Transport: Send + Sync + 'static {
 
     /// Check if a node is reachable.
     async fn is_reachable(&self, node: &NodeId) -> bool;
-
-    /// Establish a connection to a remote node.
-    async fn connect(&self, node: &NodeId) -> Result<(), TransportError>;
-
-    /// Disconnect from a remote node.
-    async fn disconnect(&self, node: &NodeId) -> Result<(), TransportError>;
-
-    /// Perform a version handshake with a remote node.
-    ///
-    /// Called by the runtime after [`connect`](Self::connect) to verify wire
-    /// protocol compatibility before any application messages are exchanged.
-    /// The implementation should exchange [`HandshakeRequest`] /
-    /// [`HandshakeResponse`] with the remote node and return the response.
-    ///
-    /// The default implementation returns an error indicating that the
-    /// transport does not support handshakes. Adapters should override this
-    /// once they implement the handshake protocol.
-    async fn handshake(
-        &self,
-        _node: &NodeId,
-        _request: HandshakeRequest,
-    ) -> Result<HandshakeResponse, TransportError> {
-        Err(TransportError::new("transport does not support handshake"))
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +195,7 @@ impl InMemoryTransport {
 
     /// Register this node's handshake information for version negotiation.
     ///
-    /// Must be called before [`handshake`](Transport::handshake) can validate
+    /// Must be called before [`handshake`](Self::handshake) can validate
     /// against a peer. Call this before [`link`](Self::link) — info is copied
     /// (not shared) during link, so post-link updates are not visible to
     /// already-linked transports.
@@ -274,9 +271,14 @@ impl Transport for InMemoryTransport {
     async fn is_reachable(&self, node: &NodeId) -> bool {
         self.connected.lock().await.contains(node)
     }
+}
 
-    async fn connect(&self, node: &NodeId) -> Result<(), TransportError> {
-        // In-memory transport just marks the node as connected if we have a route.
+// Test-only connection simulation methods.
+// These are NOT part of the Transport trait — connection management is
+// provider-specific. These exist purely for test harness control.
+impl InMemoryTransport {
+    /// Simulate establishing a connection to a node (test control).
+    pub async fn connect(&self, node: &NodeId) -> Result<(), TransportError> {
         let routes = self.routes.lock().await;
         if routes.contains_key(node) {
             self.connected.lock().await.insert(node.clone());
@@ -286,16 +288,18 @@ impl Transport for InMemoryTransport {
         }
     }
 
-    async fn disconnect(&self, node: &NodeId) -> Result<(), TransportError> {
+    /// Simulate disconnecting from a node (test control).
+    pub async fn disconnect(&self, node: &NodeId) -> Result<(), TransportError> {
         self.connected.lock().await.remove(node);
         Ok(())
     }
 
-    async fn handshake(
+    /// Simulate a version handshake with a registered peer (test control).
+    pub async fn handshake(
         &self,
         node: &NodeId,
-        request: HandshakeRequest,
-    ) -> Result<HandshakeResponse, TransportError> {
+        request: crate::system_actors::HandshakeRequest,
+    ) -> Result<crate::system_actors::HandshakeResponse, TransportError> {
         let info = self.handshake_info.lock().await;
         let remote_info = info.get(node).ok_or_else(|| {
             TransportError::new(format!("no handshake info registered for {node}"))
@@ -369,6 +373,7 @@ mod tests {
     use crate::interceptor::SendMode;
     use crate::node::ActorId;
     use crate::remote::WireHeaders;
+    use crate::system_actors::HandshakeResponse;
 
     /// Helper to create a simple WireEnvelope for testing.
     fn test_envelope(target_node: &str, body: &[u8]) -> WireEnvelope {
@@ -627,47 +632,5 @@ mod tests {
         let result = t1.handshake(&NodeId("node-unknown".into()), req).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().message.contains("no handshake info"));
-    }
-
-    #[tokio::test]
-    async fn handshake_default_trait_returns_error() {
-        // Verify the default Transport::handshake returns an error
-        struct MinimalTransport;
-
-        #[async_trait]
-        impl Transport for MinimalTransport {
-            async fn send(
-                &self,
-                _: &NodeId,
-                _: WireEnvelope,
-            ) -> Result<(), TransportError> {
-                Ok(())
-            }
-            async fn send_request(
-                &self,
-                _: &NodeId,
-                _: WireEnvelope,
-            ) -> Result<WireEnvelope, TransportError> {
-                Err(TransportError::new("not supported"))
-            }
-            async fn is_reachable(&self, _: &NodeId) -> bool {
-                false
-            }
-            async fn connect(&self, _: &NodeId) -> Result<(), TransportError> {
-                Ok(())
-            }
-            async fn disconnect(&self, _: &NodeId) -> Result<(), TransportError> {
-                Ok(())
-            }
-        }
-
-        let t = MinimalTransport;
-        let req = test_handshake_req("node-1", "0.2.0", "test");
-        let result = t.handshake(&NodeId("node-2".into()), req).await;
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .message
-            .contains("does not support handshake"));
     }
 }

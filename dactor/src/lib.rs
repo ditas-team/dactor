@@ -126,9 +126,8 @@ pub use circuit_breaker::{CircuitBreakerInterceptor, CircuitState};
 pub use clock::{Clock, SystemClock};
 pub use cluster::{
     AdapterCluster, ClusterEventEmitter, HealthChecker, HealthStatus, UnreachableHandler,
-    perform_handshake,
 };
-pub use cluster::{ClusterEvent, ClusterEvents, HandshakeOutcome, NodeRejectionReason, SubscriptionId};
+pub use cluster::{ClusterEvent, ClusterEvents, NodeRejectionReason, SubscriptionId};
 pub use dead_letter::{
     CollectingDeadLetterHandler, DeadLetterEvent, DeadLetterHandler, DeadLetterInfo,
     DeadLetterReason, LoggingDeadLetterHandler,
@@ -183,7 +182,7 @@ pub use system_actors::{
     WatchRequest,
 };
 pub use system_actors::{
-    validate_handshake, HandshakeRequest, HandshakeResponse, RejectionReason,
+    validate_handshake, verify_peer_identity, HandshakeRequest, HandshakeResponse, RejectionReason,
 };
 pub use system_actors::{
     is_system_message_type, SYSTEM_MSG_TYPE_CANCEL, SYSTEM_MSG_TYPE_CONNECT_PEER,
