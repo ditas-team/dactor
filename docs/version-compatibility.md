@@ -606,7 +606,7 @@ let request = runtime.handshake_request();
 let response = transport.send_request(&peer_id, serialize(request)).await?;
 let hs_response: HandshakeResponse = deserialize(response);
 let result = dactor::validate_handshake(&hs_response);
-dactor::verify_peer_identity(&hs_response, &expected_peer_id)?;
+dactor::verify_peer_identity(&expected_peer_id, &hs_response)?;
 runtime.connect_peer(peer_id, address);
 ```
 
