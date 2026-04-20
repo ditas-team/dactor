@@ -4,6 +4,7 @@ version = "0.2.0"
 edition = "2021"
 rust-version = "1.70"
 description = "Mock multi-node cluster for testing dactor actor systems"
+authors = ["Yaming Liu <ymliu1978@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/Yaming-Hub/dactor"
 homepage = "https://github.com/Yaming-Hub/dactor"

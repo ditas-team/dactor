@@ -2,9 +2,16 @@
 name = "dactor-discover-azure"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.70"
 description = "Azure node discovery for the dactor distributed actor framework"
+authors = ["Yaming Liu <ymliu1978@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/Yaming-Hub/dactor"
+homepage = "https://github.com/Yaming-Hub/dactor"
+documentation = "https://docs.rs/dactor-discover-azure"
+readme = "README.md"
+keywords = ["actor", "distributed", "azure", "discovery", "cloud"]
+categories = ["network-programming"]
 
 [dependencies]
 async-trait = "0.1"
