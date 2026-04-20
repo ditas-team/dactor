@@ -613,6 +613,36 @@ pub fn validate_handshake(
     }
 }
 
+/// Verify that an accepted handshake response came from the expected peer.
+///
+/// Adapters should call this after receiving [`HandshakeResponse::Accepted`]
+/// to ensure the responding node's identity matches who they intended to
+/// connect to. Returns `Ok(())` if the identities match, or `Err` with
+/// a descriptive message if they don't.
+///
+/// This prevents connecting to the wrong peer when a misconfigured or
+/// spoofed node responds with a different identity.
+pub fn verify_peer_identity(
+    expected: &NodeId,
+    response: &HandshakeResponse,
+) -> Result<(), String> {
+    match response {
+        HandshakeResponse::Accepted { node_id, .. } => {
+            if node_id != expected {
+                Err(format!(
+                    "peer identity mismatch: expected {expected}, got {node_id}"
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        HandshakeResponse::Rejected { .. } => {
+            // Rejected responses don't need identity verification
+            Ok(())
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1057,5 +1087,43 @@ mod tests {
             RejectionReason::IncompatibleAdapter.to_string(),
             "incompatible adapter"
         );
+    }
+
+    // -- verify_peer_identity tests --
+
+    #[test]
+    fn verify_peer_identity_matching() {
+        let resp = HandshakeResponse::Accepted {
+            node_id: NodeId("node-2".into()),
+            wire_version: crate::version::WireVersion::parse("0.2.0").unwrap(),
+            app_version: None,
+            adapter: "ractor".into(),
+        };
+        assert!(verify_peer_identity(&NodeId("node-2".into()), &resp).is_ok());
+    }
+
+    #[test]
+    fn verify_peer_identity_mismatch() {
+        let resp = HandshakeResponse::Accepted {
+            node_id: NodeId("node-X".into()),
+            wire_version: crate::version::WireVersion::parse("0.2.0").unwrap(),
+            app_version: None,
+            adapter: "ractor".into(),
+        };
+        let result = verify_peer_identity(&NodeId("node-2".into()), &resp);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("mismatch"));
+    }
+
+    #[test]
+    fn verify_peer_identity_rejected_is_ok() {
+        let resp = HandshakeResponse::Rejected {
+            node_id: NodeId("node-2".into()),
+            wire_version: crate::version::WireVersion::parse("1.0.0").unwrap(),
+            reason: RejectionReason::IncompatibleProtocol,
+            detail: "test".into(),
+        };
+        // Rejected responses don't need identity verification
+        assert!(verify_peer_identity(&NodeId("node-2".into()), &resp).is_ok());
     }
 }

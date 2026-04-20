@@ -39,12 +39,12 @@ loop {
 
             for peer in current.difference(&known_peers) {
                 println!("New peer: {peer}");
-                // runtime.connect(peer).await;
+                // runtime.connect_peer(NodeId(peer.clone()), Some(peer.clone()));
             }
 
             for peer in known_peers.difference(&current) {
                 println!("Peer left: {peer}");
-                // runtime.disconnect(peer).await;
+                // runtime.disconnect_peer(&NodeId(peer.clone()));
             }
 
             known_peers = current;

@@ -559,28 +559,29 @@ This version is:
 
 **Files:** `dactor/src/version.rs`, `dactor/src/lib.rs`
 
-### Phase 2: Handshake Protocol in Transport Trait
+### Phase 2: Handshake Protocol via System Actors
 
-**Extend `Transport` trait:**
+**Design principle:** Transport is NOT implemented by dactor core or adapters.
+Handshake is performed via the three-tier strategy described in Section 2
+(Architectural Principle).
+
+**Tier 1 — Provider Preamble Capability:**
+
+If the underlying provider supports a stable preamble mechanism (e.g., gRPC
+metadata headers, HTTP request headers), the adapter models this as a provider
+capability. The preamble carries a minimal, frozen version token that never
+changes across dactor versions. This gives the best error messages because
+rejection happens before any actor message is exchanged.
+
+**Tier 2 — System Actor Handshake (fallback):**
+
+When the provider does not support a preamble, dactor falls back to a
+lightweight system actor that exchanges a frozen protobuf preamble message via
+`Transport::send_request()`. The handshake types are already defined in
+`dactor::system_actors`:
 
 ```rust
-#[async_trait]
-pub trait Transport: Send + Sync + 'static {
-    // ... existing methods ...
-
-    /// Perform version handshake with a remote node.
-    /// Called automatically by the runtime after connect().
-    async fn handshake(
-        &self,
-        node: &NodeId,
-        request: HandshakeRequest,
-    ) -> Result<HandshakeResponse, TransportError>;
-}
-```
-
-**Add handshake types** to `dactor::remote`:
-
-```rust
+// Already implemented — no changes to these types
 pub struct HandshakeRequest {
     pub dactor_wire_version: String,
     pub app_version: String,
@@ -596,6 +597,25 @@ pub struct HandshakeResponse {
     pub rejection_reason: Option<String>,
 }
 ```
+
+Validation is done by the adapter using the existing helpers:
+
+```rust
+// Adapter code (e.g., in a system actor handler):
+let request = runtime.handshake_request();
+let response = transport.send_request(&peer_id, serialize(request)).await?;
+let hs_response: HandshakeResponse = deserialize(response);
+let result = dactor::validate_handshake(&hs_response);
+dactor::verify_peer_identity(&expected_peer_id, &hs_response)?;
+runtime.connect_peer(peer_id, address);
+```
+
+**Tier 3 — Timeout Detection (ultimate fallback):**
+
+If the wire format is completely incompatible (different MAJOR version), even
+the preamble message cannot be parsed. The `send_request()` call will time out.
+The adapter detects this and marks the remote node as unreachable — effectively
+the same as rejected.
 
 **Protobuf framing** for handshake messages in `proto/dactor_system.proto`.
 

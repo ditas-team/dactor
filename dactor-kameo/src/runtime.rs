@@ -1301,7 +1301,8 @@ impl KameoRuntime {
     /// **Post-validation only:** this method assumes the peer has already
     /// passed the version handshake. Callers should validate compatibility
     /// (via [`handshake_request`](Self::handshake_request) +
-    /// [`validate_handshake`](dactor::validate_handshake)) before calling
+    /// [`validate_handshake`](dactor::validate_handshake) +
+    /// [`verify_peer_identity`](dactor::verify_peer_identity)) before calling
     /// this method. Direct calls bypass compatibility checks.
     ///
     /// If the peer already exists, updates its status to `Connected` and
@@ -1330,48 +1331,6 @@ impl KameoRuntime {
         self.node_directory.set_status(peer_id, PeerStatus::Disconnected);
         if was_connected {
             self.cluster_events.emit(dactor::ClusterEvent::NodeLeft(peer_id.clone()));
-        }
-    }
-
-    /// Attempt to connect a peer with version handshake validation.
-    ///
-    /// Performs the full validated connection sequence:
-    /// 1. `transport.connect()` — establish transport connectivity
-    /// 2. `transport.handshake()` — exchange version info
-    /// 3. On success: register peer, emit `NodeJoined`, store version info
-    /// 4. On reject/error: emit `NodeRejected`, clean up transport
-    ///
-    /// Returns `Ok(PeerVersionInfo)` on success, `Err(ClusterError)` on failure.
-    pub async fn try_connect_peer(
-        &mut self,
-        peer_id: NodeId,
-        address: Option<String>,
-        transport: &dyn dactor::Transport,
-    ) -> Result<dactor::PeerVersionInfo, dactor::ClusterError> {
-        let request = self.handshake_request();
-        match dactor::perform_handshake(transport, &peer_id, request).await {
-            dactor::HandshakeOutcome::Accepted(info) => {
-                self.connect_peer(peer_id, address);
-                Ok(info)
-            }
-            dactor::HandshakeOutcome::Rejected { reason, detail } => {
-                self.disconnect_peer(&peer_id);
-                self.cluster_events.emit(dactor::ClusterEvent::NodeRejected {
-                    node_id: peer_id,
-                    reason,
-                    detail: detail.clone(),
-                });
-                Err(dactor::ClusterError(detail))
-            }
-            dactor::HandshakeOutcome::ConnectionFailed { detail } => {
-                self.disconnect_peer(&peer_id);
-                self.cluster_events.emit(dactor::ClusterEvent::NodeRejected {
-                    node_id: peer_id,
-                    reason: dactor::NodeRejectionReason::ConnectionFailed,
-                    detail: detail.clone(),
-                });
-                Err(dactor::ClusterError(detail))
-            }
         }
     }
 
