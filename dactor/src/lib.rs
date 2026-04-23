@@ -178,8 +178,8 @@ pub use supervision::ChildTerminated;
 pub use supervision::{AllForOne, OneForOne, RestForOne, SupervisionAction, SupervisionStrategy};
 pub use system_actors::{
     CancelManager, CancelRequest, CancelResponse, NodeDirectory, PeerInfo, PeerStatus,
-    SpawnManager, SpawnRequest, SpawnResponse, UnwatchRequest, WatchManager, WatchNotification,
-    WatchRequest,
+    SpawnManager, SpawnRequest, SpawnResponse, SystemActorConfig, UnwatchRequest, WatchManager,
+    WatchNotification, WatchRequest,
 };
 pub use system_actors::{
     validate_handshake, verify_peer_identity, HandshakeRequest, HandshakeResponse, RejectionReason,

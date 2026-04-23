@@ -873,10 +873,20 @@ pub struct KameoRuntime {
 
 /// References to the native kameo system actors spawned by the runtime.
 pub struct KameoSystemActorRefs {
-    pub spawn_manager: kameo::actor::ActorRef<crate::system_actors::SpawnManagerActor>,
+    pub spawn_managers: Vec<kameo::actor::ActorRef<crate::system_actors::SpawnManagerActor>>,
+    spawn_manager_counter: std::sync::atomic::AtomicU64,
     pub watch_manager: kameo::actor::ActorRef<crate::system_actors::WatchManagerActor>,
     pub cancel_manager: kameo::actor::ActorRef<crate::system_actors::CancelManagerActor>,
     pub node_directory: kameo::actor::ActorRef<crate::system_actors::NodeDirectoryActor>,
+}
+
+impl KameoSystemActorRefs {
+    /// Get the spawn manager ref (round-robin if pooled).
+    pub fn spawn_manager(&self) -> &kameo::actor::ActorRef<crate::system_actors::SpawnManagerActor> {
+        let idx = self.spawn_manager_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            as usize % self.spawn_managers.len();
+        &self.spawn_managers[idx]
+    }
 }
 
 impl KameoRuntime {
@@ -947,14 +957,33 @@ impl KameoRuntime {
     ///
     /// Factory registrations made via `register_factory()` before this call
     /// are forwarded to the native SpawnManagerActor.
+    ///
+    /// Uses default configuration (unbounded mailboxes, no pooling).
+    /// For custom configuration, use [`start_system_actors_with_config()`].
     pub fn start_system_actors(&mut self) {
+        self.start_system_actors_with_config(dactor::SystemActorConfig::default());
+    }
+
+    /// Spawn native kameo system actors with custom configuration.
+    ///
+    /// Allows configuring mailbox capacity and SpawnManager pooling for
+    /// high-throughput scenarios. See [`SystemActorConfig`](dactor::SystemActorConfig)
+    /// for details.
+    pub fn start_system_actors_with_config(&mut self, config: dactor::SystemActorConfig) {
         use crate::system_actors::*;
         use kameo::actor::Spawn;
 
-        let spawn_mgr_ref = SpawnManagerActor::spawn_with_mailbox(
-            (self.node_id.clone(), TypeRegistry::new(), self.next_local.clone()),
-            kameo::mailbox::unbounded(),
-        );
+        let pool_size = config.spawn_manager_pool_size.unwrap_or(1).max(1);
+        let mut spawn_refs = Vec::with_capacity(pool_size);
+
+        for _ in 0..pool_size {
+            let spawn_mgr_ref = SpawnManagerActor::spawn_with_mailbox(
+                (self.node_id.clone(), TypeRegistry::new(), self.next_local.clone()),
+                kameo::mailbox::unbounded(),
+            );
+            spawn_refs.push(spawn_mgr_ref);
+        }
+
         let watch_mgr_ref =
             WatchManagerActor::spawn_with_mailbox((), kameo::mailbox::unbounded());
         let cancel_mgr_ref =
@@ -963,7 +992,8 @@ impl KameoRuntime {
             NodeDirectoryActor::spawn_with_mailbox((), kameo::mailbox::unbounded());
 
         self.system_actors = Some(KameoSystemActorRefs {
-            spawn_manager: spawn_mgr_ref,
+            spawn_managers: spawn_refs,
+            spawn_manager_counter: std::sync::atomic::AtomicU64::new(0),
             watch_manager: watch_mgr_ref,
             cancel_manager: cancel_mgr_ref,
             node_directory: node_dir_ref,
@@ -1448,7 +1478,7 @@ impl dactor::system_router::SystemMessageRouter for KameoRuntime {
 
                 let req_id = request.request_id.clone();
                 let outcome = refs
-                    .spawn_manager
+                    .spawn_manager()
                     .ask(crate::system_actors::HandleSpawnRequest(request))
                     .await
                     .map_err(|e| RoutingError::new(format!("SpawnManager ask: {e}")))?;

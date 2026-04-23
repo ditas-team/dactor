@@ -25,7 +25,7 @@ async fn cp5_spawn_manager_handle_spawn_request() {
             .map_err(|e| dactor::remote::SerializationError::new(e.to_string()))?;
         Ok(Box::new(value))
     });
-    refs.spawn_manager
+    refs.spawn_manager()
         .send(RegisterFactory {
             type_name: "test::Counter".into(),
             factory,
@@ -40,7 +40,7 @@ async fn cp5_spawn_manager_handle_spawn_request() {
         request_id: "req-1".into(),
     };
     let outcome = refs
-        .spawn_manager
+        .spawn_manager()
         .send(HandleSpawnRequest(request))
         .await
         .expect("send spawn request");
@@ -56,7 +56,7 @@ async fn cp5_spawn_manager_handle_spawn_request() {
     }
 
     let spawned = refs
-        .spawn_manager
+        .spawn_manager()
         .send(GetSpawnedActors)
         .await
         .expect("get spawned actors");
@@ -76,7 +76,7 @@ async fn cp5_spawn_manager_unknown_type_fails() {
         request_id: "req-2".into(),
     };
     let outcome = refs
-        .spawn_manager
+        .spawn_manager()
         .send(HandleSpawnRequest(request))
         .await
         .expect("send spawn request");
@@ -100,7 +100,7 @@ async fn cp5_spawn_manager_multiple_unique_ids() {
     let refs = runtime.system_actor_refs().unwrap();
 
     let factory: FactoryFn = Box::new(|_| Ok(Box::new(())));
-    refs.spawn_manager
+    refs.spawn_manager()
         .send(RegisterFactory {
             type_name: "test::Actor".into(),
             factory,
@@ -117,7 +117,7 @@ async fn cp5_spawn_manager_multiple_unique_ids() {
             request_id: format!("req-{i}"),
         };
         let outcome = refs
-            .spawn_manager
+            .spawn_manager()
             .send(HandleSpawnRequest(request))
             .await
             .unwrap();
@@ -434,7 +434,7 @@ async fn cp6_system_actors_with_custom_node_id() {
 
     // The spawn manager should use the custom node ID
     let factory: FactoryFn = Box::new(|_| Ok(Box::new(())));
-    refs.spawn_manager
+    refs.spawn_manager()
         .send(RegisterFactory {
             type_name: "test::Actor".into(),
             factory,
@@ -449,7 +449,7 @@ async fn cp6_system_actors_with_custom_node_id() {
         request_id: "req-1".into(),
     };
     let outcome = refs
-        .spawn_manager
+        .spawn_manager()
         .send(HandleSpawnRequest(request))
         .await
         .unwrap();
