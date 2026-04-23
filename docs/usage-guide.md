@@ -1575,6 +1575,39 @@ constants (e.g., `SYSTEM_MSG_TYPE_SPAWN`, `SYSTEM_MSG_TYPE_WATCH`). These
 constants are **frozen wire protocol values** — they never change, ensuring
 backward compatibility between nodes running different versions.
 
+#### Tuning System Actors with `SystemActorConfig`
+
+Under high fan-in (many remote nodes sending spawn/watch/cancel requests),
+the default single-mailbox system actors can become a throughput bottleneck.
+`SystemActorConfig` lets you tune this:
+
+```rust
+use dactor::{SystemActorConfig, MailboxConfig, OverflowStrategy};
+
+let config = SystemActorConfig::new()
+    // Pool the SpawnManager across 4 workers (round-robin dispatch)
+    .spawn_manager_pool_size(4)
+    // Bounded mailbox for SpawnManager workers
+    .spawn_manager_mailbox(MailboxConfig::bounded(1024, OverflowStrategy::Block))
+    // Bounded mailbox for control-plane actors (WatchManager, CancelManager, NodeDirectory)
+    .control_plane_mailbox(MailboxConfig::bounded(512, OverflowStrategy::Block));
+
+runtime.start_system_actors_with_config(config);
+```
+
+**Design notes:**
+
+- **SpawnManager is poolable** because ID allocation uses a shared `AtomicU64`
+  counter, and the type registry is cloned at startup. Each pool worker handles
+  spawn requests independently with round-robin dispatch.
+- **WatchManager, CancelManager, and NodeDirectory are NOT pooled** because they
+  hold stateful subscriptions/tokens/peer maps that must remain consistent.
+  Instead, configure a larger bounded mailbox with `OverflowStrategy::Block` for
+  backpressure.
+- **Avoid `DropNewest` on control-plane actors** — dropping watch or cancel
+  messages silently causes correctness bugs (orphaned watches, leaked resources).
+  Use `Block` or `RejectWithError` instead.
+
 ### Next steps
 
 Before you deploy, make sure your actors are well-tested. [Part 7: Testing & Adapters](#part-7-testing--adapters) covers dactor's multi-tier testing strategy and how to choose and switch between runtime adapters.
