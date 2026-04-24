@@ -801,10 +801,20 @@ impl Default for SpawnOptions {
 
 /// References to the native coerce system actors spawned by the runtime.
 pub struct CoerceSystemActorRefs {
-    pub spawn_manager: LocalActorRef<crate::system_actors::SpawnManagerActor>,
+    pub spawn_managers: Vec<LocalActorRef<crate::system_actors::SpawnManagerActor>>,
+    spawn_manager_counter: std::sync::atomic::AtomicU64,
     pub watch_manager: LocalActorRef<crate::system_actors::WatchManagerActor>,
     pub cancel_manager: LocalActorRef<crate::system_actors::CancelManagerActor>,
     pub node_directory: LocalActorRef<crate::system_actors::NodeDirectoryActor>,
+}
+
+impl CoerceSystemActorRefs {
+    /// Get the spawn manager ref (round-robin if pooled).
+    pub fn spawn_manager(&self) -> &LocalActorRef<crate::system_actors::SpawnManagerActor> {
+        let idx = self.spawn_manager_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            as usize % self.spawn_managers.len();
+        &self.spawn_managers[idx]
+    }
 }
 
 /// A dactor v0.2 runtime backed by coerce-rs.
@@ -961,28 +971,46 @@ impl CoerceRuntime {
     ///
     /// Must be called from within a tokio runtime context. After this call,
     /// `system_actor_refs()` returns the native actor references.
+    ///
+    /// Uses default configuration (unbounded mailboxes, no pooling).
+    /// For custom configuration, use [`start_system_actors_with_config()`].
     pub fn start_system_actors(&mut self) {
+        self.start_system_actors_with_config(dactor::SystemActorConfig::default());
+    }
+
+    /// Spawn native coerce system actors with custom configuration.
+    ///
+    /// Allows configuring SpawnManager pooling for high-throughput scenarios.
+    /// See [`SystemActorConfig`](dactor::SystemActorConfig) for details.
+    pub fn start_system_actors_with_config(&mut self, config: dactor::SystemActorConfig) {
         use crate::system_actors::*;
 
-        let spawn_mgr = SpawnManagerActor::new(
-            self.node_id.clone(),
-            TypeRegistry::new(),
-            self.next_local.clone(),
-        );
+        let pool_size = config.spawn_manager_pool_size.unwrap_or(1).max(1);
+        let system = self.system.clone();
+        let mut spawn_refs = Vec::with_capacity(pool_size);
+
+        for i in 0..pool_size {
+            let spawn_mgr = SpawnManagerActor::new(
+                self.node_id.clone(),
+                TypeRegistry::new(),
+                self.next_local.clone(),
+            );
+            let spawn_mgr_ref = coerce::actor::scheduler::start_actor(
+                spawn_mgr,
+                coerce::actor::new_actor_id(),
+                coerce::actor::scheduler::ActorType::Tracked,
+                None,
+                Some(system.clone()),
+                None,
+                format!("dactor-spawn-manager-{i}").into(),
+            );
+            spawn_refs.push(spawn_mgr_ref);
+        }
+
         let watch_mgr = WatchManagerActor::new();
         let cancel_mgr = CancelManagerActor::new();
         let node_dir = NodeDirectoryActor::new();
 
-        let system = self.system.clone();
-        let spawn_mgr_ref = coerce::actor::scheduler::start_actor(
-            spawn_mgr,
-            coerce::actor::new_actor_id(),
-            coerce::actor::scheduler::ActorType::Tracked,
-            None,
-            Some(system.clone()),
-            None,
-            "dactor-spawn-manager".to_string().into(),
-        );
         let watch_mgr_ref = coerce::actor::scheduler::start_actor(
             watch_mgr,
             coerce::actor::new_actor_id(),
@@ -1012,7 +1040,8 @@ impl CoerceRuntime {
         );
 
         self.system_actors = Some(CoerceSystemActorRefs {
-            spawn_manager: spawn_mgr_ref,
+            spawn_managers: spawn_refs,
+            spawn_manager_counter: std::sync::atomic::AtomicU64::new(0),
             watch_manager: watch_mgr_ref,
             cancel_manager: cancel_mgr_ref,
             node_directory: node_dir_ref,
@@ -1208,15 +1237,17 @@ impl CoerceRuntime {
                 move |bytes: &[u8]| f(bytes)
             });
 
-        // Forward to native actor if started
+        // Forward to native actor(s) if started
         if let Some(ref actors) = self.system_actors {
-            let f = factory;
-            let _ = actors.spawn_manager.notify(
-                crate::system_actors::RegisterFactory {
-                    type_name,
-                    factory: Box::new(move |bytes: &[u8]| f(bytes)),
-                },
-            );
+            for worker in &actors.spawn_managers {
+                let f = factory.clone();
+                let _ = worker.notify(
+                    crate::system_actors::RegisterFactory {
+                        type_name: type_name.clone(),
+                        factory: Box::new(move |bytes: &[u8]| f(bytes)),
+                    },
+                );
+            }
         }
     }
 
@@ -1497,7 +1528,7 @@ impl dactor::system_router::SystemMessageRouter for CoerceRuntime {
 
                 let req_id = request.request_id.clone();
                 let outcome = refs
-                    .spawn_manager
+                    .spawn_manager()
                     .send(crate::system_actors::HandleSpawnRequest(request))
                     .await
                     .map_err(|e| RoutingError::new(format!("SpawnManager send: {e}")))?;

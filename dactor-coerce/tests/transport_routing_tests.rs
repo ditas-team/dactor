@@ -33,7 +33,7 @@ async fn setup_runtime() -> CoerceRuntime {
 
     // Register a factory via the native actor
     let refs = runtime.system_actor_refs().unwrap();
-    refs.spawn_manager
+    refs.spawn_manager()
         .send(dactor_coerce::system_actors::RegisterFactory {
             type_name: "test::Widget".into(),
             factory: Box::new(|bytes: &[u8]| {

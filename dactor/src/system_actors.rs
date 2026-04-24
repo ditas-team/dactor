@@ -644,6 +644,100 @@ pub fn verify_peer_identity(
 }
 
 // ---------------------------------------------------------------------------
+// SystemActorConfig
+// ---------------------------------------------------------------------------
+
+/// Configuration for system actors spawned by the runtime.
+///
+/// System actors (SpawnManager, WatchManager, CancelManager, NodeDirectory)
+/// are internal actors that handle remote operations. Under high fan-in from
+/// many nodes, the default unbounded mailbox may become a throughput bottleneck
+/// or memory risk.
+///
+/// This configuration allows tuning mailbox capacity per actor type and
+/// enabling pooling for stateless system actors like SpawnManager.
+///
+/// # Example
+///
+/// ```rust
+/// use dactor::system_actors::SystemActorConfig;
+/// use dactor::mailbox::{MailboxConfig, OverflowStrategy};
+///
+/// let config = SystemActorConfig::default()
+///     .with_spawn_manager_mailbox(
+///         MailboxConfig::bounded(10_000, OverflowStrategy::Block)
+///     )
+///     .with_spawn_manager_pool_size(4)
+///     .with_control_plane_mailbox(
+///         MailboxConfig::bounded(5_000, OverflowStrategy::Block)
+///     );
+/// ```
+#[derive(Debug, Clone)]
+pub struct SystemActorConfig {
+    /// Mailbox config for SpawnManager actors. Defaults to unbounded.
+    pub spawn_manager_mailbox: crate::mailbox::MailboxConfig,
+
+    /// Pool size for SpawnManager. `None` = single actor (default).
+    ///
+    /// When set to `Some(n)`, the runtime spawns `n` SpawnManager instances
+    /// with round-robin routing. Each instance shares a single `TypeRegistry`
+    /// (via `Arc`), so factory registrations are visible to all workers.
+    ///
+    /// SpawnManager is safe to pool because:
+    /// - Actor ID allocation uses a shared `AtomicU64` counter
+    /// - The type registry is read-only after initial setup
+    /// - Spawn tracking is aggregated at the runtime level
+    pub spawn_manager_pool_size: Option<usize>,
+
+    /// Mailbox config for control-plane actors (WatchManager, CancelManager,
+    /// NodeDirectory). Defaults to unbounded.
+    ///
+    /// These actors hold state that must be consistent (watch subscriptions,
+    /// cancellation tokens, peer directory), so they are **not poolable**.
+    /// Use a larger bounded mailbox with `OverflowStrategy::Block` to apply
+    /// backpressure without losing messages.
+    ///
+    /// **Warning:** Using `OverflowStrategy::DropNewest` or
+    /// `OverflowStrategy::RejectWithError` for control-plane actors may cause
+    /// correctness issues (missed watch notifications, leaked cancellation
+    /// tokens, stale peer state).
+    pub control_plane_mailbox: crate::mailbox::MailboxConfig,
+}
+
+impl Default for SystemActorConfig {
+    fn default() -> Self {
+        Self {
+            spawn_manager_mailbox: crate::mailbox::MailboxConfig::Unbounded,
+            spawn_manager_pool_size: None,
+            control_plane_mailbox: crate::mailbox::MailboxConfig::Unbounded,
+        }
+    }
+}
+
+impl SystemActorConfig {
+    /// Set the SpawnManager mailbox configuration.
+    pub fn with_spawn_manager_mailbox(mut self, mailbox: crate::mailbox::MailboxConfig) -> Self {
+        self.spawn_manager_mailbox = mailbox;
+        self
+    }
+
+    /// Set the SpawnManager pool size.
+    ///
+    /// `None` disables pooling (single actor). `Some(n)` creates `n` workers.
+    pub fn with_spawn_manager_pool_size(mut self, size: usize) -> Self {
+        self.spawn_manager_pool_size = Some(size);
+        self
+    }
+
+    /// Set the mailbox configuration for control-plane actors
+    /// (WatchManager, CancelManager, NodeDirectory).
+    pub fn with_control_plane_mailbox(mut self, mailbox: crate::mailbox::MailboxConfig) -> Self {
+        self.control_plane_mailbox = mailbox;
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

@@ -33,7 +33,7 @@ async fn setup_runtime() -> KameoRuntime {
 
     // Register a factory via the native actor
     let refs = runtime.system_actor_refs().unwrap();
-    refs.spawn_manager
+    refs.spawn_manager()
         .ask(dactor_kameo::system_actors::RegisterFactory {
             type_name: "test::Widget".into(),
             factory: Box::new(|bytes: &[u8]| {

@@ -856,10 +856,62 @@ pub struct RactorRuntime {
 
 /// References to the native ractor system actors spawned by the runtime.
 pub struct RactorSystemActorRefs {
-    pub spawn_manager: ractor::ActorRef<crate::system_actors::SpawnManagerMsg>,
+    pub spawn_manager: SystemActorHandle<crate::system_actors::SpawnManagerMsg>,
     pub watch_manager: ractor::ActorRef<crate::system_actors::WatchManagerMsg>,
     pub cancel_manager: ractor::ActorRef<crate::system_actors::CancelManagerMsg>,
     pub node_directory: ractor::ActorRef<crate::system_actors::NodeDirectoryMsg>,
+}
+
+/// Handle to a system actor that may be a single actor or a pool.
+pub enum SystemActorHandle<M: ractor::Message> {
+    /// Single actor instance.
+    Single(ractor::ActorRef<M>),
+    /// Pool of actors with round-robin routing.
+    Pool(SystemActorPool<M>),
+}
+
+impl<M: ractor::Message> SystemActorHandle<M> {
+    /// Send a message to the system actor (or a pool member via round-robin).
+    pub fn cast(&self, msg: M) -> Result<(), ractor::MessagingErr<M>> {
+        match self {
+            SystemActorHandle::Single(r) => r.cast(msg),
+            SystemActorHandle::Pool(pool) => pool.cast(msg),
+        }
+    }
+}
+
+/// Round-robin pool of ractor actors.
+pub struct SystemActorPool<M: ractor::Message> {
+    workers: Vec<ractor::ActorRef<M>>,
+    counter: std::sync::atomic::AtomicU64,
+}
+
+impl<M: ractor::Message> SystemActorPool<M> {
+    /// Create a new pool from a vec of actor refs.
+    pub fn new(workers: Vec<ractor::ActorRef<M>>) -> Self {
+        assert!(!workers.is_empty(), "pool must have at least one worker");
+        Self {
+            workers,
+            counter: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Send a message to the next worker via round-robin.
+    pub fn cast(&self, msg: M) -> Result<(), ractor::MessagingErr<M>> {
+        let idx = self.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            as usize % self.workers.len();
+        self.workers[idx].cast(msg)
+    }
+
+    /// Number of workers in the pool.
+    pub fn len(&self) -> usize {
+        self.workers.len()
+    }
+
+    /// Access all worker refs (for broadcasting to all workers).
+    pub fn workers(&self) -> &[ractor::ActorRef<M>] {
+        &self.workers
+    }
 }
 
 impl RactorRuntime {
@@ -930,14 +982,61 @@ impl RactorRuntime {
     ///
     /// Factory registrations made via `register_factory()` before this call
     /// are forwarded to the native SpawnManagerActor.
+    ///
+    /// Uses default configuration (unbounded mailboxes, no pooling).
+    /// For custom configuration, use [`start_system_actors_with_config()`].
     pub async fn start_system_actors(&mut self) {
+        self.start_system_actors_with_config(dactor::SystemActorConfig::default()).await;
+    }
+
+    /// Spawn native ractor system actors with custom configuration.
+    ///
+    /// Allows configuring mailbox capacity and SpawnManager pooling for
+    /// high-throughput scenarios. See [`SystemActorConfig`](dactor::SystemActorConfig)
+    /// for details.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use dactor::system_actors::SystemActorConfig;
+    /// use dactor::mailbox::{MailboxConfig, OverflowStrategy};
+    ///
+    /// let config = SystemActorConfig::default()
+    ///     .with_spawn_manager_mailbox(
+    ///         MailboxConfig::bounded(10_000, OverflowStrategy::Block)
+    ///     )
+    ///     .with_spawn_manager_pool_size(4)
+    ///     .with_control_plane_mailbox(
+    ///         MailboxConfig::bounded(5_000, OverflowStrategy::Block)
+    ///     );
+    ///
+    /// runtime.start_system_actors_with_config(config).await;
+    /// ```
+    pub async fn start_system_actors_with_config(
+        &mut self,
+        config: dactor::SystemActorConfig,
+    ) {
         use crate::system_actors::*;
 
-        let (spawn_ref, _) = ractor::Actor::spawn(
-            None, SpawnManagerActor,
-            (self.node_id.clone(), TypeRegistry::new(), self.next_local.clone()),
-        ).await.expect("failed to spawn SpawnManagerActor");
+        // --- SpawnManager (optionally pooled) ---
+        let pool_size = config.spawn_manager_pool_size.unwrap_or(1).max(1);
+        let mut spawn_refs = Vec::with_capacity(pool_size);
 
+        for _ in 0..pool_size {
+            let (spawn_ref, _) = ractor::Actor::spawn(
+                None, SpawnManagerActor,
+                (self.node_id.clone(), TypeRegistry::new(), self.next_local.clone()),
+            ).await.expect("failed to spawn SpawnManagerActor");
+            spawn_refs.push(spawn_ref);
+        }
+
+        let spawn_manager = if spawn_refs.len() == 1 {
+            SystemActorHandle::Single(spawn_refs.pop().unwrap())
+        } else {
+            SystemActorHandle::Pool(SystemActorPool::new(spawn_refs))
+        };
+
+        // --- Control-plane actors (never pooled) ---
         let (watch_ref, _) = ractor::Actor::spawn(
             None, WatchManagerActor, (),
         ).await.expect("failed to spawn WatchManagerActor");
@@ -951,7 +1050,7 @@ impl RactorRuntime {
         ).await.expect("failed to spawn NodeDirectoryActor");
 
         self.system_actors = Some(RactorSystemActorRefs {
-            spawn_manager: spawn_ref,
+            spawn_manager,
             watch_manager: watch_ref,
             cancel_manager: cancel_ref,
             node_directory: node_dir_ref,
@@ -1173,17 +1272,35 @@ impl RactorRuntime {
                 move |bytes: &[u8]| f(bytes)
             });
 
-        // Forward to native actor if started
+        // Forward to native actor(s) if started
         if let Some(ref actors) = self.system_actors {
-            let (tx, _rx) = tokio::sync::oneshot::channel();
-            let f = factory;
-            let _ = actors.spawn_manager.cast(
-                crate::system_actors::SpawnManagerMsg::RegisterFactory {
-                    type_name,
-                    factory: Box::new(move |bytes: &[u8]| f(bytes)),
-                    reply: tx,
-                },
-            );
+            match &actors.spawn_manager {
+                SystemActorHandle::Single(r) => {
+                    let (tx, _rx) = tokio::sync::oneshot::channel();
+                    let f = factory;
+                    let _ = r.cast(
+                        crate::system_actors::SpawnManagerMsg::RegisterFactory {
+                            type_name,
+                            factory: Box::new(move |bytes: &[u8]| f(bytes)),
+                            reply: tx,
+                        },
+                    );
+                }
+                SystemActorHandle::Pool(pool) => {
+                    // Broadcast factory registration to all pool workers
+                    for worker in pool.workers() {
+                        let f = factory.clone();
+                        let (tx, _rx) = tokio::sync::oneshot::channel();
+                        let _ = worker.cast(
+                            crate::system_actors::SpawnManagerMsg::RegisterFactory {
+                                type_name: type_name.clone(),
+                                factory: Box::new(move |bytes: &[u8]| f(bytes)),
+                                reply: tx,
+                            },
+                        );
+                    }
+                }
+            }
         }
     }
 

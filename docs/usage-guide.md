@@ -4,99 +4,33 @@
 >
 > Write your actor logic once. Swap the runtime underneath.
 
+This guide walks you through dactor from your first actor to production-ready distributed systems. Each part builds on the previous one — start here and work your way through.
+
 ---
 
 ## Table of Contents
 
-- [1. What is dactor?](#1-what-is-dactor)
-  - [The Actor Model](#the-actor-model)
-  - [Core Abstractions](#core-abstractions)
-- [2. Why dactor?](#2-why-dactor)
-  - [The Vendor Lock-in Problem](#the-vendor-lock-in-problem)
-  - [dactor's Solution](#dactors-solution)
-  - [The Testing Story](#the-testing-story)
-  - [Feature Completeness](#feature-completeness)
-  - [Comparison Table](#comparison-table)
-- [3. Getting Started](#3-getting-started)
-  - [Installation](#installation)
-  - [Define an Actor](#define-an-actor)
-  - [Define Messages](#define-messages)
-  - [Implement Handlers](#implement-handlers)
-  - [Spawn and Interact](#spawn-and-interact)
-  - [Full Runnable Example](#full-runnable-example)
-- [4. Communication Patterns](#4-communication-patterns)
-  - [Tell (Fire-and-Forget)](#tell-fire-and-forget)
-  - [Ask (Request-Reply)](#ask-request-reply)
-  - [Expand (Server-Streaming)](#expand-server-streaming)
-  - [Reduce (Client-Streaming)](#reduce-client-streaming)
-  - [Transform (Bidirectional Streaming)](#transform-bidirectional-streaming)
-  - [Broadcast (Fan-Out)](#broadcast-fan-out)
-  - [Pattern Summary](#pattern-summary)
-- [5. Interceptors](#5-interceptors)
-  - [Inbound Interceptors](#inbound-interceptors)
-  - [Outbound Interceptors](#outbound-interceptors)
-  - [Interceptor Disposition](#interceptor-disposition)
-  - [DropObserver](#dropobserver)
-  - [Built-in Interceptors](#built-in-interceptors)
-- [6. Actor Lifecycle](#6-actor-lifecycle)
-  - [Lifecycle Hooks](#lifecycle-hooks)
-  - [Error Handling](#error-handling)
-  - [Supervision Strategies](#supervision-strategies)
-  - [DeathWatch](#deathwatch)
-  - [Lifecycle Handles](#lifecycle-handles)
-- [7. Actor Pools](#7-actor-pools)
-  - [Creating a Pool](#creating-a-pool)
-  - [Routing Strategies](#routing-strategies)
-  - [Key-Based Routing](#key-based-routing)
-  - [Distributed Pools with WorkerRef](#distributed-pools-with-workerref)
-  - [VirtualPoolRef](#virtualpoolref)
-- [8. Persistence](#8-persistence)
-  - [Event Sourcing](#event-sourcing)
-  - [Durable State](#durable-state)
-  - [InMemoryStorage for Testing](#inmemorystorage-for-testing)
-  - [Recovery](#recovery)
-  - [Snapshot Configuration](#snapshot-configuration)
-- [9. Remote Actors](#9-remote-actors)
-  - [WireEnvelope Wire Format](#wireenvelope-wire-format)
-  - [MessageSerializer](#messageserializer)
-  - [RemoteActorRef](#remoteactorref)
-  - [Transport Trait](#transport-trait)
-  - [Protobuf System Messages](#protobuf-system-messages)
-- [10. Cluster Management](#10-cluster-management)
-  - [Cluster Events](#cluster-events)
-  - [Cluster Discovery](#cluster-discovery)
-  - [System Actors](#system-actors)
-- [11. Observability](#11-observability)
-  - [Metrics](#metrics)
-  - [Dead Letter Handling](#dead-letter-handling)
-  - [Circuit Breaker](#circuit-breaker)
-  - [Rate Limiting](#rate-limiting)
-- [12. Mailbox Configuration](#12-mailbox-configuration)
-  - [Bounded Mailboxes](#bounded-mailboxes)
-  - [Overflow Strategies](#overflow-strategies)
-  - [Priority Mailboxes](#priority-mailboxes)
-- [13. Cancellation](#13-cancellation)
-  - [Cancellation Tokens](#cancellation-tokens)
-  - [Cooperative Cancellation in Handlers](#cooperative-cancellation-in-handlers)
-  - [Timed Cancellation](#timed-cancellation)
-- [14. Testing](#14-testing)
-  - [TestRuntime for Unit Tests](#testruntime-for-unit-tests)
-  - [Conformance Suite](#conformance-suite)
-  - [MockCluster for Integration Tests](#mockcluster-for-integration-tests)
-  - [gRPC Test Harness for E2E Tests](#grpc-test-harness-for-e2e-tests)
-- [15. Choosing an Adapter](#15-choosing-an-adapter)
-  - [Ractor](#ractor)
-  - [Kameo](#kameo)
-  - [Coerce](#coerce)
-  - [Switching Adapters](#switching-adapters)
-- [16. Architecture](#16-architecture)
-  - [Crate Layout](#crate-layout)
-  - [Trait Hierarchy](#trait-hierarchy)
-- [17. Examples](#17-examples)
+- [Part 1: Your First Actor](#part-1-your-first-actor)
+- [Part 2: Communication Patterns](#part-2-communication-patterns)
+- [Part 3: Lifecycle & Error Handling](#part-3-lifecycle--error-handling)
+- [Part 4: Production Features](#part-4-production-features)
+- [Part 5: Persistence](#part-5-persistence)
+- [Part 6: Going Distributed](#part-6-going-distributed)
+- [Part 7: Testing & Adapters](#part-7-testing--adapters)
+- [Appendix: Architecture & Examples](#appendix-architecture--examples)
 
 ---
 
-## 1. What is dactor?
+## Part 1: Your First Actor
+
+> **What you'll learn:**
+> - What the actor model is and why it matters for concurrent systems
+> - Why dactor exists and what problem it solves
+> - How to define an actor, messages, and handlers
+> - How to spawn an actor and interact with it
+> - How to run your first dactor program
+
+### What is dactor?
 
 **dactor** is a framework-agnostic actor abstraction for Rust. It defines a
 unified set of traits for actor spawning, message delivery, supervision,
@@ -115,7 +49,7 @@ Your application code depends on `dactor` (the core crate) and one adapter.
 Switching runtimes means changing a single dependency line — your actors,
 messages, and handlers stay exactly the same.
 
-### The Actor Model
+### Why the Actor Model?
 
 The [actor model](https://en.wikipedia.org/wiki/Actor_model) is a
 concurrency paradigm where **actors** are the fundamental unit of
@@ -133,27 +67,7 @@ This model naturally maps to distributed systems: actors don't care whether
 messages arrive from the same process, another thread, or across the
 network. That location transparency is what makes actor systems scalable.
 
-### Core Abstractions
-
-dactor's API is built on a small set of traits:
-
-| Trait | Purpose |
-|-------|---------|
-| `Actor` | Core actor trait with `create()`, `on_start()`, `on_stop()`, `on_error()` |
-| `Handler<M>` | Per-message handler — `async fn handle(&mut self, msg, ctx) -> M::Reply` |
-| `ExpandHandler<M, Out>` | Server-streaming — sends items via `StreamSender` |
-| `ReduceHandler<In, Reply>` | Client-streaming — receives `StreamReceiver<In>`, returns `Reply` |
-| `TransformHandler<In, Out>` | Bidirectional streaming — N inputs → M outputs |
-| `ActorRef<A>` | Typed handle — `tell`, `ask`, `expand`, `reduce`, `transform`, `stop` |
-| `Message` | Message trait with associated `Reply` type |
-| `InboundInterceptor` | Runs on actor task before/after handler execution |
-| `OutboundInterceptor` | Runs on caller task before message send |
-
----
-
-## 2. Why dactor?
-
-### The Vendor Lock-in Problem
+### Why dactor?
 
 The Rust ecosystem has several excellent actor frameworks — ractor, kameo,
 coerce, actix — but they each have completely different APIs. If you build
@@ -164,8 +78,6 @@ and handler.
 This problem gets worse in large teams where different services may want
 different runtimes, or where you need to evaluate multiple frameworks before
 committing.
-
-### dactor's Solution
 
 dactor provides a **single, unified API** that compiles against multiple
 runtimes. Your actor code targets dactor's traits:
@@ -186,43 +98,12 @@ runtimes. Your actor code targets dactor's traits:
 **Switching adapters is a 2-line change** in your `Cargo.toml` — swap the
 adapter crate and its feature flag. No actor code changes required.
 
-### The Testing Story
-
-dactor was designed with testing as a first-class concern:
-
-| Level | Tool | What it tests |
-|-------|------|---------------|
-| **Unit** | `TestRuntime` | Individual actor logic with in-memory mailboxes |
-| **Conformance** | Conformance suite | 25+ tests verifying adapter correctness |
-| **Integration** | `MockCluster` | Multi-node simulation with fault injection |
-| **E2E** | gRPC test harness | 60 multi-process tests across 3 adapters |
-
-Your unit tests run with `TestRuntime` (no real runtime needed), your
-integration tests use `MockCluster` to simulate network partitions, and
-your E2E tests run against real adapter binaries over gRPC.
-
-### Feature Completeness
-
 dactor doesn't just abstract the lowest common denominator — it abstracts
 the **superset** of capabilities supported by 2 or more surveyed
 frameworks. If a capability is common to at least two of Erlang/OTP, Akka,
 ractor, kameo, Actix, and Coerce, dactor models it as a first-class trait.
 
-Key features:
-- 5 communication patterns (tell, ask, expand, reduce, transform)
-- Broadcast messaging and processing groups
-- Interceptor pipelines (inbound + outbound)
-- Actor pools with 4 routing strategies
-- Supervision (OneForOne, AllForOne, RestForOne)
-- DeathWatch with ChildTerminated notifications
-- Event sourcing and durable state persistence
-- Bounded mailboxes with overflow strategies
-- Cooperative cancellation
-- Metrics, circuit breakers, and rate limiting
-- Remote actor references and pluggable transport
-- Protobuf-based system message serialization
-
-### Comparison Table
+#### Comparison Table
 
 | Feature | dactor | Raw ractor | Raw kameo | Raw coerce |
 |---------|:------:|:----------:|:---------:|:----------:|
@@ -245,11 +126,23 @@ Key features:
 | Built-in test runtime | ✅ | ❌ | ❌ | ❌ |
 | Conformance suite | ✅ | N/A | N/A | N/A |
 
----
+### Core Abstractions
 
-## 3. Getting Started
+dactor's API is built on a small set of traits:
 
-### Installation
+| Trait | Purpose |
+|-------|---------|
+| `Actor` | Core actor trait with `create()`, `on_start()`, `on_stop()`, `on_error()` |
+| `Handler<M>` | Per-message handler — `async fn handle(&mut self, msg, ctx) -> M::Reply` |
+| `ExpandHandler<M, Out>` | Server-streaming — sends items via `StreamSender` |
+| `ReduceHandler<In, Reply>` | Client-streaming — receives `StreamReceiver<In>`, returns `Reply` |
+| `TransformHandler<In, Out>` | Bidirectional streaming — N inputs → M outputs |
+| `ActorRef<A>` | Typed handle — `tell`, `ask`, `expand`, `reduce`, `transform`, `stop` |
+| `Message` | Message trait with associated `Reply` type |
+| `InboundInterceptor` | Runs on actor task before/after handler execution |
+| `OutboundInterceptor` | Runs on caller task before message send |
+
+### Step 1: Installation
 
 Add the core crate and an adapter to your `Cargo.toml`:
 
@@ -275,7 +168,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 > via `brew install protobuf` (macOS), `apt install protobuf-compiler`
 > (Linux), or `choco install protoc` (Windows).
 
-### Define an Actor
+### Step 2: Define an Actor
 
 An actor is a struct that implements the `Actor` trait. The trait has two
 associated types and one required method:
@@ -309,7 +202,7 @@ impl Actor for Counter {
 - **`create()`** — synchronous constructor. For async initialization, use
   the `on_start()` lifecycle hook.
 
-### Define Messages
+### Step 3: Define Messages
 
 Messages are structs (or enums) that implement the `Message` trait. The
 trait requires one associated type: `Reply`.
@@ -333,7 +226,7 @@ impl Message for GetCount {
 When `Reply = ()`, the message can be used with both `tell()` and `ask()`.
 When `Reply` is a concrete type, it should be used with `ask()`.
 
-### Implement Handlers
+### Step 4: Implement Handlers
 
 Each `(Actor, Message)` pair gets its own `Handler` implementation.
 Handlers are async and have exclusive access to `&mut self` — no
@@ -372,7 +265,7 @@ impl Handler<GetCount> for Counter {
 - Handlers execute sequentially — the runtime guarantees that only one
   handler runs at a time per actor.
 
-### Spawn and Interact
+### Step 5: Spawn and Interact
 
 Use a runtime to spawn actors and get back an `ActorRef`:
 
@@ -400,7 +293,9 @@ assert_eq!(count, 8);
 counter.stop();
 ```
 
-### Full Runnable Example
+### Putting It All Together
+
+Here's a complete, runnable program combining all the steps above:
 
 ```rust
 use dactor::prelude::*;
@@ -453,19 +348,41 @@ async fn main() {
 }
 ```
 
-Run it:
+> **▶ Try it:** Run the quickstart example:
+> ```bash
+> cargo run --example readme_quickstart -p dactor --features test-support
+> ```
+> Or the counter example with more patterns:
+> ```bash
+> cargo run --example basic_counter -p dactor --features test-support
+> ```
 
-```bash
-cargo run --example readme_quickstart -p dactor --features test-support
-```
+### Next steps
+
+Now that you can create actors and send messages, [Part 2: Communication Patterns](#part-2-communication-patterns) shows you the five messaging patterns dactor supports — from simple fire-and-forget to bidirectional streaming.
 
 ---
 
-## 4. Communication Patterns
+## Part 2: Communication Patterns
 
-dactor supports five communication patterns that cover the full spectrum of
-actor interactions — from simple fire-and-forget to complex bidirectional
-streaming.
+> **What you'll learn:**
+> - The five communication patterns dactor provides and when to use each
+> - How to stream data to and from actors
+> - How to broadcast messages to actor groups
+> - How to use batching and cancellation with streaming patterns
+
+Actors communicate through messages, but not all communication is the same. Sometimes you fire off a command and move on. Other times you need a reply, or you need to stream a large result set. dactor gives you five patterns that cover the full spectrum.
+
+### When to Choose Which Pattern
+
+| I need to... | Use this pattern |
+|-------------|-----------------|
+| Send a command with no reply | **Tell** — fire and forget |
+| Send a request and wait for one reply | **Ask** — request-reply |
+| Request a stream of results from an actor | **Expand** — server-streaming |
+| Stream data into an actor and get one result | **Reduce** — client-streaming |
+| Stream data in, get a stream back | **Transform** — bidirectional |
+| Send the same message to many actors | **Broadcast** — fan-out |
 
 ### Tell (Fire-and-Forget)
 
@@ -535,6 +452,11 @@ while let Some(entry) = stream.next().await {
 
 **When to use:** Log streaming, database cursors, paginated results,
 real-time event feeds.
+
+> **▶ Try it:**
+> ```bash
+> cargo run --example streaming -p dactor --features test-support
+> ```
 
 ### Reduce (Client-Streaming)
 
@@ -664,15 +586,247 @@ All streaming patterns support optional **`BatchConfig`** for transparent
 batching (amortize per-item overhead) and **`CancellationToken`** for
 cooperative cancellation.
 
+> **▶ Try it:** See batching in action:
+> ```bash
+> cargo run --example batch_streaming -p dactor --features test-support
+> ```
+
+### Next steps
+
+You can send messages — but what happens when things go wrong? [Part 3: Lifecycle & Error Handling](#part-3-lifecycle--error-handling) covers actor lifecycle hooks, error recovery, supervision, and cancellation.
+
 ---
 
-## 5. Interceptors
+## Part 3: Lifecycle & Error Handling
+
+> **What you'll learn:**
+> - How actors start up, shut down, and handle errors
+> - How to use supervision strategies to build self-healing systems
+> - How to monitor actors with DeathWatch
+> - How to cancel long-running operations cooperatively
+
+In production, things fail. Network connections drop, downstream services time out, and bad input sneaks through validation. A robust actor system doesn't just handle the happy path — it defines exactly what happens when things go wrong. That's what lifecycle hooks, supervision, and cancellation are for.
+
+### Lifecycle Hooks
+
+Every actor has three lifecycle hooks. `on_start` and `on_stop` default
+to no-ops; `on_error` defaults to returning `ErrorAction::Stop`:
+
+```rust,ignore
+#[async_trait]
+impl Actor for MyActor {
+    type Args = ();
+    type Deps = ();
+    fn create(_: (), _: ()) -> Self { MyActor }
+
+    /// Called after spawn, before any messages. Use for async init.
+    async fn on_start(&mut self, ctx: &mut ActorContext) {
+        println!("Actor {} started", ctx.actor_name);
+    }
+
+    /// Called when the actor is stopping. Use for cleanup.
+    async fn on_stop(&mut self) {
+        println!("Actor stopping — releasing resources");
+    }
+
+    /// Called on handler error/panic. Returns what to do next.
+    fn on_error(&mut self, error: &ActorError) -> ErrorAction {
+        eprintln!("Error: {error}");
+        ErrorAction::Resume // keep running
+    }
+}
+```
+
+### Error Handling
+
+When a handler returns an error or panics, `on_error()` is called. It
+returns an `ErrorAction` that tells the runtime what to do:
+
+| Action | Behavior |
+|--------|----------|
+| `ErrorAction::Resume` | Skip the failed message and continue processing |
+| `ErrorAction::Restart` | Restart the actor (call `create()` + `on_start()` again) |
+| `ErrorAction::Stop` | Stop the actor permanently |
+| `ErrorAction::Escalate` | Propagate the failure to the supervisor |
+
+`ActorError` carries structured error information inspired by gRPC status
+codes:
+
+```rust,ignore
+use dactor::actor::ActorError;
+use dactor::errors::ErrorCode;
+
+let err = ActorError::new(ErrorCode::InvalidArgument, "age must be positive")
+    .with_details(r#"{"field": "age", "value": -1}"#)
+    .with_cause(ActorError::internal("validation failed"));
+```
+
+> **▶ Try it:**
+> ```bash
+> cargo run --example error_handling -p dactor --features test-support
+> ```
+
+### Why Supervision Matters
+
+In a traditional application, an unhandled error crashes the process. In an actor system, failures are isolated to individual actors. But you still need a strategy: should a failed actor restart? Should its siblings restart too? Should the failure propagate up?
+
+Supervision strategies answer these questions declaratively, so your system can self-heal without manual intervention.
+
+### Supervision Strategies
+
+Supervisors control how the system reacts when child actors fail. dactor
+provides three built-in strategies:
+
+| Strategy | Behavior |
+|----------|----------|
+| `OneForOne` | Only the failed child is restarted |
+| `AllForOne` | All children are restarted when any child fails |
+| `RestForOne` | The failed child and all children started after it are restarted |
+
+All strategies support configurable restart limits to prevent restart storms:
+
+```rust,ignore
+use dactor::supervision::{OneForOne, AllForOne, RestForOne};
+use std::time::Duration;
+
+// Allow at most 3 restarts within 60 seconds
+let strategy = OneForOne::new(3, Duration::from_secs(60));
+```
+
+If the restart limit is exceeded, the strategy stops the actor (returns
+`SupervisionAction::Stop`).
+
+> **▶ Try it:**
+> ```bash
+> cargo run --example supervision -p dactor --features test-support
+> ```
+
+### DeathWatch
+
+A **watcher** actor can monitor another actor and receive a
+`ChildTerminated` notification when it stops:
+
+```rust,ignore
+use dactor::supervision::ChildTerminated;
+
+// Register the watch
+runtime.watch(&supervisor, worker.id());
+
+// The supervisor must implement Handler<ChildTerminated>
+#[async_trait]
+impl Handler<ChildTerminated> for Supervisor {
+    async fn handle(&mut self, msg: ChildTerminated, _ctx: &mut ActorContext) {
+        let reason = msg.reason.as_deref().unwrap_or("graceful shutdown");
+        println!(
+            "Child '{}' terminated: {}",
+            msg.child_name, reason
+        );
+    }
+}
+```
+
+The `ChildTerminated` message includes:
+- `child_id` — the terminated actor's ID
+- `child_name` — the name it was spawned with
+- `reason` — `None` for graceful shutdown, `Some(reason)` for failures
+
+### Lifecycle Handles
+
+`ActorRef` provides `is_alive()` and `stop()` for basic lifecycle control:
+
+```rust,ignore
+assert!(actor.is_alive());
+
+actor.stop(); // triggers on_stop, closes mailbox
+tokio::time::sleep(Duration::from_millis(50)).await;
+
+assert!(!actor.is_alive());
+```
+
+### Cancellation
+
+Long-running operations need a way to be cancelled — whether due to timeouts, user requests, or system shutdown. dactor provides cooperative cancellation through tokens.
+
+#### Cancellation Tokens
+
+All request-reply and streaming patterns accept an optional
+`CancellationToken` for cooperative cancellation:
+
+```rust,ignore
+use dactor::CancellationToken;
+
+let token = CancellationToken::new();
+let reply = actor.ask(Query, Some(token.clone())).unwrap();
+
+// Cancel from another task
+token.cancel();
+
+// The ask will resolve with an error
+```
+
+#### Cooperative Cancellation in Handlers
+
+Handlers can check for cancellation using `ctx.cancelled()` in a
+`tokio::select!`:
+
+```rust,ignore
+#[async_trait]
+impl Handler<LongRunningTask> for MyActor {
+    async fn handle(
+        &mut self,
+        msg: LongRunningTask,
+        ctx: &mut ActorContext,
+    ) -> String {
+        tokio::select! {
+            result = do_expensive_work(&msg) => result,
+            _ = ctx.cancelled() => {
+                "cancelled".to_string()
+            }
+        }
+    }
+}
+```
+
+If no cancellation token is set, `ctx.cancelled()` returns a permanently
+pending future (the cancellation branch never triggers).
+
+#### Timed Cancellation
+
+Create a token that automatically cancels after a duration:
+
+```rust,ignore
+use dactor::actor::cancel_after;
+
+let token = cancel_after(Duration::from_secs(5));
+let reply = actor.ask(SlowQuery, Some(token)).unwrap().await;
+```
+
+> **▶ Try it:**
+> ```bash
+> cargo run --example cancellation -p dactor --features test-support
+> ```
+
+### Next steps
+
+Your actors are resilient — now make them production-ready. [Part 4: Production Features](#part-4-production-features) covers interceptors, actor pools, observability, and mailbox configuration.
+
+---
+
+## Part 4: Production Features
+
+> **What you'll learn:**
+> - How to add cross-cutting concerns (logging, auth, metrics) without changing actor code
+> - How to scale work across multiple actor instances with pools
+> - How to monitor your actor system with metrics, dead letters, and circuit breakers
+> - How to control backpressure with bounded mailboxes
+
+### Interceptors: Cross-Cutting Concerns Without Changing Actors
 
 Interceptors are hooks that run **before** and **after** message handling,
 allowing you to add cross-cutting concerns (logging, auth, metrics, rate
-limiting) without modifying actor code.
+limiting) without modifying actor code. Think of them like middleware in web frameworks — they wrap handler execution transparently.
 
-### Inbound Interceptors
+#### Inbound Interceptors
 
 Inbound interceptors run on the **actor's task**, surrounding the handler
 invocation. They are attached per-actor at spawn time.
@@ -732,7 +886,7 @@ let actor = runtime.spawn_with_options::<MyActor>(
 ).await.unwrap();
 ```
 
-### Outbound Interceptors
+#### Outbound Interceptors
 
 Outbound interceptors run on the **caller's task**, before the message
 reaches the actor's mailbox. They are registered globally on the runtime.
@@ -765,7 +919,7 @@ let mut runtime = TestRuntime::new();
 runtime.add_outbound_interceptor(Box::new(HeaderStampInterceptor));
 ```
 
-### Interceptor Disposition
+#### Interceptor Disposition
 
 The `Disposition` enum controls what happens after an interceptor runs:
 
@@ -779,7 +933,7 @@ The `Disposition` enum controls what happens after an interceptor runs:
 
 When a message is dropped, the `DropObserver` (if registered) is notified.
 
-### DropObserver
+#### DropObserver
 
 Register a global observer to be notified whenever an interceptor drops a
 message:
@@ -799,7 +953,7 @@ impl DropObserver for MetricsDropObserver {
 }
 ```
 
-### Built-in Interceptors
+#### Built-in Interceptors
 
 dactor ships with several production-ready interceptors:
 
@@ -811,139 +965,18 @@ dactor ships with several production-ready interceptors:
 | `MaxBodySizeInterceptor` | Wire | Reject oversized remote messages |
 | `RateLimitWireInterceptor` | Wire | Rate limit incoming wire envelopes |
 
----
+> **▶ Try it:**
+> ```bash
+> cargo run --example interceptors -p dactor --features test-support
+> cargo run --example dead_letters -p dactor --features test-support
+> ```
 
-## 6. Actor Lifecycle
+### Actor Pools: Scaling Beyond a Single Actor
 
-### Lifecycle Hooks
+When a single actor becomes a bottleneck, pools distribute work across multiple worker instances. A `PoolRef` implements `ActorRef<A>`, so it
+can be used as a drop-in replacement for a single actor reference — callers don't need to know they're talking to a pool.
 
-Every actor has three lifecycle hooks. `on_start` and `on_stop` default
-to no-ops; `on_error` defaults to returning `ErrorAction::Stop`:
-
-```rust,ignore
-#[async_trait]
-impl Actor for MyActor {
-    type Args = ();
-    type Deps = ();
-    fn create(_: (), _: ()) -> Self { MyActor }
-
-    /// Called after spawn, before any messages. Use for async init.
-    async fn on_start(&mut self, ctx: &mut ActorContext) {
-        println!("Actor {} started", ctx.actor_name);
-    }
-
-    /// Called when the actor is stopping. Use for cleanup.
-    async fn on_stop(&mut self) {
-        println!("Actor stopping — releasing resources");
-    }
-
-    /// Called on handler error/panic. Returns what to do next.
-    fn on_error(&mut self, error: &ActorError) -> ErrorAction {
-        eprintln!("Error: {error}");
-        ErrorAction::Resume // keep running
-    }
-}
-```
-
-### Error Handling
-
-When a handler returns an error or panics, `on_error()` is called. It
-returns an `ErrorAction` that tells the runtime what to do:
-
-| Action | Behavior |
-|--------|----------|
-| `ErrorAction::Resume` | Skip the failed message and continue processing |
-| `ErrorAction::Restart` | Restart the actor (call `create()` + `on_start()` again) |
-| `ErrorAction::Stop` | Stop the actor permanently |
-| `ErrorAction::Escalate` | Propagate the failure to the supervisor |
-
-`ActorError` carries structured error information inspired by gRPC status
-codes:
-
-```rust,ignore
-use dactor::actor::ActorError;
-use dactor::errors::ErrorCode;
-
-let err = ActorError::new(ErrorCode::InvalidArgument, "age must be positive")
-    .with_details(r#"{"field": "age", "value": -1}"#)
-    .with_cause(ActorError::internal("validation failed"));
-```
-
-### Supervision Strategies
-
-Supervisors control how the system reacts when child actors fail. dactor
-provides three built-in strategies:
-
-| Strategy | Behavior |
-|----------|----------|
-| `OneForOne` | Only the failed child is restarted |
-| `AllForOne` | All children are restarted when any child fails |
-| `RestForOne` | The failed child and all children started after it are restarted |
-
-All strategies support configurable restart limits to prevent restart storms:
-
-```rust,ignore
-use dactor::supervision::{OneForOne, AllForOne, RestForOne};
-use std::time::Duration;
-
-// Allow at most 3 restarts within 60 seconds
-let strategy = OneForOne::new(3, Duration::from_secs(60));
-```
-
-If the restart limit is exceeded, the strategy stops the actor (returns
-`SupervisionAction::Stop`).
-
-### DeathWatch
-
-A **watcher** actor can monitor another actor and receive a
-`ChildTerminated` notification when it stops:
-
-```rust,ignore
-use dactor::supervision::ChildTerminated;
-
-// Register the watch
-runtime.watch(&supervisor, worker.id());
-
-// The supervisor must implement Handler<ChildTerminated>
-#[async_trait]
-impl Handler<ChildTerminated> for Supervisor {
-    async fn handle(&mut self, msg: ChildTerminated, _ctx: &mut ActorContext) {
-        let reason = msg.reason.as_deref().unwrap_or("graceful shutdown");
-        println!(
-            "Child '{}' terminated: {}",
-            msg.child_name, reason
-        );
-    }
-}
-```
-
-The `ChildTerminated` message includes:
-- `child_id` — the terminated actor's ID
-- `child_name` — the name it was spawned with
-- `reason` — `None` for graceful shutdown, `Some(reason)` for failures
-
-### Lifecycle Handles
-
-`ActorRef` provides `is_alive()` and `stop()` for basic lifecycle control:
-
-```rust,ignore
-assert!(actor.is_alive());
-
-actor.stop(); // triggers on_stop, closes mailbox
-tokio::time::sleep(Duration::from_millis(50)).await;
-
-assert!(!actor.is_alive());
-```
-
----
-
-## 7. Actor Pools
-
-Actor pools distribute work across multiple worker instances using
-configurable routing strategies. A `PoolRef` implements `ActorRef<A>`, so it
-can be used as a drop-in replacement for a single actor reference.
-
-### Creating a Pool
+#### Creating a Pool
 
 ```rust,ignore
 use dactor::pool::{PoolRef, PoolRouting};
@@ -962,7 +995,7 @@ pool.tell(Task).unwrap();
 let result = pool.ask(Query, None).unwrap().await.unwrap();
 ```
 
-### Routing Strategies
+#### Routing Strategies
 
 | Strategy | Algorithm | Best For |
 |----------|-----------|----------|
@@ -971,7 +1004,7 @@ let result = pool.ask(Query, None).unwrap().await.unwrap();
 | `KeyBased` | Hash the message's routing key | Session affinity, partitioned state |
 | `LeastLoaded` | Pick the worker with fewest pending messages | Variable processing times |
 
-### Key-Based Routing
+#### Key-Based Routing
 
 For sticky routing, implement the `Keyed` trait on your message:
 
@@ -999,7 +1032,7 @@ let result = pool.ask_keyed(OrderRequest { customer_id: 42 }, None)
     .unwrap();
 ```
 
-### Distributed Pools with WorkerRef
+#### Distributed Pools with WorkerRef
 
 `WorkerRef` wraps either a local `ActorRef` or a `RemoteActorRef`, enabling
 pools that span multiple nodes:
@@ -1017,7 +1050,7 @@ let pool = PoolRef::new(workers, PoolRouting::RoundRobin);
 pool.tell(Task).unwrap(); // routes to local or remote transparently
 ```
 
-### VirtualPoolRef
+#### VirtualPoolRef
 
 `VirtualPoolRef` routes all decisions through a **single tokio task**,
 providing zero-contention metrics and deterministic routing. The architecture
@@ -1030,12 +1063,195 @@ Caller → [mpsc channel] → RouterTask → Worker-N → reply direct to caller
 This is useful when you need strict ordering guarantees on routing decisions
 or want contention-free metrics collection.
 
+> **▶ Try it:**
+> ```bash
+> cargo run --example actor_pool -p dactor --features test-support
+> ```
+
+### Observability: Knowing What Your Actors Are Doing
+
+In production, you need visibility into your actor system — how many messages are flowing, which actors are slow, and where errors are happening. dactor provides built-in observability through metrics, dead letter handling, circuit breakers, and rate limiting.
+
+#### Metrics
+
+Enable per-actor metrics collection with `MetricsInterceptor`:
+
+```rust,ignore
+let mut runtime = TestRuntime::new();
+runtime.enable_metrics();
+
+let counter = runtime.spawn::<Counter>("counter", ()).await.unwrap();
+
+// Send some messages...
+counter.tell(Increment(1)).unwrap();
+let _ = counter.ask(GetCount, None).unwrap().await.unwrap();
+
+// Query the metrics registry
+let registry = runtime.metrics().unwrap();
+println!("Total messages: {}", registry.total_messages());
+println!("Total errors: {}", registry.total_errors());
+println!("Actor count: {}", registry.actor_count());
+
+// Per-actor breakdowns
+for (actor_id, snapshot) in registry.all() {
+    println!("Actor {:?}:", actor_id);
+    println!("  message_count: {}", snapshot.message_count);
+    println!("  error_count: {}", snapshot.error_count);
+    println!("  message_rate: {:.2}/s", snapshot.message_rate);
+    if let Some(avg) = snapshot.avg_latency {
+        println!("  avg latency: {:?}", avg);
+    }
+}
+
+// Runtime-level windowed metrics
+let runtime_metrics = registry.runtime_metrics();
+println!("Message rate: {:.1}/s", runtime_metrics.message_rate);
+println!("Error rate: {:.1}/s", runtime_metrics.error_rate);
+```
+
+> **▶ Try it:**
+> ```bash
+> cargo run --example metrics -p dactor --features test-support,metrics
+> ```
+
+#### Dead Letter Handling
+
+Undeliverable messages can be routed to a `DeadLetterHandler`:
+
+```rust,ignore
+use dactor::dead_letter::{
+    DeadLetterHandler, DeadLetterEvent,
+    LoggingDeadLetterHandler, CollectingDeadLetterHandler,
+};
+
+// Built-in: log dead letters
+let handler = LoggingDeadLetterHandler;
+
+// Built-in: collect dead letters for inspection
+let handler = CollectingDeadLetterHandler::new();
+// Later: handler.events() to inspect collected dead letters
+```
+
+> **▶ Try it:**
+> ```bash
+> cargo run --example dead_letters -p dactor --features test-support
+> ```
+
+#### Circuit Breaker
+
+The `CircuitBreakerInterceptor` provides fault isolation with three states:
+
+```text
+Closed → (failures exceed threshold) → Open → (timeout expires) → HalfOpen
+                                                                       ↓
+                                                          success → Closed
+                                                          failure → Open
+```
+
+```rust,ignore
+use dactor::circuit_breaker::{CircuitBreakerInterceptor, CircuitState};
+
+// Transitions to Open after 5 errors within 60 seconds,
+// tries HalfOpen after 30 seconds
+let breaker = CircuitBreakerInterceptor::new(
+    5,                          // trip after 5 errors
+    Duration::from_secs(60),    // within a 60-second window
+    Duration::from_secs(30),    // stay open for 30 seconds
+);
+```
+
+#### Rate Limiting
+
+`ActorRateLimiter` is an outbound interceptor that throttles message sending
+using a tumbling-window algorithm:
+
+```rust,ignore
+use dactor::throttle::ActorRateLimiter;
+
+// Allow at most 100 messages per second
+let limiter = ActorRateLimiter::new(100, Duration::from_secs(1));
+runtime.add_outbound_interceptor(Box::new(limiter));
+```
+
+> **▶ Try it:**
+> ```bash
+> cargo run --example rate_limiting -p dactor --features test-support
+> ```
+
+### Mailbox Configuration: Backpressure and Flow Control
+
+By default, actors have unbounded mailboxes — a fast producer can overwhelm a slow consumer. Bounded mailboxes add backpressure so your system degrades gracefully under load instead of running out of memory.
+
+#### Bounded Mailboxes
+
+```rust,ignore
+use dactor::mailbox::{MailboxConfig, OverflowStrategy};
+use dactor::SpawnOptions;
+
+let actor = runtime.spawn_with_options::<MyActor>(
+    "bounded-actor",
+    args,
+    SpawnOptions {
+        interceptors: vec![],
+        mailbox: MailboxConfig::Bounded {
+            capacity: 100,
+            overflow: OverflowStrategy::RejectWithError,
+        },
+    },
+).await.unwrap();
+```
+
+#### Overflow Strategies
+
+| Strategy | Behavior |
+|----------|----------|
+| `Block` | Block the sender until space is available |
+| `RejectWithError` | Return `Err(ActorSendError)` immediately |
+| `DropNewest` | Silently drop the new message |
+
+#### Priority Mailboxes
+
+Messages can carry a `Priority` header. With a `StrictPriorityComparer`,
+higher-priority messages are dequeued first:
+
+```rust,ignore
+use dactor::message::Priority;
+
+// In an outbound interceptor or manually:
+headers.insert(Priority::HIGH);
+headers.insert(Priority(42)); // custom priority level
+```
+
+> **▶ Try it:**
+> ```bash
+> cargo run --example bounded_mailbox -p dactor --features test-support
+> ```
+
+### Next steps
+
+Your actors are production-hardened. If you need durable state that survives restarts, [Part 5: Persistence](#part-5-persistence) covers event sourcing and state snapshots.
+
 ---
 
-## 8. Persistence
+## Part 5: Persistence
 
-dactor provides two persistence patterns for actors that need durable state:
-**Event Sourcing** and **Durable State**.
+> **What you'll learn:**
+> - How to persist actor state across restarts using event sourcing
+> - How to use the simpler durable state pattern for straightforward cases
+> - How recovery works and how to configure it
+> - When to choose event sourcing vs durable state
+
+Actors are stateful by nature, but by default that state lives only in memory. When an actor restarts — whether from a crash, a deployment, or a node failure — its state is gone. Persistence solves this by durably storing state changes so actors can recover exactly where they left off.
+
+### When to Use Event Sourcing vs Durable State
+
+| I need... | Use this |
+|-----------|----------|
+| Full audit trail of every change | **Event Sourcing** — every state change is an immutable event |
+| Time-travel debugging or replay | **Event Sourcing** — replay events to any point in time |
+| Simple save/load of current state | **Durable State** — just persist the latest state blob |
+| Minimal storage overhead | **Durable State** — only stores current state, not history |
+| CQRS (separate read/write models) | **Event Sourcing** — events drive both write model and projections |
 
 ### Event Sourcing
 
@@ -1064,6 +1280,12 @@ storage.save_snapshot(&pid, SequenceId(3), b"balance=120").await?;
 // Read events from a specific sequence (for replay after snapshot)
 let events = storage.read_events(&pid, SequenceId(4)).await?;
 ```
+
+> **▶ Try it:**
+> ```bash
+> cargo run --example persistence -p dactor --features test-support
+> cargo run --example event_sourcing -p dactor --features test-support
+> ```
 
 ### Durable State
 
@@ -1137,13 +1359,28 @@ let config = SnapshotConfig {
 };
 ```
 
+### Next steps
+
+Ready to run actors across multiple nodes? [Part 6: Going Distributed](#part-6-going-distributed) covers remote actor references, transport, and cluster management.
+
 ---
 
-## 9. Remote Actors
+## Part 6: Going Distributed
 
-dactor provides the building blocks for distributed actor systems: a wire
-format, serialization traits, remote references, and a pluggable transport
-layer.
+> **What you'll learn:**
+> - How dactor represents and communicates with remote actors
+> - How to implement custom transport protocols
+> - How cluster membership and discovery work
+> - What system actors run automatically on each node
+
+Running actors on a single machine is great for many use cases. But when you need horizontal scaling, geographic distribution, or fault isolation across processes, you need actors that can communicate across the network. dactor provides the building blocks: a wire format, serialization traits, remote references, and a pluggable transport layer.
+
+### What You Need for Distribution
+
+Before going distributed, make sure you have:
+1. **Serializable messages** — remote messages must be serializable (e.g., with serde)
+2. **A transport implementation** — gRPC, TCP, QUIC, or custom (or `InMemoryTransport` for testing)
+3. **A discovery mechanism** — how nodes find each other (static seeds, Kubernetes, etc.)
 
 ### WireEnvelope Wire Format
 
@@ -1278,10 +1515,6 @@ messages remain pluggable — use whatever serialization format you prefer.
 The `SystemMessageRouter` routes incoming `WireEnvelope` system messages to
 the correct system actor mailbox based on the `message_type` field.
 
----
-
-## 10. Cluster Management
-
 ### Cluster Events
 
 Subscribe to cluster membership changes via the `ClusterEvents` trait:
@@ -1342,211 +1575,65 @@ constants (e.g., `SYSTEM_MSG_TYPE_SPAWN`, `SYSTEM_MSG_TYPE_WATCH`). These
 constants are **frozen wire protocol values** — they never change, ensuring
 backward compatibility between nodes running different versions.
 
----
+#### Tuning System Actors with `SystemActorConfig`
 
-## 11. Observability
+Under high fan-in (many remote nodes sending spawn/watch/cancel requests),
+the default single-mailbox system actors can become a throughput bottleneck.
+`SystemActorConfig` lets you tune this:
 
-### Metrics
+```rust
+use dactor::{SystemActorConfig, MailboxConfig, OverflowStrategy};
 
-Enable per-actor metrics collection with `MetricsInterceptor`:
+let config = SystemActorConfig::new()
+    // Pool the SpawnManager across 4 workers (round-robin dispatch)
+    .spawn_manager_pool_size(4)
+    // Bounded mailbox for SpawnManager workers
+    .spawn_manager_mailbox(MailboxConfig::bounded(1024, OverflowStrategy::Block))
+    // Bounded mailbox for control-plane actors (WatchManager, CancelManager, NodeDirectory)
+    .control_plane_mailbox(MailboxConfig::bounded(512, OverflowStrategy::Block));
 
-```rust,ignore
-let mut runtime = TestRuntime::new();
-runtime.enable_metrics();
-
-let counter = runtime.spawn::<Counter>("counter", ()).await.unwrap();
-
-// Send some messages...
-counter.tell(Increment(1)).unwrap();
-let _ = counter.ask(GetCount, None).unwrap().await.unwrap();
-
-// Query the metrics registry
-let registry = runtime.metrics().unwrap();
-println!("Total messages: {}", registry.total_messages());
-println!("Total errors: {}", registry.total_errors());
-println!("Actor count: {}", registry.actor_count());
-
-// Per-actor breakdowns
-for (actor_id, snapshot) in registry.all() {
-    println!("Actor {:?}:", actor_id);
-    println!("  message_count: {}", snapshot.message_count);
-    println!("  error_count: {}", snapshot.error_count);
-    println!("  message_rate: {:.2}/s", snapshot.message_rate);
-    if let Some(avg) = snapshot.avg_latency {
-        println!("  avg latency: {:?}", avg);
-    }
-}
-
-// Runtime-level windowed metrics
-let runtime_metrics = registry.runtime_metrics();
-println!("Message rate: {:.1}/s", runtime_metrics.message_rate);
-println!("Error rate: {:.1}/s", runtime_metrics.error_rate);
+runtime.start_system_actors_with_config(config);
 ```
 
-### Dead Letter Handling
+**Design notes:**
 
-Undeliverable messages can be routed to a `DeadLetterHandler`:
+- **SpawnManager is poolable** because ID allocation uses a shared `AtomicU64`
+  counter, and the type registry is cloned at startup. Each pool worker handles
+  spawn requests independently with round-robin dispatch.
+- **WatchManager, CancelManager, and NodeDirectory are NOT pooled** because they
+  hold stateful subscriptions/tokens/peer maps that must remain consistent.
+  Instead, configure a larger bounded mailbox with `OverflowStrategy::Block` for
+  backpressure.
+- **Avoid `DropNewest` on control-plane actors** — dropping watch or cancel
+  messages silently causes correctness bugs (orphaned watches, leaked resources).
+  Use `Block` or `RejectWithError` instead.
 
-```rust,ignore
-use dactor::dead_letter::{
-    DeadLetterHandler, DeadLetterEvent,
-    LoggingDeadLetterHandler, CollectingDeadLetterHandler,
-};
+### Next steps
 
-// Built-in: log dead letters
-let handler = LoggingDeadLetterHandler;
-
-// Built-in: collect dead letters for inspection
-let handler = CollectingDeadLetterHandler::new();
-// Later: handler.events() to inspect collected dead letters
-```
-
-### Circuit Breaker
-
-The `CircuitBreakerInterceptor` provides fault isolation with three states:
-
-```text
-Closed → (failures exceed threshold) → Open → (timeout expires) → HalfOpen
-                                                                       ↓
-                                                          success → Closed
-                                                          failure → Open
-```
-
-```rust,ignore
-use dactor::circuit_breaker::{CircuitBreakerInterceptor, CircuitState};
-
-// Transitions to Open after 5 errors within 60 seconds,
-// tries HalfOpen after 30 seconds
-let breaker = CircuitBreakerInterceptor::new(
-    5,                          // trip after 5 errors
-    Duration::from_secs(60),    // within a 60-second window
-    Duration::from_secs(30),    // stay open for 30 seconds
-);
-```
-
-### Rate Limiting
-
-`ActorRateLimiter` is an outbound interceptor that throttles message sending
-using a tumbling-window algorithm:
-
-```rust,ignore
-use dactor::throttle::ActorRateLimiter;
-
-// Allow at most 100 messages per second
-let limiter = ActorRateLimiter::new(100, Duration::from_secs(1));
-runtime.add_outbound_interceptor(Box::new(limiter));
-```
+Before you deploy, make sure your actors are well-tested. [Part 7: Testing & Adapters](#part-7-testing--adapters) covers dactor's multi-tier testing strategy and how to choose and switch between runtime adapters.
 
 ---
 
-## 12. Mailbox Configuration
+## Part 7: Testing & Adapters
 
-### Bounded Mailboxes
+> **What you'll learn:**
+> - How to unit test actors with `TestRuntime`
+> - How to run integration tests with `MockCluster`
+> - How to use the conformance suite and E2E test harness
+> - How to choose and switch between runtime adapters
 
-By default, actors have unbounded mailboxes. For backpressure, configure a
-bounded mailbox:
+dactor was designed with testing as a first-class concern. You can test at
+every level — from isolated unit tests to multi-process E2E tests — without
+deploying real infrastructure.
 
-```rust,ignore
-use dactor::mailbox::{MailboxConfig, OverflowStrategy};
-use dactor::SpawnOptions;
+### The Testing Story
 
-let actor = runtime.spawn_with_options::<MyActor>(
-    "bounded-actor",
-    args,
-    SpawnOptions {
-        interceptors: vec![],
-        mailbox: MailboxConfig::Bounded {
-            capacity: 100,
-            overflow: OverflowStrategy::RejectWithError,
-        },
-    },
-).await.unwrap();
-```
-
-### Overflow Strategies
-
-| Strategy | Behavior |
-|----------|----------|
-| `Block` | Block the sender until space is available |
-| `RejectWithError` | Return `Err(ActorSendError)` immediately |
-| `DropNewest` | Silently drop the new message |
-
-### Priority Mailboxes
-
-Messages can carry a `Priority` header. With a `StrictPriorityComparer`,
-higher-priority messages are dequeued first:
-
-```rust,ignore
-use dactor::message::Priority;
-
-// In an outbound interceptor or manually:
-headers.insert(Priority::HIGH);
-headers.insert(Priority(42)); // custom priority level
-```
-
----
-
-## 13. Cancellation
-
-### Cancellation Tokens
-
-All request-reply and streaming patterns accept an optional
-`CancellationToken` for cooperative cancellation:
-
-```rust,ignore
-use dactor::CancellationToken;
-
-let token = CancellationToken::new();
-let reply = actor.ask(Query, Some(token.clone())).unwrap();
-
-// Cancel from another task
-token.cancel();
-
-// The ask will resolve with an error
-```
-
-### Cooperative Cancellation in Handlers
-
-Handlers can check for cancellation using `ctx.cancelled()` in a
-`tokio::select!`:
-
-```rust,ignore
-#[async_trait]
-impl Handler<LongRunningTask> for MyActor {
-    async fn handle(
-        &mut self,
-        msg: LongRunningTask,
-        ctx: &mut ActorContext,
-    ) -> String {
-        tokio::select! {
-            result = do_expensive_work(&msg) => result,
-            _ = ctx.cancelled() => {
-                "cancelled".to_string()
-            }
-        }
-    }
-}
-```
-
-If no cancellation token is set, `ctx.cancelled()` returns a permanently
-pending future (the cancellation branch never triggers).
-
-### Timed Cancellation
-
-Create a token that automatically cancels after a duration:
-
-```rust,ignore
-use dactor::actor::cancel_after;
-
-let token = cancel_after(Duration::from_secs(5));
-let reply = actor.ask(SlowQuery, Some(token)).unwrap().await;
-```
-
----
-
-## 14. Testing
-
-dactor provides a comprehensive, multi-tier testing strategy.
+| Level | Tool | What it tests |
+|-------|------|---------------|
+| **Unit** | `TestRuntime` | Individual actor logic with in-memory mailboxes |
+| **Conformance** | Conformance suite | 25+ tests verifying adapter correctness |
+| **Integration** | `MockCluster` | Multi-node simulation with fault injection |
+| **E2E** | gRPC test harness | 60 multi-process tests across 3 adapters |
 
 ### TestRuntime for Unit Tests
 
@@ -1660,14 +1747,12 @@ cargo build -p dactor-ractor --features test-harness --bin test-node-ractor
 cargo test -p dactor-ractor --test e2e_tests --features test-harness
 ```
 
----
-
-## 15. Choosing an Adapter
+### Choosing an Adapter
 
 All three adapters implement the full dactor v0.2 API. Choose based on
 your project's requirements.
 
-### Ractor
+#### Ractor
 
 **Best for:** Applications that need ractor's Erlang-style supervision trees
 and process linking semantics.
@@ -1678,7 +1763,7 @@ dactor = "0.2"
 dactor-ractor = "0.2"
 ```
 
-### Kameo
+#### Kameo
 
 **Best for:** Applications that prefer kameo's lightweight, tokio-native
 approach with built-in request coalescing and bounded mailboxes.
@@ -1689,7 +1774,7 @@ dactor = "0.2"
 dactor-kameo = "0.2"
 ```
 
-### Coerce
+#### Coerce
 
 **Best for:** Applications that need Coerce's built-in persistence
 (event sourcing), remoting, and cluster sharding capabilities.
@@ -1700,7 +1785,7 @@ dactor = "0.2"
 dactor-coerce = "0.2"
 ```
 
-### Switching Adapters
+#### Switching Adapters
 
 Switching from one adapter to another is a **2-line change** in your
 `Cargo.toml`. Your actor code, messages, and handlers remain identical.
@@ -1724,9 +1809,13 @@ Then update your runtime initialization:
 Everything else — actors, messages, handlers, interceptors, pools — stays
 the same.
 
+### Next steps
+
+For a deep dive into the crate structure and complete example catalog, see the [Appendix: Architecture & Examples](#appendix-architecture--examples).
+
 ---
 
-## 16. Architecture
+## Appendix: Architecture & Examples
 
 ### Crate Layout
 
@@ -1787,9 +1876,7 @@ MessageSerializer        (serialize/deserialize for wire transport)
 ClusterEvents            (subscribe/unsubscribe to NodeJoined/NodeLeft)
 ```
 
----
-
-## 17. Examples
+### Examples
 
 The [`dactor/examples/`](../dactor/examples/) directory contains 16 runnable
 examples. Each can be run with:
@@ -1798,24 +1885,27 @@ examples. Each can be run with:
 cargo run --example <name> -p dactor --features test-support
 ```
 
-| Example | Description |
-|---------|-------------|
-| `readme_quickstart` | Quick start — counter with tell + ask |
-| `basic_counter` | Tell + ask patterns |
-| `streaming` | Server-streaming (expand) and client-streaming (reduce) |
-| `batch_streaming` | Transparent batching with `BatchConfig` |
-| `cancellation` | Cancellation tokens and `cancel_after()` |
-| `supervision` | Supervision strategies (OneForOne, AllForOne, RestForOne) |
-| `interceptors` | Inbound/outbound interceptor pipelines |
-| `dead_letters` | DropObserver for monitoring message drops |
-| `persistence` | Event sourcing with journal + snapshots |
-| `bounded_mailbox` | Bounded mailbox with overflow strategies |
-| `metrics` | MetricsInterceptor and MetricsStore |
-| `rate_limiting` | ActorRateLimiter outbound throttling |
-| `error_handling` | ActorError with ErrorCode and error chains |
-| `event_sourcing` | Event sourcing with CQRS patterns |
-| `actor_pool` | Actor pools with routing strategies |
-| `showcase` | Comprehensive feature showcase |
+> **Note:** `task_queue` requires `--features test-support,metrics`.
+
+| Example | Description | Covered in |
+|---------|-------------|------------|
+| `readme_quickstart` | Quick start — counter with tell + ask | [Part 1](#part-1-your-first-actor) |
+| `basic_counter` | Tell + ask patterns | [Part 1](#part-1-your-first-actor) |
+| `streaming` | Server-streaming (expand) and client-streaming (reduce) | [Part 2](#part-2-communication-patterns) |
+| `batch_streaming` | Transparent batching with `BatchConfig` | [Part 2](#part-2-communication-patterns) |
+| `cancellation` | Cancellation tokens and `cancel_after()` | [Part 3](#part-3-lifecycle--error-handling) |
+| `supervision` | Supervision strategies (OneForOne, AllForOne, RestForOne) | [Part 3](#part-3-lifecycle--error-handling) |
+| `error_handling` | ActorError with ErrorCode and error chains | [Part 3](#part-3-lifecycle--error-handling) |
+| `interceptors` | Inbound/outbound interceptor pipelines | [Part 4](#part-4-production-features) |
+| `dead_letters` | DropObserver for monitoring message drops | [Part 4](#part-4-production-features) |
+| `actor_pool` | Actor pools with routing strategies | [Part 4](#part-4-production-features) |
+| `metrics` | MetricsInterceptor and MetricsStore | [Part 4](#part-4-production-features) |
+| `rate_limiting` | ActorRateLimiter outbound throttling | [Part 4](#part-4-production-features) |
+| `bounded_mailbox` | Bounded mailbox with overflow strategies | [Part 4](#part-4-production-features) |
+| `persistence` | Event sourcing with journal + snapshots | [Part 5](#part-5-persistence) |
+| `event_sourcing` | Event sourcing with CQRS patterns | [Part 5](#part-5-persistence) |
+| `task_queue` | Task queue with metrics (needs `--features test-support,metrics`) | — |
+| `showcase` | Comprehensive feature showcase | — |
 
 ---
 
