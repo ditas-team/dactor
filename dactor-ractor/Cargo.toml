@@ -1,6 +1,6 @@
 [package]
 name = "dactor-ractor"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.70"
 description = "Ractor adapter for the dactor distributed actor framework"
@@ -14,7 +14,7 @@ keywords = ["actor", "distributed", "ractor", "framework", "runtime"]
 categories = ["concurrency", "network-programming"]
 
 [dependencies]
-dactor = { version = "0.2.0", path = "../dactor", features = ["serde"] }
+dactor = { version = "0.3.0", path = "../dactor", features = ["serde"] }
 ractor = "0.15"
 tokio = { version = "1", features = ["sync", "rt", "time", "macros", "rt-multi-thread"] }
 async-trait = "0.1"
@@ -22,7 +22,7 @@ tokio-util = "0.7"
 tokio-stream = "0.1"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 tracing = "0.1"
-dactor-test-harness = { version = "0.2.0", path = "../dactor-test-harness", optional = true }
+dactor-test-harness = { version = "0.3.0", path = "../dactor-test-harness", optional = true }
 tracing-subscriber = { version = "0.3", optional = true }
 serde_json = { version = "1", optional = true }
 
@@ -30,10 +30,10 @@ serde_json = { version = "1", optional = true }
 test-harness = ["dep:dactor-test-harness", "dep:tracing-subscriber", "dep:serde_json"]
 
 [dev-dependencies]
-dactor = { version = "0.2.0", path = "../dactor", features = ["serde", "test-support"] }
+dactor = { version = "0.3.0", path = "../dactor", features = ["serde", "test-support"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 serde_json = "1"
-dactor-test-harness = { version = "0.2.0", path = "../dactor-test-harness" }
+dactor-test-harness = { version = "0.3.0", path = "../dactor-test-harness" }
 
 [[bin]]
 name = "test-node-ractor"
