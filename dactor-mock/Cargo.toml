@@ -1,6 +1,6 @@
 [package]
 name = "dactor-mock"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.70"
 description = "Mock multi-node cluster for testing dactor actor systems"
@@ -14,7 +14,7 @@ keywords = ["actor", "distributed", "mock", "testing", "framework"]
 categories = ["concurrency", "development-tools::testing"]
 
 [dependencies]
-dactor = { version = "0.2.0", path = "../dactor", features = ["test-support"] }
+dactor = { version = "0.3.0", path = "../dactor", features = ["test-support"] }
 tokio = { version = "1", features = ["sync", "rt", "time", "macros", "rt-multi-thread"] }
 tokio-util = "0.7"
 async-trait = "0.1"

@@ -19,6 +19,7 @@ use dactor::dead_letter::{DeadLetterEvent, DeadLetterHandler, DeadLetterReason};
 use dactor::dispatch::{AskDispatch, Dispatch, ReduceDispatch, ExpandDispatch, TransformDispatch, TypedDispatch};
 use dactor::errors::{ActorSendError, ErrorAction, RuntimeError};
 use dactor::interceptor::{
+    collect_handler_wrappers, apply_handler_wrappers,
     Disposition, DropObserver, InboundContext, InboundInterceptor, OutboundInterceptor, Outcome,
     SendMode,
 };
@@ -234,6 +235,19 @@ impl<A: Actor + Send + Sync + 'static> CoerceHandler<DactorMsg<A>> for CoerceDac
             tokio::time::sleep(total_delay).await;
         }
 
+        // Collect handler wrappers BEFORE moving headers into ctx,
+        // so interceptors can read headers without borrow conflicts.
+        let ictx_for_wrap = InboundContext {
+            actor_id: self.ctx.actor_id.clone(),
+            actor_name: &self.ctx.actor_name,
+            message_type,
+            send_mode,
+            remote: false,
+            origin_node: None,
+        };
+        let wrappers = collect_handler_wrappers(&self.interceptors, &ictx_for_wrap, &headers);
+        let needs_wrap = wrappers.iter().any(|w| w.is_some());
+
         // Copy interceptor-populated headers to ActorContext
         self.ctx.headers = headers;
 
@@ -251,22 +265,59 @@ impl<A: Actor + Send + Sync + 'static> CoerceHandler<DactorMsg<A>> for CoerceDac
         }
 
         // Dispatch with panic catching and cancellation racing
-        let result = if let Some(ref token) = cancel_token {
-            let dispatch_fut =
-                std::panic::AssertUnwindSafe(dispatch.dispatch(&mut self.actor, &mut self.ctx))
-                    .catch_unwind();
-            tokio::select! {
-                biased;
-                r = dispatch_fut => r,
-                _ = token.cancelled() => {
-                    self.ctx.set_cancellation_token(None);
-                    return;
+        let result = if needs_wrap {
+            let (result_tx, mut result_rx) = tokio::sync::oneshot::channel();
+
+            let inner: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> = Box::pin(async {
+                let r = std::panic::AssertUnwindSafe(
+                    dispatch.dispatch(&mut self.actor, &mut self.ctx),
+                )
+                .catch_unwind()
+                .await;
+                let _ = result_tx.send(r);
+            });
+
+            let wrapped = apply_handler_wrappers(wrappers, inner);
+
+            let wrapped = std::panic::AssertUnwindSafe(wrapped);
+
+            if let Some(ref token) = cancel_token {
+                tokio::select! {
+                    biased;
+                    _ = wrapped.catch_unwind() => {},
+                    _ = token.cancelled() => {
+                        self.ctx.set_cancellation_token(None);
+                        return;
+                    }
                 }
+            } else {
+                wrapped.catch_unwind().await.ok();
+            }
+
+            match result_rx.try_recv() {
+                Ok(r) => r,
+                Err(_) => Err(Box::new(
+                    "interceptor wrap_handler did not await the handler future",
+                ) as Box<dyn std::any::Any + Send>),
             }
         } else {
-            std::panic::AssertUnwindSafe(dispatch.dispatch(&mut self.actor, &mut self.ctx))
-                .catch_unwind()
-                .await
+            if let Some(ref token) = cancel_token {
+                let dispatch_fut =
+                    std::panic::AssertUnwindSafe(dispatch.dispatch(&mut self.actor, &mut self.ctx))
+                        .catch_unwind();
+                tokio::select! {
+                    biased;
+                    r = dispatch_fut => r,
+                    _ = token.cancelled() => {
+                        self.ctx.set_cancellation_token(None);
+                        return;
+                    }
+                }
+            } else {
+                std::panic::AssertUnwindSafe(dispatch.dispatch(&mut self.actor, &mut self.ctx))
+                    .catch_unwind()
+                    .await
+            }
         };
 
         self.ctx.set_cancellation_token(None);

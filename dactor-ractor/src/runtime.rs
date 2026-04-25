@@ -20,6 +20,7 @@ use dactor::dead_letter::{DeadLetterEvent, DeadLetterHandler, DeadLetterReason};
 use dactor::dispatch::{AskDispatch, Dispatch, ReduceDispatch, ExpandDispatch, TransformDispatch, TypedDispatch};
 use dactor::errors::{ActorSendError, ErrorAction, RuntimeError};
 use dactor::interceptor::{
+    collect_handler_wrappers, apply_handler_wrappers,
     Disposition, DropObserver, InboundContext, InboundInterceptor, OutboundInterceptor, Outcome,
     SendMode,
 };
@@ -193,6 +194,19 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
             tokio::time::sleep(total_delay).await;
         }
 
+        // Collect handler wrappers BEFORE moving headers into ctx,
+        // so interceptors can read headers without borrow conflicts.
+        let ictx_for_wrap = InboundContext {
+            actor_id: state.ctx.actor_id.clone(),
+            actor_name: &state.ctx.actor_name,
+            message_type,
+            send_mode,
+            remote: false,
+            origin_node: None,
+        };
+        let wrappers = collect_handler_wrappers(&state.interceptors, &ictx_for_wrap, &headers);
+        let needs_wrap = wrappers.iter().any(|w| w.is_some());
+
         // Copy interceptor-populated headers to ActorContext so handler can access them
         state.ctx.headers = headers;
 
@@ -210,25 +224,59 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
         }
 
         // Dispatch with panic catching and cancellation racing
-        let result = if let Some(ref token) = cancel_token {
-            let dispatch_fut =
-                std::panic::AssertUnwindSafe(dispatch.dispatch(&mut state.actor, &mut state.ctx))
-                    .catch_unwind();
-            tokio::select! {
-                biased;
-                r = dispatch_fut => r,
-                _ = token.cancelled() => {
-                    // In-flight cancellation: dispatch_fut is dropped, which drops
-                    // reply_tx inside it. Caller's AskReply sees channel closed.
-                    // Pre-dispatch cancellation (above) sends RuntimeError::Cancelled.
-                    state.ctx.set_cancellation_token(None);
-                    return Ok(());
+        let result = if needs_wrap {
+            let (result_tx, mut result_rx) = tokio::sync::oneshot::channel();
+
+            let inner: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> = Box::pin(async {
+                let r = std::panic::AssertUnwindSafe(
+                    dispatch.dispatch(&mut state.actor, &mut state.ctx),
+                )
+                .catch_unwind()
+                .await;
+                let _ = result_tx.send(r);
+            });
+
+            let wrapped = apply_handler_wrappers(wrappers, inner);
+
+            let wrapped = std::panic::AssertUnwindSafe(wrapped);
+
+            if let Some(ref token) = cancel_token {
+                tokio::select! {
+                    biased;
+                    _ = wrapped.catch_unwind() => {},
+                    _ = token.cancelled() => {
+                        state.ctx.set_cancellation_token(None);
+                        return Ok(());
+                    }
                 }
+            } else {
+                wrapped.catch_unwind().await.ok();
+            }
+
+            match result_rx.try_recv() {
+                Ok(r) => r,
+                Err(_) => Err(Box::new(
+                    "interceptor wrap_handler did not await the handler future",
+                ) as Box<dyn std::any::Any + Send>),
             }
         } else {
-            std::panic::AssertUnwindSafe(dispatch.dispatch(&mut state.actor, &mut state.ctx))
-                .catch_unwind()
-                .await
+            if let Some(ref token) = cancel_token {
+                let dispatch_fut =
+                    std::panic::AssertUnwindSafe(dispatch.dispatch(&mut state.actor, &mut state.ctx))
+                        .catch_unwind();
+                tokio::select! {
+                    biased;
+                    r = dispatch_fut => r,
+                    _ = token.cancelled() => {
+                        state.ctx.set_cancellation_token(None);
+                        return Ok(());
+                    }
+                }
+            } else {
+                std::panic::AssertUnwindSafe(dispatch.dispatch(&mut state.actor, &mut state.ctx))
+                    .catch_unwind()
+                    .await
+            }
         };
 
         state.ctx.set_cancellation_token(None);

@@ -140,6 +140,7 @@ pub use interceptor::{
 };
 pub use interceptor::{notify_drop, DropNotice, DropObserver};
 pub use interceptor::{OutboundContext, OutboundInterceptor};
+pub use interceptor::{collect_handler_wrappers, apply_handler_wrappers, HandlerWrapper};
 pub use mailbox::{MailboxConfig, MessageComparer, OverflowStrategy, StrictPriorityComparer};
 pub use message::Message;
 pub use message::{HeaderValue, Headers, MessageId, Priority, RuntimeHeaders};
