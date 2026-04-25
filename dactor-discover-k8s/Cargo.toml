@@ -15,7 +15,7 @@ categories = ["network-programming"]
 
 [dependencies]
 async-trait = "0.1"
-dactor = { version = "0.2.0", path = "../dactor" }
+dactor = { version = "0.3.0", path = "../dactor" }
 kube = { version = "0.98", features = ["runtime", "client", "derive"] }
 k8s-openapi = { version = "0.24", features = ["latest"] }
 tokio = { version = "1", features = ["sync", "rt", "time"] }
