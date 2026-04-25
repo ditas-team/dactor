@@ -290,17 +290,19 @@ impl<A: Actor + 'static> kameo::message::Message<DactorMsg<A>> for KameoDactorAc
 
             let wrapped = apply_handler_wrappers(wrappers, inner);
 
+            let wrapped = std::panic::AssertUnwindSafe(wrapped);
+
             if let Some(ref token) = cancel_token {
                 tokio::select! {
                     biased;
-                    _ = wrapped => {},
+                    _ = wrapped.catch_unwind() => {},
                     _ = token.cancelled() => {
                         self.ctx.set_cancellation_token(None);
                         return;
                     }
                 }
             } else {
-                wrapped.await;
+                wrapped.catch_unwind().await.ok();
             }
 
             match result_rx.try_recv() {

@@ -238,17 +238,19 @@ impl<A: Actor + 'static> ractor::Actor for RactorDactorActor<A> {
 
             let wrapped = apply_handler_wrappers(wrappers, inner);
 
+            let wrapped = std::panic::AssertUnwindSafe(wrapped);
+
             if let Some(ref token) = cancel_token {
                 tokio::select! {
                     biased;
-                    _ = wrapped => {},
+                    _ = wrapped.catch_unwind() => {},
                     _ = token.cancelled() => {
                         state.ctx.set_cancellation_token(None);
                         return Ok(());
                     }
                 }
             } else {
-                wrapped.await;
+                wrapped.catch_unwind().await.ok();
             }
 
             match result_rx.try_recv() {

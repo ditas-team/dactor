@@ -988,17 +988,22 @@ impl TestRuntime {
 
                     let wrapped = apply_handler_wrappers(wrappers, inner);
 
+                    // Wrap the entire chain (including interceptor wrappers) with
+                    // catch_unwind so a panic in a wrapper is handled the same
+                    // way as a handler panic.
+                    let wrapped = std::panic::AssertUnwindSafe(wrapped);
+
                     if let Some(ref token) = cancel_token {
                         tokio::select! {
                             biased;
-                            _ = wrapped => {},
+                            _ = wrapped.catch_unwind() => {},
                             _ = token.cancelled() => {
                                 ctx.cancellation_token = None;
                                 continue;
                             }
                         }
                     } else {
-                        wrapped.await;
+                        wrapped.catch_unwind().await.ok();
                     }
 
                     // Retrieve the dispatch result from the oneshot channel.
