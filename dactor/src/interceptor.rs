@@ -6,6 +6,8 @@
 //! notified via `on_complete`.
 
 use std::any::Any;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -221,6 +223,34 @@ impl<'a> std::fmt::Debug for Outcome<'a> {
     }
 }
 
+/// A boxed closure that wraps a handler future with async context.
+///
+/// Created by [`InboundInterceptor::wrap_handler`] and applied by the runtime
+/// to nest interceptor scopes around the handler dispatch. The closure receives
+/// the inner future (handler or next wrapper) and returns a new future that
+/// provides the desired async context.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// tokio::task_local! { static MY_CTX: String; }
+///
+/// fn wrap_handler<'a>(&'a self, _ctx: &InboundContext, headers: &Headers)
+///     -> Option<HandlerWrapper<'a>>
+/// {
+///     let value = headers.get::<MyHeader>()?.value().clone();
+///     Some(Box::new(move |next| {
+///         Box::pin(MY_CTX.scope(value, next))
+///     }))
+/// }
+/// ```
+pub type HandlerWrapper<'a> = Box<
+    dyn FnOnce(Pin<Box<dyn Future<Output = ()> + Send + 'a>>)
+            -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
+        + Send
+        + 'a,
+>;
+
 /// An interceptor that observes or modifies inbound messages.
 /// Interceptors form an ordered pipeline executed before the handler.
 pub trait InboundInterceptor: Send + Sync + 'static {
@@ -277,6 +307,59 @@ pub trait InboundInterceptor: Send + Sync + 'static {
     ) -> Disposition {
         let _ = (ctx, headers, seq, item);
         Disposition::Continue
+    }
+
+    /// Creates a wrapper for the handler dispatch future, enabling async
+    /// context that persists through handler execution.
+    ///
+    /// Called after [`on_receive`](InboundInterceptor::on_receive) succeeds
+    /// (returns `Continue` or `Delay`) and before the handler dispatches.
+    /// The runtime collects wrappers from all interceptors in pipeline order,
+    /// then applies them so the **first** interceptor's wrapper is the
+    /// **outermost** scope.
+    ///
+    /// Return `None` (default) for no wrapping — zero overhead on the fast
+    /// path. Return `Some(wrapper)` to wrap the handler future with async
+    /// context such as `tokio::task_local!` scopes or `tracing::Instrument`.
+    ///
+    /// The wrapper closure **must** await the `next` future it receives;
+    /// failing to do so will prevent the handler from executing.
+    ///
+    /// # Data flow
+    ///
+    /// Extract what you need from `headers` here and capture it in the
+    /// returned closure. This is message-local — no stale-state risk even
+    /// if the message is later rejected or the actor processes another message.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// tokio::task_local! {
+    ///     static TRACE_CTX: TraceContext;
+    /// }
+    ///
+    /// impl InboundInterceptor for ContextRestorer {
+    ///     fn name(&self) -> &'static str { "context-restorer" }
+    ///
+    ///     fn wrap_handler<'a>(
+    ///         &'a self,
+    ///         _ctx: &InboundContext<'_>,
+    ///         headers: &Headers,
+    ///     ) -> Option<HandlerWrapper<'a>> {
+    ///         let tc = headers.get::<TraceContext>()?.clone();
+    ///         Some(Box::new(move |next| {
+    ///             Box::pin(TRACE_CTX.scope(tc, next))
+    ///         }))
+    ///     }
+    /// }
+    /// ```
+    fn wrap_handler<'a>(
+        &'a self,
+        ctx: &InboundContext<'_>,
+        headers: &Headers,
+    ) -> Option<HandlerWrapper<'a>> {
+        let _ = (ctx, headers);
+        None
     }
 }
 
@@ -362,6 +445,42 @@ pub trait OutboundInterceptor: Send + Sync + 'static {
     }
 }
 
+/// Collect handler wrappers from interceptors.
+///
+/// Called after the `on_receive` pipeline succeeds. Each interceptor gets
+/// a chance to return a [`HandlerWrapper`] that will nest around the handler
+/// dispatch future. Returns a `Vec` aligned with the interceptor slice — one
+/// `Option<HandlerWrapper>` per interceptor.
+pub fn collect_handler_wrappers<'a>(
+    interceptors: &'a [Box<dyn InboundInterceptor>],
+    ctx: &InboundContext<'_>,
+    headers: &Headers,
+) -> Vec<Option<HandlerWrapper<'a>>> {
+    interceptors
+        .iter()
+        .map(|i| i.wrap_handler(ctx, headers))
+        .collect()
+}
+
+/// Apply collected handler wrappers around an inner future.
+///
+/// Wrappers are applied in **reverse** order so that interceptor\[0\]'s
+/// wrapper is the outermost scope — matching the `on_receive` execution order.
+///
+/// Interceptors that returned `None` are skipped (zero cost).
+pub fn apply_handler_wrappers<'a>(
+    wrappers: Vec<Option<HandlerWrapper<'a>>>,
+    inner: Pin<Box<dyn Future<Output = ()> + Send + 'a>>,
+) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    wrappers
+        .into_iter()
+        .rev()
+        .fold(inner, |next, wrapper| match wrapper {
+            Some(w) => w(next),
+            None => next,
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,5 +541,146 @@ mod tests {
         };
         let _ = Outcome::StreamCompleted { items_emitted: 10 };
         let _ = Outcome::StreamCancelled { items_emitted: 5 };
+    }
+
+    #[test]
+    fn test_wrap_handler_default_returns_none() {
+        let interceptor = NoopInterceptor;
+        let ctx = InboundContext {
+            actor_id: ActorId {
+                node: NodeId("n1".into()),
+                local: 1,
+            },
+            actor_name: "test",
+            message_type: "TestMsg",
+            send_mode: SendMode::Tell,
+            remote: false,
+            origin_node: None,
+        };
+        let headers = Headers::new();
+        assert!(interceptor.wrap_handler(&ctx, &headers).is_none());
+    }
+
+    struct WrappingInterceptor;
+
+    impl InboundInterceptor for WrappingInterceptor {
+        fn name(&self) -> &'static str {
+            "wrapping"
+        }
+
+        fn wrap_handler<'a>(
+            &'a self,
+            _ctx: &InboundContext<'_>,
+            _headers: &Headers,
+        ) -> Option<HandlerWrapper<'a>> {
+            Some(Box::new(|next| {
+                Box::pin(async move {
+                    // Just wraps without modification
+                    next.await;
+                })
+            }))
+        }
+    }
+
+    #[test]
+    fn test_wrap_handler_returns_some() {
+        let interceptor = WrappingInterceptor;
+        let ctx = InboundContext {
+            actor_id: ActorId {
+                node: NodeId("n1".into()),
+                local: 1,
+            },
+            actor_name: "test",
+            message_type: "TestMsg",
+            send_mode: SendMode::Tell,
+            remote: false,
+            origin_node: None,
+        };
+        let headers = Headers::new();
+        assert!(interceptor.wrap_handler(&ctx, &headers).is_some());
+    }
+
+    #[test]
+    fn test_collect_handler_wrappers_mixed() {
+        let interceptors: Vec<Box<dyn InboundInterceptor>> = vec![
+            Box::new(NoopInterceptor),
+            Box::new(WrappingInterceptor),
+            Box::new(NoopInterceptor),
+        ];
+        let ctx = InboundContext {
+            actor_id: ActorId {
+                node: NodeId("n1".into()),
+                local: 1,
+            },
+            actor_name: "test",
+            message_type: "TestMsg",
+            send_mode: SendMode::Tell,
+            remote: false,
+            origin_node: None,
+        };
+        let headers = Headers::new();
+        let wrappers = collect_handler_wrappers(&interceptors, &ctx, &headers);
+        assert_eq!(wrappers.len(), 3);
+        assert!(wrappers[0].is_none());
+        assert!(wrappers[1].is_some());
+        assert!(wrappers[2].is_none());
+    }
+
+    #[tokio::test]
+    async fn test_apply_handler_wrappers_executes_inner() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let executed = Arc::new(AtomicBool::new(false));
+        let executed_clone = executed.clone();
+
+        let inner: Pin<Box<dyn Future<Output = ()> + Send>> = Box::pin(async move {
+            executed_clone.store(true, Ordering::SeqCst);
+        });
+
+        // No wrappers — inner should still execute
+        let wrapped = apply_handler_wrappers(vec![], inner);
+        wrapped.await;
+        assert!(executed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn test_apply_handler_wrappers_nesting_order() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let order = Arc::new(AtomicU32::new(0));
+
+        // Build wrappers that record entry order
+        let order1 = order.clone();
+        let order2 = order.clone();
+        let order_inner = order.clone();
+
+        let w1: HandlerWrapper<'_> = Box::new(move |next| {
+            Box::pin(async move {
+                // First interceptor enters first (outermost)
+                let val = order1.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(val, 0, "wrapper 1 should enter first");
+                next.await;
+            })
+        });
+
+        let w2: HandlerWrapper<'_> = Box::new(move |next| {
+            Box::pin(async move {
+                // Second interceptor enters second (inner)
+                let val = order2.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(val, 1, "wrapper 2 should enter second");
+                next.await;
+            })
+        });
+
+        let inner: Pin<Box<dyn Future<Output = ()> + Send>> = Box::pin(async move {
+            let val = order_inner.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(val, 2, "inner should execute last");
+        });
+
+        let wrappers = vec![Some(w1), Some(w2)];
+        let wrapped = apply_handler_wrappers(wrappers, inner);
+        wrapped.await;
+
+        assert_eq!(order.load(Ordering::SeqCst), 3);
     }
 }

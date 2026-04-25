@@ -28,6 +28,7 @@ use crate::errors::{ActorSendError, ErrorAction, RuntimeError};
 #[allow(unused_imports)]
 use crate::interceptor::OutboundContext;
 use crate::interceptor::{
+    collect_handler_wrappers, apply_handler_wrappers,
     Disposition, DropObserver, InboundContext, InboundInterceptor, OutboundInterceptor, Outcome,
     SendMode,
 };
@@ -940,6 +941,19 @@ impl TestRuntime {
                     tokio::time::sleep(total_delay).await;
                 }
 
+                // Collect handler wrappers BEFORE moving headers into ctx,
+                // so interceptors can read headers without borrow conflicts.
+                let ictx_for_wrap = InboundContext {
+                    actor_id: ctx.actor_id.clone(),
+                    actor_name: &ctx.actor_name,
+                    message_type,
+                    send_mode,
+                    remote: false,
+                    origin_node: None,
+                };
+                let wrappers = collect_handler_wrappers(&interceptors, &ictx_for_wrap, &headers);
+                let needs_wrap = wrappers.iter().any(|w| w.is_some());
+
                 // Copy interceptor-populated headers to ActorContext so handler can access them
                 ctx.headers = headers;
 
@@ -957,29 +971,64 @@ impl TestRuntime {
                     }
                 }
 
-                // Dispatch the message (with cancellation racing if token is set)
-                // For cooperative cancellation: the handler can use ctx.cancelled() internally.
-                // For non-cooperative handlers: the select! will drop the handler future on cancel.
-                // biased; with dispatch first ensures that if the handler completes at the same
-                // moment the token fires, the handler's result takes priority.
-                let result = if let Some(ref token) = cancel_token {
-                    let dispatch_fut =
-                        std::panic::AssertUnwindSafe(dispatch.dispatch(&mut actor, &mut ctx))
-                            .catch_unwind();
-                    tokio::select! {
-                        biased;
-                        r = dispatch_fut => r,
-                        _ = token.cancelled() => {
-                            // Cancelled during handler execution.
-                            // The handler is NOT interrupted — select! drops the future.
-                            ctx.cancellation_token = None;
-                            continue;
+                // Dispatch the message, optionally wrapped by interceptor scopes.
+                let result = if needs_wrap {
+                    // Wrapped path: use oneshot to extract result from the
+                    // opaque Future<Output = ()> wrapper chain.
+                    let (result_tx, mut result_rx) = tokio::sync::oneshot::channel();
+
+                    let inner: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> = Box::pin(async {
+                        let r = std::panic::AssertUnwindSafe(
+                            dispatch.dispatch(&mut actor, &mut ctx),
+                        )
+                        .catch_unwind()
+                        .await;
+                        let _ = result_tx.send(r);
+                    });
+
+                    let wrapped = apply_handler_wrappers(wrappers, inner);
+
+                    if let Some(ref token) = cancel_token {
+                        tokio::select! {
+                            biased;
+                            _ = wrapped => {},
+                            _ = token.cancelled() => {
+                                ctx.cancellation_token = None;
+                                continue;
+                            }
                         }
+                    } else {
+                        wrapped.await;
+                    }
+
+                    // Retrieve the dispatch result from the oneshot channel.
+                    // If the wrapper didn't await the inner future (contract
+                    // violation) or panicked, treat as a handler panic.
+                    match result_rx.try_recv() {
+                        Ok(r) => r,
+                        Err(_) => Err(Box::new(
+                            "interceptor wrap_handler did not await the handler future",
+                        ) as Box<dyn std::any::Any + Send>),
                     }
                 } else {
-                    std::panic::AssertUnwindSafe(dispatch.dispatch(&mut actor, &mut ctx))
-                        .catch_unwind()
-                        .await
+                    // Fast path: no wrapping overhead.
+                    if let Some(ref token) = cancel_token {
+                        let dispatch_fut =
+                            std::panic::AssertUnwindSafe(dispatch.dispatch(&mut actor, &mut ctx))
+                                .catch_unwind();
+                        tokio::select! {
+                            biased;
+                            r = dispatch_fut => r,
+                            _ = token.cancelled() => {
+                                ctx.cancellation_token = None;
+                                continue;
+                            }
+                        }
+                    } else {
+                        std::panic::AssertUnwindSafe(dispatch.dispatch(&mut actor, &mut ctx))
+                            .catch_unwind()
+                            .await
+                    }
                 };
 
                 // Clear the cancellation token
@@ -4443,6 +4492,237 @@ mod tests {
         actor.stop();
         let result = runtime.await_stop(&actor_id).await;
         assert!(result.is_err(), "expected error from panicking on_stop");
+    }
+
+    // ---- wrap_handler integration tests ----
+
+    tokio::task_local! {
+        static TEST_CONTEXT: String;
+    }
+
+    /// An interceptor that injects a header in on_receive and restores it
+    /// as task-local context in wrap_handler.
+    struct TaskLocalInterceptor;
+
+    impl InboundInterceptor for TaskLocalInterceptor {
+        fn name(&self) -> &'static str {
+            "task-local"
+        }
+
+        fn on_receive(
+            &self,
+            _ctx: &InboundContext<'_>,
+            _rh: &RuntimeHeaders,
+            headers: &mut Headers,
+            _msg: &dyn Any,
+        ) -> Disposition {
+            headers.insert(ContextHeader("restored-context".to_string()));
+            Disposition::Continue
+        }
+
+        fn wrap_handler<'a>(
+            &'a self,
+            _ctx: &InboundContext<'_>,
+            headers: &Headers,
+        ) -> Option<crate::interceptor::HandlerWrapper<'a>> {
+            let value = headers.get::<ContextHeader>()?.0.clone();
+            Some(Box::new(move |next| {
+                Box::pin(TEST_CONTEXT.scope(value, next))
+            }))
+        }
+    }
+
+    /// Simple header for carrying context through the interceptor pipeline.
+    #[derive(Clone)]
+    struct ContextHeader(String);
+
+    impl crate::message::HeaderValue for ContextHeader {
+        fn header_name(&self) -> &'static str {
+            "test-context"
+        }
+        fn to_bytes(&self) -> Option<Vec<u8>> {
+            Some(self.0.as_bytes().to_vec())
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    /// Actor that reads from task-local context during handler execution.
+    struct ContextReadingActor;
+
+    impl Actor for ContextReadingActor {
+        type Args = ();
+        type Deps = ();
+
+        fn create(_args: (), _deps: ()) -> Self {
+            ContextReadingActor
+        }
+    }
+
+    struct ReadContext;
+    impl Message for ReadContext {
+        type Reply = String;
+    }
+
+    #[async_trait]
+    impl Handler<ReadContext> for ContextReadingActor {
+        async fn handle(&mut self, _msg: ReadContext, _ctx: &mut ActorContext) -> String {
+            TEST_CONTEXT
+                .try_with(|v| v.clone())
+                .unwrap_or_else(|_| "no-context".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_wrap_handler_sets_task_local_context() {
+        let runtime = TestRuntime::new();
+        let actor = runtime
+            .spawn_with_options::<ContextReadingActor>(
+                "ctx-reader",
+                (),
+                SpawnOptions {
+                    interceptors: vec![Box::new(TaskLocalInterceptor)],
+                    mailbox: MailboxConfig::Unbounded,
+                },
+            )
+            .await
+            .unwrap();
+
+        let result = actor.ask(ReadContext, None).unwrap().await.unwrap();
+        assert_eq!(result, "restored-context");
+    }
+
+    #[tokio::test]
+    async fn test_wrap_handler_not_present_uses_fast_path() {
+        // With no wrapping interceptor, handler should still work normally
+        let runtime = TestRuntime::new();
+        let actor = runtime
+            .spawn_with_options::<ContextReadingActor>(
+                "no-wrap",
+                (),
+                SpawnOptions {
+                    interceptors: vec![],
+                    mailbox: MailboxConfig::Unbounded,
+                },
+            )
+            .await
+            .unwrap();
+
+        let result = actor.ask(ReadContext, None).unwrap().await.unwrap();
+        assert_eq!(result, "no-context");
+    }
+
+    /// Interceptor that wraps with ordering tracking.
+    struct OrderTrackingInterceptor {
+        id: u32,
+        order: Arc<std::sync::Mutex<Vec<u32>>>,
+    }
+
+    impl InboundInterceptor for OrderTrackingInterceptor {
+        fn name(&self) -> &'static str {
+            "order-tracking"
+        }
+
+        fn wrap_handler<'a>(
+            &'a self,
+            _ctx: &InboundContext<'_>,
+            _headers: &Headers,
+        ) -> Option<crate::interceptor::HandlerWrapper<'a>> {
+            let id = self.id;
+            let order = self.order.clone();
+            Some(Box::new(move |next| {
+                Box::pin(async move {
+                    order.lock().unwrap().push(id);
+                    next.await;
+                })
+            }))
+        }
+    }
+
+    struct NoopInterceptor;
+
+    impl InboundInterceptor for NoopInterceptor {
+        fn name(&self) -> &'static str {
+            "noop"
+        }
+    }
+
+    struct WrapPing;
+    impl Message for WrapPing {
+        type Reply = ();
+    }
+
+    #[async_trait]
+    impl Handler<WrapPing> for ContextReadingActor {
+        async fn handle(&mut self, _msg: WrapPing, _ctx: &mut ActorContext) {}
+    }
+
+    #[tokio::test]
+    async fn test_wrap_handler_nesting_order() {
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let runtime = TestRuntime::new();
+        let actor = runtime
+            .spawn_with_options::<ContextReadingActor>(
+                "wrap-order",
+                (),
+                SpawnOptions {
+                    interceptors: vec![
+                        Box::new(OrderTrackingInterceptor {
+                            id: 1,
+                            order: order.clone(),
+                        }),
+                        Box::new(OrderTrackingInterceptor {
+                            id: 2,
+                            order: order.clone(),
+                        }),
+                    ],
+                    mailbox: MailboxConfig::Unbounded,
+                },
+            )
+            .await
+            .unwrap();
+
+        actor.tell(WrapPing).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let order = order.lock().unwrap().clone();
+        assert_eq!(order, vec![1, 2], "interceptor[0] should be outermost (enters first)");
+    }
+
+    #[tokio::test]
+    async fn test_wrap_handler_mixed_with_noop_interceptors() {
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let runtime = TestRuntime::new();
+        let actor = runtime
+            .spawn_with_options::<ContextReadingActor>(
+                "mixed-wrap",
+                (),
+                SpawnOptions {
+                    interceptors: vec![
+                        Box::new(OrderTrackingInterceptor {
+                            id: 1,
+                            order: order.clone(),
+                        }),
+                        Box::new(NoopInterceptor), // returns None
+                        Box::new(OrderTrackingInterceptor {
+                            id: 3,
+                            order: order.clone(),
+                        }),
+                    ],
+                    mailbox: MailboxConfig::Unbounded,
+                },
+            )
+            .await
+            .unwrap();
+
+        actor.tell(WrapPing).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let order = order.lock().unwrap().clone();
+        assert_eq!(order, vec![1, 3], "noop interceptor should be skipped");
     }
 }
 

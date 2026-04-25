@@ -2698,6 +2698,20 @@ pub enum SendMode {
     Reduce,
 }
 
+/// An owned closure that wraps a handler future with an outer async scope.
+/// Used by `InboundInterceptor::wrap_handler` to set task-local context
+/// (e.g., `tokio::task_local!`) or tracing spans that persist through
+/// handler execution.
+///
+/// The closure takes an inner future (the handler dispatch or the next
+/// wrapper's output) and returns a new future that must `.await` the
+/// inner future exactly once.
+pub type HandlerWrapper<'a> = Box<
+    dyn FnOnce(Pin<Box<dyn Future<Output = ()> + Send + 'a>>)
+            -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
+        + Send + 'a,
+>;
+
 /// An interceptor that can observe or modify messages in transit.
 ///
 /// Interceptors form an ordered pipeline. Each interceptor sees the
@@ -2789,6 +2803,29 @@ pub trait InboundInterceptor: Send + Sync + 'static {
         item: &dyn Any,
     ) {
         let _ = (ctx, seq, item);
+    }
+
+    /// Optionally wrap the handler future with an outer async scope.
+    ///
+    /// Unlike `on_receive` (which runs synchronously **before** the handler),
+    /// `wrap_handler` returns a closure that **surrounds** the handler future.
+    /// This enables setting `tokio::task_local!` values or tracing spans that
+    /// persist through the entire handler execution — something impossible with
+    /// the synchronous `on_receive` callback alone.
+    ///
+    /// Return `None` (the default) to skip wrapping — zero overhead for
+    /// interceptors that don't need it.
+    ///
+    /// **Contract:** The returned closure **must** `.await` the inner future
+    /// exactly once. If it does not, the runtime treats the message as a panic
+    /// (the reply channel is dropped, and the caller sees a channel error).
+    fn wrap_handler<'a>(
+        &'a self,
+        ctx: &InboundContext<'_>,
+        headers: &Headers,
+    ) -> Option<HandlerWrapper<'a>> {
+        let _ = (ctx, headers);
+        None
     }
 }
 
@@ -3127,6 +3164,125 @@ impl InboundInterceptor for ToggleableInterceptor {
     }
 }
 ```
+
+**Handler Future Wrapping (`wrap_handler`):**
+
+The `on_receive` callback is synchronous — it runs before the handler and
+returns `Disposition`. This means an interceptor **cannot** set async-scoped
+values (like `tokio::task_local!`) that persist through handler execution.
+
+`wrap_handler` solves this by letting an interceptor return a closure that
+**wraps** the handler future:
+
+```text
+on_receive chain → collect wrappers → handler execution inside wrappers → on_complete chain
+```
+
+**How it works:**
+
+1. After `on_receive` returns `Continue`, the runtime calls `wrap_handler`
+   on each interceptor, collecting `Option<HandlerWrapper>`.
+2. Non-`None` wrappers are applied in order: interceptor[0] is outermost
+   (entered first), matching `on_receive` execution order.
+3. The handler dispatch future is wrapped using a reverse fold:
+   ```rust
+   wrappers.into_iter().rev().fold(inner_future, |fut, wrapper| wrapper(fut))
+   ```
+4. The wrapped future is `.await`ed by the runtime.
+5. After the wrapped future completes, `on_complete` is called **outside**
+   the wrap scope (existing behavior preserved).
+
+**Runtime dispatch with wrapping (pseudocode):**
+
+```rust
+// 1. Run on_receive chain (existing)
+for interceptor in &interceptors {
+    match interceptor.on_receive(&ctx, &runtime_headers, &mut headers, &*msg) {
+        Disposition::Continue => {}
+        other => return handle_disposition(other),
+    }
+}
+
+// 2. Collect handler wrappers
+let wrappers: Vec<HandlerWrapper> = interceptors.iter()
+    .filter_map(|i| i.wrap_handler(&ctx, &headers))
+    .collect();
+
+let needs_wrap = !wrappers.is_empty();
+
+if needs_wrap {
+    // 3. Wrapped path: use oneshot channel for result extraction
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let inner = Box::pin(async move {
+        let result = std::panic::AssertUnwindSafe(dispatch_future)
+            .catch_unwind().await;
+        let _ = tx.send(result);
+    });
+
+    // 4. Apply wrappers (fold reverse for correct nesting)
+    let wrapped = wrappers.into_iter().rev()
+        .fold(inner, |fut, wrapper| wrapper(fut));
+
+    // 5. Await wrapped future
+    wrapped.await;
+
+    // 6. Extract result from channel
+    let result = rx.try_recv()
+        .unwrap_or(Err("interceptor did not await inner future".into()));
+} else {
+    // Fast path: no wrapping overhead
+    let result = dispatch_future.await;
+}
+```
+
+**Zero overhead when unused:** If no interceptor returns `Some` from
+`wrap_handler`, the runtime takes the fast path — identical to the existing
+code path with no allocation or channel overhead.
+
+**Designed for distributed context propagation (dcontext):**
+
+The primary use case is automatic async context restoration. A `dcontext`
+interceptor deserializes distributed context from headers in `wrap_handler`,
+captures the owned data, and returns a closure that sets task-locals:
+
+```rust
+use dcontext::DistributedContext;
+
+struct DContextInterceptor;
+
+impl InboundInterceptor for DContextInterceptor {
+    fn name(&self) -> &'static str { "dcontext" }
+
+    fn wrap_handler<'a>(
+        &'a self,
+        _ctx: &InboundContext<'_>,
+        headers: &Headers,
+    ) -> Option<HandlerWrapper<'a>> {
+        // Extract distributed context from headers (owned data)
+        let dctx = headers.get::<DistributedContext>()?.clone();
+
+        Some(Box::new(move |inner| {
+            Box::pin(async move {
+                // Set task-local context that persists through handler execution
+                dctx.scope(inner).await;
+            })
+        }))
+    }
+}
+```
+
+On the **outbound** side, `OutboundInterceptor::on_send` reads task-locals
+synchronously and injects them into headers — this already works without
+wrapping. The combination of outbound inject + inbound `wrap_handler` restore
+enables fully automatic distributed context propagation.
+
+**`on_complete` runs outside the wrap scope:**
+
+This is a deliberate design choice. `on_complete` fires after the wrapped
+future returns, so task-locals set by `wrap_handler` are **not** active
+during `on_complete`. Interceptors that need context in `on_complete` should
+use the existing headers-as-bridge pattern (stash data in `on_receive`,
+read in `on_complete`).
 
 ### 5.3 Outbound Interceptor (Sender-Side)
 

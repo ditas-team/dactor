@@ -919,6 +919,93 @@ let mut runtime = TestRuntime::new();
 runtime.add_outbound_interceptor(Box::new(HeaderStampInterceptor));
 ```
 
+#### Wrapping Handler Execution (`wrap_handler`)
+
+The `on_receive` callback runs **synchronously** before the handler — it
+cannot set async-scoped values (like `tokio::task_local!`) that persist
+through handler execution. The `wrap_handler` method solves this by letting
+an interceptor wrap the handler future with an outer async scope.
+
+This is essential for **distributed context propagation**: an interceptor
+deserializes context from headers and sets task-locals that the handler
+(and any downstream calls) can read.
+
+```rust,ignore
+use std::future::Future;
+use std::pin::Pin;
+use dactor::interceptor::{
+    InboundContext, InboundInterceptor, HandlerWrapper,
+};
+use dactor::message::Headers;
+
+tokio::task_local! {
+    static REQUEST_ID: String;
+}
+
+struct ContextRestoreInterceptor;
+
+impl InboundInterceptor for ContextRestoreInterceptor {
+    fn name(&self) -> &'static str { "context-restore" }
+
+    fn wrap_handler<'a>(
+        &'a self,
+        _ctx: &InboundContext<'_>,
+        headers: &Headers,
+    ) -> Option<HandlerWrapper<'a>> {
+        // Extract context from headers (returns None if absent → skip wrapping)
+        let request_id = headers.get::<RequestIdHeader>()?.0.clone();
+
+        // Return a closure that wraps the handler future
+        Some(Box::new(move |inner| {
+            Box::pin(async move {
+                // task_local persists through the entire handler execution
+                REQUEST_ID.scope(request_id, inner).await;
+            })
+        }))
+    }
+}
+```
+
+**Key points:**
+- Return `None` (the default) to skip wrapping — zero overhead
+- Return `Some(closure)` to wrap the handler future
+- The closure **must** `.await` the inner future exactly once
+- Multiple interceptors can wrap — they nest in order (interceptor[0] is outermost)
+- `on_complete` runs **outside** the wrap scope
+
+**Combining with outbound interceptors for distributed context:**
+
+```rust,ignore
+// Outbound: read task-local, inject into headers (on caller's task)
+impl OutboundInterceptor for DContextOutbound {
+    fn name(&self) -> &'static str { "dcontext-out" }
+
+    fn on_send(&self, _ctx: &OutboundContext<'_>, _rh: &RuntimeHeaders,
+               headers: &mut Headers, _msg: &dyn Any) -> Disposition {
+        if let Ok(id) = REQUEST_ID.try_with(|v| v.clone()) {
+            headers.insert(RequestIdHeader(id));
+        }
+        Disposition::Continue
+    }
+}
+
+// Inbound: restore from headers via wrap_handler (on actor's task)
+impl InboundInterceptor for DContextInbound {
+    fn name(&self) -> &'static str { "dcontext-in" }
+
+    fn wrap_handler<'a>(&'a self, _ctx: &InboundContext<'_>,
+                        headers: &Headers) -> Option<HandlerWrapper<'a>> {
+        let id = headers.get::<RequestIdHeader>()?.0.clone();
+        Some(Box::new(move |inner| {
+            Box::pin(REQUEST_ID.scope(id, inner))
+        }))
+    }
+}
+```
+
+This pattern enables fully automatic context propagation across remote actor
+calls without any changes to actor code.
+
 #### Interceptor Disposition
 
 The `Disposition` enum controls what happens after an interceptor runs:
@@ -1867,7 +1954,7 @@ ActorRef<A>              (typed handle to a running actor)
 ├── WorkerRef<A,L>       (local or remote worker)
 └── BroadcastRef<A,R>    (fan-out to all members)
 
-InboundInterceptor       (on_receive, on_complete, on_expand_item)
+InboundInterceptor       (on_receive, on_complete, on_expand_item, wrap_handler)
 OutboundInterceptor      (on_send, on_reply)
 DropObserver             (on_drop notification)
 
