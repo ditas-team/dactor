@@ -1,25 +1,25 @@
 [package]
 name = "dactor-discover-k8s"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.70"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Kubernetes node discovery for the dactor distributed actor framework"
-authors = ["Yaming Liu <ymliu1978@gmail.com>"]
-license = "MIT"
-repository = "https://github.com/Yaming-Hub/dactor"
-homepage = "https://github.com/Yaming-Hub/dactor"
 documentation = "https://docs.rs/dactor-discover-k8s"
 readme = "README.md"
 keywords = ["actor", "distributed", "kubernetes", "discovery", "k8s"]
 categories = ["network-programming"]
 
 [dependencies]
-async-trait = "0.1"
-dactor = { version = "0.3.1", path = "../dactor" }
+async-trait.workspace = true
+dactor.workspace = true
 kube = { version = "0.98", features = ["runtime", "client", "derive"] }
 k8s-openapi = { version = "0.24", features = ["latest"] }
-tokio = { version = "1", features = ["sync", "rt", "time"] }
-tracing = "0.1"
+tokio = { workspace = true, features = ["sync", "rt", "time"] }
+tracing.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

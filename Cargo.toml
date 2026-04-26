@@ -2,6 +2,29 @@
 members = ["dactor", "dactor-ractor", "dactor-kameo", "dactor-test-harness", "dactor-mock", "dactor-coerce", "dactor-discover-k8s", "dactor-discover-aws", "dactor-discover-azure"]
 resolver = "2"
 
-[workspace.metadata]
-repository = "https://github.com/Yaming-Hub/dactor"
+[workspace.package]
+version = "0.3.1"
+edition = "2021"
+rust-version = "1.70"
+authors = ["Yaming Liu <ymliu1978@gmail.com>"]
 license = "MIT"
+repository = "https://github.com/Yaming-Hub/dactor"
+homepage = "https://github.com/Yaming-Hub/dactor"
+categories = ["concurrency", "network-programming"]
+
+[workspace.dependencies]
+# Internal crates
+dactor = { version = "0.3.1", path = "dactor" }
+dactor-test-harness = { version = "0.3.1", path = "dactor-test-harness" }
+
+# Shared external dependencies
+async-trait = "0.1"
+futures = { version = "0.3", default-features = false, features = ["std"] }
+tokio = { version = "1", features = ["sync", "rt", "time", "macros", "rt-multi-thread"] }
+tokio-stream = "0.1"
+tokio-util = "0.7"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+prost = "0.13"

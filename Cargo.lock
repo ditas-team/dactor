@@ -789,7 +789,7 @@ dependencies = [
 
 [[package]]
 name = "dactor-discover-aws"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -802,7 +802,7 @@ dependencies = [
 
 [[package]]
 name = "dactor-discover-azure"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "dactor",
@@ -815,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "dactor-discover-k8s"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "dactor",
