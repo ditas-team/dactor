@@ -1,30 +1,30 @@
 [package]
 name = "dactor-test-harness"
-version = "0.3.0"
-edition = "2021"
-rust-version = "1.70"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Multi-process integration test harness for dactor actor framework"
-authors = ["Yaming Liu <ymliu1978@gmail.com>"]
-license = "MIT"
-repository = "https://github.com/Yaming-Hub/dactor"
-homepage = "https://github.com/Yaming-Hub/dactor"
 documentation = "https://docs.rs/dactor-test-harness"
 readme = "README.md"
 keywords = ["actor", "distributed", "testing", "harness", "integration"]
 categories = ["concurrency", "development-tools::testing"]
 
 [dependencies]
-dactor = { version = "0.3.0", path = "../dactor" }
+dactor.workspace = true
 tonic = "0.13"
-prost = "0.13"
+prost.workspace = true
 tokio = { version = "1", features = ["process", "sync", "rt", "rt-multi-thread", "time", "net", "macros", "io-util"] }
-tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-stream = { workspace = true, features = ["sync"] }
 dashmap = "6"
-tracing = "0.1"
-tracing-subscriber = "0.3"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-async-trait = "0.1"
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
 
 [build-dependencies]
 tonic-build = "0.13"
