@@ -1,6 +1,6 @@
 # dactor-discover-azure
 
-Azure node discovery for the [dactor](https://github.com/Yaming-Hub/dactor) distributed actor framework.
+Azure node discovery for the [dactor](https://github.com/ditas-team/dactor) distributed actor framework.
 
 ## Discovery mechanisms
 

@@ -756,7 +756,7 @@ dependencies = [
 
 [[package]]
 name = "dactor"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "futures",
@@ -773,7 +773,7 @@ dependencies = [
 
 [[package]]
 name = "dactor-coerce"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "coerce",
@@ -789,7 +789,7 @@ dependencies = [
 
 [[package]]
 name = "dactor-discover-aws"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -802,7 +802,7 @@ dependencies = [
 
 [[package]]
 name = "dactor-discover-azure"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "dactor",
@@ -815,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "dactor-discover-k8s"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "dactor",
@@ -827,7 +827,7 @@ dependencies = [
 
 [[package]]
 name = "dactor-kameo"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "dactor",
@@ -844,7 +844,7 @@ dependencies = [
 
 [[package]]
 name = "dactor-mock"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "dactor",
@@ -855,7 +855,7 @@ dependencies = [
 
 [[package]]
 name = "dactor-ractor"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "dactor",
@@ -872,7 +872,7 @@ dependencies = [
 
 [[package]]
 name = "dactor-test-harness"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "dactor",
