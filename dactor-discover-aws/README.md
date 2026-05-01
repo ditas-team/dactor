@@ -1,6 +1,6 @@
 # dactor-discover-aws
 
-AWS node discovery for the [dactor](https://github.com/ditas-team/dactor) distributed actor framework.
+AWS node discovery for the [dactor](https://github.com/microsoft/dactor) distributed actor framework.
 
 ## Discovery mechanisms
 
