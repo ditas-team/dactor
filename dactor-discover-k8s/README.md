@@ -1,6 +1,6 @@
 # dactor-discover-k8s
 
-Kubernetes-based cluster node discovery for the [dactor](https://github.com/ditas-team/dactor) distributed actor framework.
+Kubernetes-based cluster node discovery for the [dactor](https://github.com/microsoft/dactor) distributed actor framework.
 
 ## Overview
 

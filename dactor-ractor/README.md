@@ -12,7 +12,7 @@ dactor = "0.2"
 dactor-ractor = "0.2"
 ```
 
-See the [dactor repository](https://github.com/ditas-team/dactor) for full documentation and examples.
+See the [dactor repository](https://github.com/microsoft/dactor) for full documentation and examples.
 
 ## License
 

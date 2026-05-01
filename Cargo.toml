@@ -3,19 +3,19 @@ members = ["dactor", "dactor-ractor", "dactor-kameo", "dactor-test-harness", "da
 resolver = "2"
 
 [workspace.package]
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 rust-version = "1.70"
 authors = ["Yaming Liu <ymliu1978@gmail.com>"]
 license = "MIT"
-repository = "https://github.com/ditas-team/dactor"
-homepage = "https://github.com/ditas-team/dactor"
+repository = "https://github.com/microsoft/dactor"
+homepage = "https://github.com/microsoft/dactor"
 categories = ["concurrency", "network-programming"]
 
 [workspace.dependencies]
 # Internal crates
-dactor = { version = "0.3.2", path = "dactor" }
-dactor-test-harness = { version = "0.3.2", path = "dactor-test-harness" }
+dactor = { version = "0.3.3", path = "dactor" }
+dactor-test-harness = { version = "0.3.3", path = "dactor-test-harness" }
 
 # Shared external dependencies
 async-trait = "0.1"
